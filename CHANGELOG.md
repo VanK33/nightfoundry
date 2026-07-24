@@ -1,3 +1,7 @@
+## [0.2.1] - 2026-07-24 — Public repository cutover
+
+- No code changes from 0.2.0. Version realigned for the public repository's first release.
+
 ## [0.2.0] - 2026-07-23 — nightfoundry: first public npm release under the new name
 
 ### Milestone
