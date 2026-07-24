@@ -1,0 +1,51 @@
+{
+  "id": "001-001",
+  "missionId": "001-001",
+  "description": "Mock mission for fixture testing",
+  "status": "complete",
+  "subMissions": {
+    "001-001-001": {
+      "id": "001-001-001",
+      "description": "Mock sub-mission with two verified tasks",
+      "status": "complete",
+      "tasks": {
+        "001-001-001-001": {
+          "id": "001-001-001-001",
+          "description": "First mock task",
+          "status": "verified",
+          "createdAt": "2026-05-10T10:00:00.000Z",
+          "startedAt": "2026-05-10T10:01:00.000Z",
+          "completedAt": "2026-05-10T10:05:00.000Z",
+          "targetFiles": ["foo.js"],
+          "dependencies": [],
+          "testCases": [],
+          "tracesScenario": [],
+          "patternReferences": [],
+          "dataSchemas": [],
+          "verifyFile": null,
+          "progressFile": null,
+          "verificationFile": null,
+          "retryCount": 0
+        },
+        "001-001-001-002": {
+          "id": "001-001-001-002",
+          "description": "Second mock task",
+          "status": "verified",
+          "createdAt": "2026-05-10T10:00:00.000Z",
+          "startedAt": "2026-05-10T10:06:00.000Z",
+          "completedAt": "2026-05-10T10:10:00.000Z",
+          "targetFiles": ["bar.js"],
+          "dependencies": [],
+          "testCases": [],
+          "tracesScenario": [],
+          "patternReferences": [],
+          "dataSchemas": [],
+          "verifyFile": null,
+          "progressFile": null,
+          "verificationFile": null,
+          "retryCount": 0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>cc-orch ui v0 — siderail</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      /* ─── Decision banner: most visually prominent element ────────────── */
+      #decision-banner {
+        order: -2;
+        background: #ffb300;
+        color: #1a1a1a;
+        font-weight: 700;
+        font-size: 1.1em;
+        padding: 16px;
+        border: 3px solid #d68f00;
+        border-radius: 6px;
+        text-align: center;
+      }
+
+      #decision-banner[hidden] {
+        display: none;
+      }
+
+      /* ─── Error banner ──────────────────────────────────────────────── */
+      #error-banner {
+        order: -1;
+        background: #ffe3e3;
+        color: #7a0000;
+        font-weight: 600;
+        padding: 10px;
+        border: 2px solid #c00;
+        border-radius: 6px;
+      }
+
+      #error-banner[hidden] {
+        display: none;
+      }
+
+      /* ─── Current task card ─────────────────────────────────────────── */
+      #current-task {
+        background: #f4f4f8;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 10px;
+      }
+
+      #current-task[hidden] {
+        display: none;
+      }
+
+      #current-task-why {
+        color: #555;
+        font-size: 0.9em;
+      }
+
+      /* ─── Progress bar ───────────────────────────────────────────────── */
+      #progress-bar {
+        position: relative;
+        background: #e0e0e0;
+        border-radius: 4px;
+        height: 24px;
+        overflow: hidden;
+      }
+
+      #progress-fill {
+        background: #4caf50;
+        height: 100%;
+        width: 0%;
+        transition: width 0.3s ease;
+      }
+
+      #progress-text {
+        position: absolute;
+        left: 8px;
+        top: 0;
+        line-height: 24px;
+        font-size: 0.85em;
+      }
+
+      /* ─── Timing line ────────────────────────────────────────────────── */
+      #timing-line {
+        color: #666;
+        font-size: 0.85em;
+      }
+
+      /* ─── Idle state ─────────────────────────────────────────────────── */
+      #idle-state {
+        color: #888;
+        font-style: italic;
+      }
+
+      #idle-state[hidden] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="decision-banner" hidden>Decision needed</div>
+    <div id="error-banner" hidden></div>
+    <div id="progress-bar">
+      <div id="progress-fill"></div>
+      <span id="progress-text"></span>
+    </div>
+    <div id="current-task" hidden>
+      <div id="current-task-description"></div>
+      <div id="current-task-why"></div>
+    </div>
+    <div id="timing-line"></div>
+    <div id="idle-state" hidden>Idle — no active run</div>
+
+    <script>
+      // ─── Poll interval resolution ───────────────────────────────────────
+      function getPollInterval() {
+        var raw = typeof window.SIDERAIL_POLL_MS === 'number' ? window.SIDERAIL_POLL_MS : 3000;
+        return Math.max(2000, raw);
+      }
+
+      var pollInterval = getPollInterval();
+      var pollTimer = null;
+
+      // ─── Fetch ───────────────────────────────────────────────────────────
+      function pollOnce() {
+        return fetch('/api/siderail')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            render(data);
+            return data;
+          })
+          .catch(function (err) {
+            // network failure — swallow so poll loop survives
+            console.warn('[siderail] pollOnce error:', err);
+          });
+      }
+
+      // ─── Render ──────────────────────────────────────────────────────────
+      function render(data) {
+        var idleEl = document.getElementById('idle-state');
+        var decisionBanner = document.getElementById('decision-banner');
+        var errorBanner = document.getElementById('error-banner');
+        var currentTask = document.getElementById('current-task');
+
+        if (data && data.active === false) {
+          idleEl.hidden = false;
+          decisionBanner.hidden = true;
+          errorBanner.hidden = true;
+          currentTask.hidden = true;
+          currentTask.querySelector('#current-task-description').textContent = '';
+          currentTask.querySelector('#current-task-why').textContent = '';
+          document.getElementById('progress-fill').style.width = '0%';
+          document.getElementById('progress-text').textContent = '';
+          document.getElementById('timing-line').textContent = '';
+          return;
+        }
+
+        idleEl.hidden = true;
+
+        // Progress bar
+        var progress = (data && data.progress) || {};
+        var tasksComplete = progress.tasksComplete || 0;
+        var tasksTotal = progress.tasksTotal || 0;
+        var pct = tasksTotal > 0 ? Math.round((tasksComplete / tasksTotal) * 100) : 0;
+        document.getElementById('progress-fill').style.width = pct + '%';
+        document.getElementById('progress-text').textContent = tasksComplete + ' / ' + tasksTotal;
+
+        // Current task
+        var current = data && data.current;
+        if (current) {
+          currentTask.hidden = false;
+          currentTask.querySelector('#current-task-description').textContent = current.description || '';
+          var why = '';
+          if (current.missionId || current.milestoneId) {
+            why = 'Part of ' + (current.missionId || '') +
+              (current.milestoneId ? ' (' + current.milestoneId + ')' : '');
+          }
+          currentTask.querySelector('#current-task-why').textContent = why;
+        } else {
+          currentTask.hidden = true;
+          currentTask.querySelector('#current-task-description').textContent = '';
+          currentTask.querySelector('#current-task-why').textContent = '';
+        }
+
+        // Decision banner — most visually prominent element, only when pendingDecision truthy
+        decisionBanner.hidden = !(data && data.pendingDecision);
+
+        // Error banner — only when error truthy
+        if (data && data.error) {
+          errorBanner.hidden = false;
+          errorBanner.textContent = typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+        } else {
+          errorBanner.hidden = true;
+          errorBanner.textContent = '';
+        }
+
+        // Timing line
+        var timing = (data && data.timing) || {};
+        var parts = [];
+        if (timing.elapsedMs !== undefined) {
+          parts.push('elapsed: ' + timing.elapsedMs + 'ms');
+        }
+        if (timing.remainingTasks !== undefined) {
+          parts.push('remaining tasks: ' + timing.remainingTasks);
+        }
+        if (timing.avgTaskDurationMs !== undefined) {
+          parts.push('avg task duration: ' + timing.avgTaskDurationMs + 'ms');
+        }
+        document.getElementById('timing-line').textContent = parts.join(' · ');
+      }
+
+      // ─── Poll loop ───────────────────────────────────────────────────────
+      function startPolling() {
+        pollOnce();
+        pollTimer = setInterval(pollOnce, pollInterval);
+      }
+
+      function stopPolling() {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+
+      // ─── Visibility ──────────────────────────────────────────────────────
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) {
+          stopPolling();
+        } else {
+          startPolling();
+        }
+      });
+
+      if (!document.hidden) {
+        startPolling();
+      }
+    </script>
+  </body>
+</html>

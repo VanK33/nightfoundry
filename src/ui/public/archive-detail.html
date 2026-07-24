@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>cc-orch — archive detail</title>
+    <link rel="stylesheet" href="kanban.css">
+  </head>
+  <body>
+    <header>
+      <a href="/archives.html">← Back</a>
+      <span id="archive-id"></span>
+    </header>
+    <section id="kanban-root">
+      <main id="milestone-columns"></main>
+      <aside id="verify-panel" hidden></aside>
+      <footer id="progress-bar"><div id="progress-fill"></div><span id="progress-text"></span></footer>
+      <div id="cost-display"></div>
+    </section>
+    <section id="cost-block"></section>
+    <section id="spec-block"><pre></pre></section>
+    <section id="reviewer-block"></section>
+    <a id="report-button" target="_blank">Open run report</a>
+    <script src="kanban.js"></script>
+    <script src="archive-detail.js"></script>
+  </body>
+</html>

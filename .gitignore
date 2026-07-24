@@ -1,0 +1,67 @@
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Harness runtime data (generated per-project, not part of orchestrator source)
+.harness/
+
+# Archives (run history with token usage, state snapshots — per-project, not source)
+archives/
+
+# Queue control-state — per-run, not source
+queue/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+.harness-stale/
+
+# Manual probe reports (real-LLM efficacy probes, e.g. scripts/probe-verifier-strictness.mjs)
+.harness-probe/
+
+# Internal planning — contains commercial strategy, IP considerations, pricing.
+# Kept local-only so public repo reflects code, not business notes.
+TODO.md
+
+# Local working directory; not part of the public source tree.
+strategy
+
+# Per-saga investigation logs and abandoned spec drafts — local process artifacts,
+# not part of the public documentation surface. Use docs/audit/*.md (flat) for
+# audits the project does want public.
+docs/audit/statusbar-saga-*/
+
+# R2 audit manifest — regeneratable from source via `npm run audit:r2`.
+# Treated as a build artifact (cache, not source); seed of the future
+# architecture-memory base for the architect agent (see ARCHITECTURE.md Rule 8).
+ARCHITECTURE-GRAPH.json
+
+
+# cc-orch ephemeral spec inputs (per spec-tier-1-quick-fixes-may-26; root-anchored)
+/spec-*.md
+*.spec.md
+# cc-orch ephemeral inputs (root-anchored: spec drafts live at the repo root;
+# unanchored spec-*.md once swallowed src/cli/skills/.../spec-authoring.md)
+/spec-*.md
+*.spec.md
+*.spec.json
+*.uspec.json
+
+# Claude Code local overrides (private behavioral rules, not for public repo)
+CLAUDE.local.md
+
+
+# machine-appended run history; kept out of version control
+RUNS.md

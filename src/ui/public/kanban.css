@@ -1,0 +1,143 @@
+/* kanban.css — UI shell styles for the nightfoundry kanban board */
+
+/* (1) Body — padding-bottom reserves space for the fixed progress bar */
+body {
+  margin: 0;
+  padding-bottom: 24px;
+  font-family: system-ui, sans-serif;
+}
+
+/* (2) App header */
+#app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+}
+
+/* (10) Cost display — tabular numbers + hover tooltip support */
+#cost-display {
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+
+/* (3) Milestone columns — horizontal-scrolling grid */
+#milestone-columns {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(280px, 1fr);
+  gap: 16px;
+  overflow-x: auto;
+  padding: 0 16px 16px;
+}
+
+/* (4) Milestone column and mission card */
+.milestone-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mission-card {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+/* (5) Sub-mission swimlane subheader */
+.submission-header {
+  font-weight: 600;
+  padding: 4px 0;
+  border-bottom: 1px solid #eee;
+}
+
+/* (6) Task cards */
+.task-card {
+  border-left: 4px solid gray;
+  padding: 6px 8px;
+  margin: 4px 0;
+  cursor: pointer;
+}
+
+.task-card .task-id {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+.task-card .task-desc {
+  display: inline-block;
+  max-width: 60ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* (7) Five status border colors */
+.task-pending {
+  border-left-color: gray;
+}
+
+.task-in-progress {
+  border-left-color: blue;
+}
+
+.task-verified {
+  border-left-color: green;
+}
+
+.task-failed {
+  border-left-color: red;
+}
+
+.task-blocked {
+  border-left-color: orange;
+}
+
+/* (7a) Archived milestone — desaturated status palette + softer card affordance */
+#milestone-columns.archived .task-pending { border-left-color: #bbb; }
+.archived .task-in-progress { border-left-color: #9aa5b1; animation: none; }
+.archived .task-verified    { border-left-color: #8fb89a; }
+.archived .task-failed      { border-left-color: #c79a9a; }
+.archived .task-blocked     { border-left-color: #d6b07a; }
+.archived .task-card        { box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+
+/* (8) Verifier panel — fixed right drawer */
+#verify-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 24px;
+  width: 360px;
+  background: #fff;
+  border-left: 1px solid #ccc;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+#verify-panel[hidden] {
+  display: none;
+}
+
+/* (9) Progress bar — fixed at viewport bottom */
+#progress-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 24px;
+  background: #eee;
+}
+
+#progress-fill {
+  height: 100%;
+  background: #4caf50;
+  width: 0%;
+  transition: width 0.3s;
+}
+
+#progress-text {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+}

@@ -1,0 +1,66 @@
+{
+  "A-001": {
+    "sessionCount": 3,
+    "byRole": {
+      "planner": {
+        "count": 1,
+        "totalCost": 0.05,
+        "avgCost": 0.05,
+        "avgDurationS": 10,
+        "totalCacheCreation": 1000,
+        "totalCacheRead": 5000,
+        "avgToolCalls": 5,
+        "estimatedReuseSavings": {
+          "avoidableCacheCreationTokens": 0,
+          "note": "Only 0 or 1 session of this role; no reuse savings possible."
+        }
+      },
+      "executor": {
+        "count": 2,
+        "totalCost": 0.25,
+        "avgCost": 0.125,
+        "avgDurationS": 25,
+        "totalCacheCreation": 5000,
+        "totalCacheRead": 18000,
+        "avgToolCalls": 12.5,
+        "estimatedReuseSavings": {
+          "sessionCount": 2,
+          "firstSessionCacheCreation": 2000,
+          "avoidableCacheCreationTokens": 3000,
+          "percentAvoidable": 0.6
+        }
+      }
+    }
+  },
+  "A-002": {
+    "sessionCount": 2,
+    "byRole": {
+      "verifier": {
+        "count": 1,
+        "totalCost": 0.03,
+        "avgCost": 0.03,
+        "avgDurationS": 5,
+        "totalCacheCreation": 500,
+        "totalCacheRead": 2000,
+        "avgToolCalls": 3,
+        "estimatedReuseSavings": {
+          "avoidableCacheCreationTokens": 0,
+          "note": "Only 0 or 1 session of this role; no reuse savings possible."
+        }
+      },
+      "planner": {
+        "count": 1,
+        "totalCost": 0.04,
+        "avgCost": 0.04,
+        "avgDurationS": 8,
+        "totalCacheCreation": 800,
+        "totalCacheRead": 4000,
+        "avgToolCalls": 4,
+        "estimatedReuseSavings": {
+          "avoidableCacheCreationTokens": 0,
+          "note": "Only 0 or 1 session of this role; no reuse savings possible."
+        }
+      }
+    }
+  }
+}

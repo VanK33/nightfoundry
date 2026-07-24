@@ -1,0 +1,803 @@
+#!/usr/bin/env node
+/**
+ * test-cli-park.js — Track P P1: `cc-orch park list/show/resolve` CLI
+ * (spec: p1-park-foundation.spec.md / .json, Scope item 3 / AC7).
+ *
+ * Written by the INDEPENDENT test author against the spec contract only —
+ * before the implementation exists. The CLI is exercised end-to-end through
+ * the registered command surface (spawning `node src/cli/index.js park …`
+ * with cwd = a temp project root), so these tests are agnostic to the
+ * implementer's internal export names and prove registration in
+ * src/cli/index.js at the same time. At a pre-feature HEAD every case fails
+ * behaviorally ("Unknown command: park", exit 1).
+ *
+ * Coverage (per spec Scope item 3 / AC7):
+ *   TC1  — park list: empty queue → no crash (exit 0)
+ *   TC2  — park list: filters to parked + halted-review only; shows slug,
+ *          site, question summary
+ *   TC3  — park list: scene-less halted-review entry listed with a
+ *          placeholder, not a crash
+ *   TC4  — park show: full scene + BOTH queue spec paths; no divergence
+ *          warning when nothing diverged (control)
+ *   TC5  — park show: divergence warning when spec.md mtime is newer than
+ *          parkedAt but spec.json is untouched
+ *   TC6  — park resolve --requeue (+ --note): status → 'pending', resolution
+ *          {action:'requeue', at, note} written; previousResolutions untouched
+ *   TC7  — park resolve --waive: status → 'pending', resolution action 'waive'
+ *   TC8  — park resolve --reject: status → 'rejected' (terminal)
+ *   TC9  — halted-review verbs: --requeue → 'pending'; --reject → 'rejected';
+ *          --waive REFUSED with an explanatory error, state unchanged
+ *   TC10 — illegal transition: resolving a 'pending'-status entry is refused,
+ *          state unchanged
+ *   TC11 — scene-less resolve refused (missing AND corrupt park.json): error,
+ *          status unchanged, no scene invented
+ *   TC12 — divergence warning also fires on resolve --requeue (warn, don't
+ *          block: the resolve still completes)
+ *   TC13 — GAP TEST: divergence warning against a PIPELINE-PRODUCED park (no
+ *          mtime backdating anywhere): the real batchResume parks the entry,
+ *          then a real spec.md edit (spec.json untouched) must trigger the
+ *          warning on show AND on resolve --requeue; editing BOTH files
+ *          produces no warning (control). Discriminates against an
+ *          implementation whose park write rewrites both spec files, making
+ *          the warning condition structurally unsatisfiable in real use
+ *          (TC5/TC12 above backdate mtimes on hand-written scenes and cannot
+ *          catch that).
+ *   TC14 — GAP TEST (live-dogfood blind spot #3): damaged entry (spec.md
+ *          deleted) — list exits 0 with a placeholder line, show degrades
+ *          gracefully (no raw ENOENT), resolve refuses with an explanatory
+ *          error and leaves state unchanged.
+ *
+ * Run: node test/test-cli-park.js
+ *
+ * Fixture discipline: queue entries are written through the production
+ * writeQueueEntry; park scenes are written as fixture INPUT with plain fs at
+ * the spec-pinned location queue/<slug>/park.json (no new state.js symbols
+ * are imported, so this file loads at pre-feature HEAD and fails on
+ * behavioral assertions, not module resolution).
+ */
+
+import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { spawnSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { writeQueueEntry, readQueueEntry } from '../src/orchestrator/core/state.js';
+import { Pipeline } from '../src/orchestrator/core/pipeline.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLI_PATH = path.resolve(__dirname, '../src/cli/index.js');
+
+let passCount = 0;
+let failCount = 0;
+
+async function test(name, fn) {
+  try {
+    await fn();
+    console.log(`PASS  ${name}`);
+    passCount++;
+  } catch (err) {
+    console.log(`FAIL  ${name}`);
+    console.log(`      ${err.message}`);
+    if (err.stack) console.log(err.stack.split('\n').slice(1, 3).join('\n'));
+    failCount++;
+  }
+}
+
+// ── Fixtures ────────────────────────────────────────────────────────────────
+
+const SPEC_MD = `# Test Spec
+
+This is a test spec for the park CLI.
+
+## Goals
+- Build something useful
+`;
+
+const SPEC_JSON = JSON.stringify({ goal: 'g', target_files: [], acceptance_criteria: [] });
+
+const DAY = 24 * 60 * 60 * 1000;
+
+function makeTmpRoot(prefix = 'cc-orch-cli-park-') {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function cleanup(root) {
+  try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
+function createQueueEntry(root, slug, {
+  status = 'parked',
+  validatedAt = new Date().toISOString(),
+  plan = { milestones: [], assumptions: [] },
+} = {}) {
+  writeQueueEntry(root, slug, {
+    spec: SPEC_MD,
+    plan,
+    validatedAt,
+    status,
+    specJson: SPEC_JSON,
+  });
+}
+
+// Spec-pinned scene shape (Scope item 1).
+function makeScene(overrides = {}) {
+  return {
+    site: 'assumption-gate',
+    parkedAt: new Date(Date.now() - DAY).toISOString(), // 1 day ago
+    round1: [{
+      assumption: { text: 'CLI-QUESTION-ONE', phase: 'pre', specSection: 'Goals' },
+      status: 'uncertain',
+      evidence: 'could not confirm',
+    }],
+    round2: null,
+    appliedSpecEdits: [],
+    questions: ['CLI-QUESTION-ONE'],
+    previousResolutions: [],
+    resolution: null,
+    ...overrides,
+  };
+}
+
+function writeScene(root, slug, scene) {
+  fs.writeFileSync(
+    path.join(root, 'queue', slug, 'park.json'),
+    JSON.stringify(scene, null, 2)
+  );
+}
+
+function readScene(root, slug) {
+  const p = path.join(root, 'queue', slug, 'park.json');
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+
+function readStatus(root, slug) {
+  return fs.readFileSync(path.join(root, 'queue', slug, 'status'), 'utf8').trim();
+}
+
+/**
+ * Make the on-disk spec files "older than parkedAt" (control state) or set up
+ * the spec.md-newer divergence:
+ *   - aged(root, slug):     both spec.md + spec.json mtimes ← 2 days ago
+ *   - diverged(root, slug): spec.json mtime ← 2 days ago, spec.md mtime ← now
+ * (parkedAt in makeScene is 1 day ago, so "now" > parkedAt > "2 days ago".)
+ */
+function ageSpecFiles(root, slug, { divergeMd = false } = {}) {
+  const old = new Date(Date.now() - 2 * DAY);
+  const dir = path.join(root, 'queue', slug);
+  fs.utimesSync(path.join(dir, 'spec.json'), old, old);
+  if (divergeMd) {
+    const now = new Date();
+    fs.utimesSync(path.join(dir, 'spec.md'), now, now);
+  } else {
+    fs.utimesSync(path.join(dir, 'spec.md'), old, old);
+  }
+}
+
+/**
+ * Run `cc-orch <args>` end-to-end with cwd = root (projectRoot defaults to
+ * cwd in src/cli/index.js). Returns { status, stdout, stderr, out }.
+ */
+function runCli(root, args) {
+  const res = spawnSync('node', [CLI_PATH, ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, NO_COLOR: '1' },
+  });
+  return {
+    status: res.status,
+    stdout: res.stdout || '',
+    stderr: res.stderr || '',
+    out: `${res.stdout || ''}\n${res.stderr || ''}`,
+  };
+}
+
+// The spec calls it a "divergence warning" (spec.md edited after parking,
+// spec.json untouched). The exact wording is the implementer's; this family
+// of terms is asserted PRESENT in the diverged case and ABSENT in the
+// control case, so the check is self-consistent whatever the phrasing.
+const DIVERGENCE_RE = /diverg|newer|out[\s-]of[\s-](date|sync)|stale|mismatch|edited after|modified after/i;
+
+// An error must be non-silent: non-zero exit or stderr output.
+function assertNonSilentFailure(res, label) {
+  assert.ok(
+    res.status !== 0 || res.stderr.trim().length > 0,
+    `${label}: the refusal must be observable (non-zero exit or stderr message); got exit ${res.status} with empty stderr`
+  );
+}
+
+// ── TC1: park list on an empty queue — no crash ─────────────────────────────
+
+await test('TC1: park list on an empty queue exits 0 without crashing', async () => {
+  const root = makeTmpRoot();
+  try {
+    const res = runCli(root, ['park', 'list']);
+    assert.strictEqual(res.status, 0,
+      `park list must exit 0 on an empty queue (got exit ${res.status}; output: ${res.out.trim().slice(0, 200)})`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC2: park list filters parked + halted-review; slug/site/questions ──────
+
+await test('TC2: park list shows only parked + halted-review entries with slug, site, and question summary', async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'plain-pending', { status: 'pending', validatedAt: '2026-06-01T00:00:00.000Z' });
+    createQueueEntry(root, 'parked-entry', { status: 'parked', validatedAt: '2026-06-02T00:00:00.000Z' });
+    writeScene(root, 'parked-entry', makeScene());
+    createQueueEntry(root, 'halted-entry', { status: 'halted-review', validatedAt: '2026-06-03T00:00:00.000Z' });
+    writeScene(root, 'halted-entry', makeScene({
+      site: 'review-gate',
+      round1: [],
+      questions: ['HALT-QUESTION-X'],
+    }));
+    createQueueEntry(root, 'failed-entry', { status: 'failed-validation', validatedAt: '2026-06-04T00:00:00.000Z' });
+
+    const res = runCli(root, ['park', 'list']);
+    assert.strictEqual(res.status, 0, `park list must exit 0 (got ${res.status}; output: ${res.out.trim().slice(0, 200)})`);
+
+    assert.ok(res.stdout.includes('parked-entry'), 'list must include the parked entry slug');
+    assert.ok(res.stdout.includes('halted-entry'), 'list must include the halted-review entry slug');
+    assert.ok(!res.stdout.includes('plain-pending'), 'list must NOT include pending entries');
+    assert.ok(!res.stdout.includes('failed-entry'), 'list must NOT include failed-validation entries');
+
+    assert.ok(res.stdout.includes('assumption-gate'), "list must show the scene's site for the parked entry");
+    assert.ok(res.stdout.includes('review-gate'), "list must show the scene's site for the halted-review entry");
+    assert.ok(res.stdout.includes('CLI-QUESTION-ONE'), 'list must show a question summary for the parked entry');
+    assert.ok(res.stdout.includes('HALT-QUESTION-X'), 'list must show a question summary for the halted-review entry');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC3: park list — scene-less entry shown with a placeholder, not a crash ──
+
+await test('TC3: park list shows a scene-less halted-review entry with a placeholder instead of crashing', async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'sceneless-halt', { status: 'halted-review' });
+    // Deliberately NO park.json.
+
+    const res = runCli(root, ['park', 'list']);
+    assert.strictEqual(res.status, 0,
+      `park list must not crash on a scene-less entry (got exit ${res.status}; output: ${res.out.trim().slice(0, 200)})`);
+    assert.ok(res.stdout.includes('sceneless-halt'),
+      'the scene-less entry must still be listed (with a placeholder, per readParkScene → null handling)');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC4: park show — full scene + both spec paths; no spurious warning ───────
+
+await test('TC4: park show prints the full scene plus both queue spec paths; no divergence warning in the control case', async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'show-entry', { status: 'parked' });
+    writeScene(root, 'show-entry', makeScene({
+      previousResolutions: [{ action: 'requeue', at: '2026-05-01T00:00:00.000Z', note: 'earlier', consumedAt: null }],
+    }));
+    ageSpecFiles(root, 'show-entry'); // both spec files older than parkedAt → no divergence
+
+    const res = runCli(root, ['park', 'show', 'show-entry']);
+    assert.strictEqual(res.status, 0, `park show must exit 0 (got ${res.status}; output: ${res.out.trim().slice(0, 200)})`);
+
+    assert.ok(res.stdout.includes('assumption-gate'), 'show must print the scene site');
+    assert.ok(res.stdout.includes('CLI-QUESTION-ONE'), 'show must print the scene questions');
+    assert.ok(res.stdout.includes('spec.md'), 'show must print the queue spec.md path');
+    assert.ok(res.stdout.includes('spec.json'), 'show must print the queue spec.json path');
+    assert.ok(!DIVERGENCE_RE.test(res.out),
+      `no divergence warning may fire when neither spec file changed after parking (output matched ${DIVERGENCE_RE}: ${res.out.trim().slice(0, 300)})`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC5: park show — divergence warning (spec.md newer, spec.json untouched) ──
+
+await test('TC5: park show warns when spec.md mtime is newer than parkedAt but spec.json is untouched', async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'diverged-entry', { status: 'parked' });
+    writeScene(root, 'diverged-entry', makeScene());
+    ageSpecFiles(root, 'diverged-entry', { divergeMd: true }); // spec.md ← now, spec.json ← old
+
+    const res = runCli(root, ['park', 'show', 'diverged-entry']);
+    assert.strictEqual(res.status, 0, `park show must still exit 0 (warn, not fail) (got ${res.status})`);
+    assert.ok(DIVERGENCE_RE.test(res.out),
+      `expected a spec.md/spec.json divergence warning (matching ${DIVERGENCE_RE}); output: ${res.out.trim().slice(0, 300)}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC6: park resolve --requeue with --note ─────────────────────────────────
+
+await test("TC6: park resolve --requeue → status 'pending'; resolution {action:'requeue', at, note} written; previousResolutions untouched", async () => {
+  const root = makeTmpRoot();
+  try {
+    const priorChain = [{ action: 'waive', at: '2026-05-01T00:00:00.000Z', note: 'old', consumedAt: '2026-05-02T00:00:00.000Z' }];
+    createQueueEntry(root, 'resolve-rq', { status: 'parked' });
+    writeScene(root, 'resolve-rq', makeScene({ previousResolutions: priorChain }));
+    ageSpecFiles(root, 'resolve-rq'); // no divergence noise
+
+    const res = runCli(root, ['park', 'resolve', 'resolve-rq', '--requeue', '--note', 'spec fixed by hand']);
+    assert.strictEqual(res.status, 0, `resolve --requeue must succeed (got exit ${res.status}; output: ${res.out.trim().slice(0, 300)})`);
+
+    assert.strictEqual(readStatus(root, 'resolve-rq'), 'pending',
+      "resolve --requeue must transition the entry to 'pending'");
+
+    const scene = readScene(root, 'resolve-rq');
+    assert.ok(scene && scene.resolution, 'the resolution must be written into the scene');
+    assert.strictEqual(scene.resolution.action, 'requeue',
+      `resolution.action expected 'requeue', got '${scene.resolution.action}'`);
+    assert.ok(scene.resolution.at && !Number.isNaN(new Date(scene.resolution.at).getTime()),
+      `resolution.at must be a parseable timestamp (got ${JSON.stringify(scene.resolution.at)})`);
+    assert.strictEqual(scene.resolution.note, 'spec fixed by hand',
+      `--note must be persisted into resolution.note (got ${JSON.stringify(scene.resolution.note)})`);
+    assert.deepStrictEqual(scene.previousResolutions, priorChain,
+      'resolve must NEVER touch previousResolutions (pipeline-owned field)');
+
+    // The entry stays in the queue for the next batch run.
+    assert.ok(readQueueEntry(root, 'resolve-rq'), 'the requeued entry must remain in the queue');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC7: park resolve --waive ────────────────────────────────────────────────
+
+await test("TC7: park resolve --waive on a parked entry → status 'pending', resolution action 'waive'", async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'resolve-wv', { status: 'parked' });
+    writeScene(root, 'resolve-wv', makeScene());
+    ageSpecFiles(root, 'resolve-wv');
+
+    const res = runCli(root, ['park', 'resolve', 'resolve-wv', '--waive']);
+    assert.strictEqual(res.status, 0, `resolve --waive must succeed on a parked entry (got exit ${res.status}; output: ${res.out.trim().slice(0, 300)})`);
+
+    assert.strictEqual(readStatus(root, 'resolve-wv'), 'pending',
+      "resolve --waive must transition the entry to 'pending'");
+    const scene = readScene(root, 'resolve-wv');
+    assert.ok(scene && scene.resolution, 'the waive resolution must be written into the scene');
+    assert.strictEqual(scene.resolution.action, 'waive',
+      `resolution.action expected 'waive', got '${scene.resolution.action}'`);
+    assert.ok(!scene.resolution.consumedAt,
+      `a freshly written waive must be unconsumed — consumedAt is set by the pipeline, not the CLI (got ${JSON.stringify(scene.resolution.consumedAt)})`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC8: park resolve --reject ───────────────────────────────────────────────
+
+await test("TC8: park resolve --reject on a parked entry → status 'rejected' (terminal)", async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'resolve-rj', { status: 'parked' });
+    writeScene(root, 'resolve-rj', makeScene());
+    ageSpecFiles(root, 'resolve-rj');
+
+    const res = runCli(root, ['park', 'resolve', 'resolve-rj', '--reject']);
+    assert.strictEqual(res.status, 0, `resolve --reject must succeed on a parked entry (got exit ${res.status}; output: ${res.out.trim().slice(0, 300)})`);
+
+    assert.strictEqual(readStatus(root, 'resolve-rj'), 'rejected',
+      "resolve --reject must transition the entry to 'rejected'");
+    const scene = readScene(root, 'resolve-rj');
+    assert.ok(scene && scene.resolution, 'the reject resolution must be written into the scene');
+    assert.ok(/^reject/.test(scene.resolution.action),
+      `resolution.action expected the reject verb, got '${scene.resolution.action}'`);
+    // Terminal: the entry stays on disk (no garbage collection in P1).
+    assert.ok(fs.existsSync(path.join(root, 'queue', 'resolve-rj')),
+      'the rejected entry directory must remain on disk');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC9: halted-review verb restrictions ────────────────────────────────────
+
+await test("TC9: halted-review accepts --requeue and --reject, but REFUSES --waive with an explanatory error", async () => {
+  const root = makeTmpRoot();
+  try {
+    const minimalScene = () => makeScene({
+      site: 'review-gate',
+      round1: [],
+      questions: ['Review-gate decision needed.'],
+    });
+
+    // --waive must be refused, state unchanged.
+    createQueueEntry(root, 'halt-wv', { status: 'halted-review' });
+    writeScene(root, 'halt-wv', minimalScene());
+    const resWaive = runCli(root, ['park', 'resolve', 'halt-wv', '--waive']);
+    assertNonSilentFailure(resWaive, 'resolve --waive on halted-review');
+    assert.ok(/waive/i.test(resWaive.out),
+      `the refusal must explain the --waive restriction (output: ${resWaive.out.trim().slice(0, 300)})`);
+    assert.strictEqual(readStatus(root, 'halt-wv'), 'halted-review',
+      'a refused --waive must leave the status unchanged');
+    const waiveScene = readScene(root, 'halt-wv');
+    assert.strictEqual(waiveScene.resolution, null,
+      'a refused --waive must not write a resolution into the scene');
+
+    // --requeue is legal: halted-review → pending (full re-validation + re-execution).
+    createQueueEntry(root, 'halt-rq', { status: 'halted-review' });
+    writeScene(root, 'halt-rq', minimalScene());
+    fs.utimesSync(path.join(root, 'queue', 'halt-rq', 'spec.md'), new Date(Date.now() - 2 * DAY), new Date(Date.now() - 2 * DAY));
+    fs.utimesSync(path.join(root, 'queue', 'halt-rq', 'spec.json'), new Date(Date.now() - 2 * DAY), new Date(Date.now() - 2 * DAY));
+    const resRq = runCli(root, ['park', 'resolve', 'halt-rq', '--requeue']);
+    assert.strictEqual(resRq.status, 0,
+      `resolve --requeue must succeed on halted-review (got exit ${resRq.status}; output: ${resRq.out.trim().slice(0, 300)})`);
+    assert.strictEqual(readStatus(root, 'halt-rq'), 'pending',
+      "halted-review --requeue must transition to 'pending'");
+
+    // --reject is legal: halted-review → rejected.
+    createQueueEntry(root, 'halt-rj', { status: 'halted-review' });
+    writeScene(root, 'halt-rj', minimalScene());
+    const resRj = runCli(root, ['park', 'resolve', 'halt-rj', '--reject']);
+    assert.strictEqual(resRj.status, 0,
+      `resolve --reject must succeed on halted-review (got exit ${resRj.status}; output: ${resRj.out.trim().slice(0, 300)})`);
+    assert.strictEqual(readStatus(root, 'halt-rj'), 'rejected',
+      "halted-review --reject must transition to 'rejected'");
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC10: illegal transition for any other status ────────────────────────────
+
+await test('TC10: resolving an entry whose status is neither parked nor halted-review is an illegal-transition error', async () => {
+  const root = makeTmpRoot();
+  try {
+    // A pending entry WITH a scene (crash-window shape) — still not resolvable.
+    createQueueEntry(root, 'pending-entry', { status: 'pending' });
+    writeScene(root, 'pending-entry', makeScene());
+
+    const res = runCli(root, ['park', 'resolve', 'pending-entry', '--requeue']);
+    assertNonSilentFailure(res, 'resolve on a pending entry');
+    assert.strictEqual(readStatus(root, 'pending-entry'), 'pending',
+      'an illegal transition must leave the status unchanged');
+    const scene = readScene(root, 'pending-entry');
+    assert.strictEqual(scene.resolution, null,
+      'an illegal transition must not write a resolution into the scene');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC11: scene-less resolve refused (missing AND corrupt park.json) ─────────
+
+await test('TC11: resolve refuses a target with no readable scene (missing or corrupt park.json) instead of inventing one', async () => {
+  const root = makeTmpRoot();
+  try {
+    // Missing park.json.
+    createQueueEntry(root, 'no-scene', { status: 'parked' });
+    const resMissing = runCli(root, ['park', 'resolve', 'no-scene', '--requeue']);
+    assertNonSilentFailure(resMissing, 'resolve with missing park.json');
+    assert.strictEqual(readStatus(root, 'no-scene'), 'parked',
+      'a refused scene-less resolve must leave the status unchanged');
+    assert.ok(!fs.existsSync(path.join(root, 'queue', 'no-scene', 'park.json')),
+      'the CLI must not invent a park.json for a scene-less target');
+
+    // Corrupt park.json (readParkScene → null too).
+    createQueueEntry(root, 'corrupt-scene', { status: 'parked' });
+    fs.writeFileSync(path.join(root, 'queue', 'corrupt-scene', 'park.json'), 'not json {{{');
+    const resCorrupt = runCli(root, ['park', 'resolve', 'corrupt-scene', '--requeue']);
+    assertNonSilentFailure(resCorrupt, 'resolve with corrupt park.json');
+    assert.strictEqual(readStatus(root, 'corrupt-scene'), 'parked',
+      'a refused corrupt-scene resolve must leave the status unchanged');
+    assert.strictEqual(fs.readFileSync(path.join(root, 'queue', 'corrupt-scene', 'park.json'), 'utf8'), 'not json {{{',
+      'the corrupt park.json must be left as-is (no invented overwrite)');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC12: divergence warning on resolve --requeue (warn, don't block) ───────
+
+await test("TC12: resolve --requeue fires the spec.md/spec.json divergence warning but still completes (warn, don't block)", async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'rq-diverged', { status: 'parked' });
+    writeScene(root, 'rq-diverged', makeScene());
+    ageSpecFiles(root, 'rq-diverged', { divergeMd: true }); // spec.md newer than parkedAt, spec.json untouched
+
+    const res = runCli(root, ['park', 'resolve', 'rq-diverged', '--requeue']);
+
+    assert.ok(DIVERGENCE_RE.test(res.out),
+      `resolve --requeue must warn about the spec.md/spec.json divergence (matching ${DIVERGENCE_RE}); output: ${res.out.trim().slice(0, 300)}`);
+
+    // Warn, don't block: the resolve still goes through.
+    assert.strictEqual(res.status, 0,
+      `the divergence warning must not block the resolve (got exit ${res.status})`);
+    assert.strictEqual(readStatus(root, 'rq-diverged'), 'pending',
+      "the diverged --requeue must still transition to 'pending'");
+    const scene = readScene(root, 'rq-diverged');
+    assert.ok(scene && scene.resolution && scene.resolution.action === 'requeue',
+      'the requeue resolution must still be written despite the warning');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC13: divergence warning against a PIPELINE-PRODUCED park (no backdating) ──
+// GAP TEST (adversarial-review round). The load-bearing divergence evidence:
+// the park is produced by the REAL batchResume (only planner.verifyAssumptions
+// stubbed to 'uncertain'), the human edit is a REAL file write strictly after
+// parkedAt (wall-clock sleep, no fs.utimesSync), and spec.json is genuinely
+// untouched after parking. Against an implementation whose park flow rewrites
+// both spec files at park time, spec.json's mtime lands at/after parkedAt and
+// the warning can never fire in real use — this case fails there and passes
+// once status flips are status-only writes.
+
+await test('TC13: pipeline-produced park — real spec.md edit (spec.json untouched) triggers the divergence warning on show and resolve --requeue; editing both is silent', async () => {
+  const root = makeTmpRoot();
+  try {
+    // Two pending entries with a failing assumption each. PARK TRIGGER:
+    // an uncertain no longer parks, so to drive a genuine pipeline-produced
+    // park the assumption must still-fail after a remediation round
+    // (failed-after-remediation / TC3a pattern). The SUBJECT (the spec.md/
+    // spec.json divergence warning against a pipeline-written scene) is
+    // unchanged.
+    for (const [slug, ts] of [['pipe-diverged', '2026-06-01T00:00:00.000Z'], ['pipe-control', '2026-06-02T00:00:00.000Z']]) {
+      createQueueEntry(root, slug, {
+        status: 'pending',
+        validatedAt: ts,
+        plan: { milestones: [], assumptions: [{ text: 'FAILED-ASSUMPTION', phase: 'pre', specSection: 'Goals' }] },
+      });
+    }
+
+    // Drive the REAL batchResume; stub only the trigger seams (round-1 fails →
+    // remediation → round-2 still fails → both entries park before execution).
+    const pipeline = new Pipeline(root, {
+      skipWorktreeCreation: true,
+      onLog: () => {},
+      onConfirm: async () => true,
+      archive: async () => {
+        throw new Error('fixture: archive must not run — entries park before execution');
+      },
+    });
+    pipeline.planner.verifyAssumptions = async (assumptions) =>
+      (assumptions || []).map((a) => {
+        const text = a?.text ?? a;
+        const status = (text === 'FAILED-ASSUMPTION' || text === 'REVISED-ASSUMPTION') ? 'failed' : 'verified';
+        return { assumption: a, status, evidence: 'stub' };
+      });
+    pipeline.planner.remediateAssumption = async () => ({
+      specEdit: { old: 'Build something useful', new: 'Build something REMEDIATED', section: 'Goals' },
+      revisedAssumptions: [{ text: 'REVISED-ASSUMPTION', phase: 'pre', specSection: 'Goals' }],
+    });
+    pipeline.planner.reExtractAssumptions = async () => [{ text: 'REVISED-ASSUMPTION', phase: 'pre', specSection: 'Goals' }];
+    pipeline.planner.closeReusableSession = async () => {};
+    pipeline._executeAllMilestones = async () => {
+      throw new Error('fixture: a parked entry must never reach execution');
+    };
+    pipeline._reviewGate = async () => {};
+
+    await pipeline.batchResume({});
+
+    for (const slug of ['pipe-diverged', 'pipe-control']) {
+      assert.strictEqual(readStatus(root, slug), 'parked',
+        `fixture: '${slug}' must be parked by the real batch run`);
+      assert.ok(readScene(root, slug), `fixture: '${slug}' must have a pipeline-written park.json`);
+    }
+
+    // Real wall-clock gap so the human edit's mtime is strictly newer than
+    // parkedAt (and than anything the park flow wrote). NO backdating.
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Diverged entry: a human edits ONLY spec.md after parking.
+    fs.appendFileSync(path.join(root, 'queue', 'pipe-diverged', 'spec.md'),
+      '\n<!-- human edit after park -->\n');
+
+    // Control entry: BOTH files edited after parking (md first, then json) —
+    // spec.json is not "untouched", so no warning may fire.
+    fs.appendFileSync(path.join(root, 'queue', 'pipe-control', 'spec.md'),
+      '\n<!-- human edit after park -->\n');
+    fs.appendFileSync(path.join(root, 'queue', 'pipe-control', 'spec.json'), '\n');
+
+    // show on the diverged entry → warning.
+    const resShowDiverged = runCli(root, ['park', 'show', 'pipe-diverged']);
+    assert.strictEqual(resShowDiverged.status, 0,
+      `park show must exit 0 (got ${resShowDiverged.status}; output: ${resShowDiverged.out.trim().slice(0, 200)})`);
+    assert.ok(DIVERGENCE_RE.test(resShowDiverged.out),
+      `park show must warn for a pipeline-produced park whose spec.md was really edited after parking while spec.json stayed untouched (matching ${DIVERGENCE_RE}); ` +
+      `if the park flow rewrote spec.json at park time, this condition is structurally unsatisfiable — output: ${resShowDiverged.out.trim().slice(0, 300)}`);
+
+    // show on the control entry → no warning.
+    const resShowControl = runCli(root, ['park', 'show', 'pipe-control']);
+    assert.strictEqual(resShowControl.status, 0,
+      `park show must exit 0 on the control entry (got ${resShowControl.status})`);
+    assert.ok(!DIVERGENCE_RE.test(resShowControl.out),
+      `no divergence warning may fire when BOTH spec files were edited after parking (output matched ${DIVERGENCE_RE}: ${resShowControl.out.trim().slice(0, 300)})`);
+
+    // resolve --requeue on the diverged entry → warning, but not blocked.
+    const resResolve = runCli(root, ['park', 'resolve', 'pipe-diverged', '--requeue']);
+    assert.ok(DIVERGENCE_RE.test(resResolve.out),
+      `resolve --requeue must fire the same divergence warning for the pipeline-produced park (matching ${DIVERGENCE_RE}); output: ${resResolve.out.trim().slice(0, 300)}`);
+    assert.strictEqual(resResolve.status, 0,
+      `the divergence warning must not block the resolve (got exit ${resResolve.status})`);
+    assert.strictEqual(readStatus(root, 'pipe-diverged'), 'pending',
+      "the diverged --requeue must still transition to 'pending'");
+    const resolvedScene = readScene(root, 'pipe-diverged');
+    assert.ok(resolvedScene && resolvedScene.resolution && resolvedScene.resolution.action === 'requeue',
+      'the requeue resolution must still be written despite the warning');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC14: damaged-entry tolerance (spec.md deleted) ─────────────────────────
+// GAP TEST (live-dogfood blind spot #3, CLI side). A forensic archive gutted
+// a halted-review entry live (queue spec.md/spec.json moved away); park list
+// and park show then crashed outright on the readQueueEntry ENOENT. The CLI
+// must tolerate damaged entries: list renders a warning placeholder instead
+// of dying, show degrades gracefully (no raw ENOENT), resolve refuses with
+// an explanatory error instead of operating on a half-entry.
+
+// Damage must be EXPLAINED, never a bare errno. "No raw ENOENT" means the
+// pre-fix failure mode (an unexplained `ENOENT: no such file...` crash) is
+// gone — quoting the underlying errno INSIDE an explanatory damage warning
+// is legitimate diagnostics, not a raw leak.
+const DAMAGE_EXPLAINED_RE = /damag|missing|incomplete|unreadable|corrupt/i;
+
+function assertNoRawEnoent(res, label) {
+  if (/ENOENT/.test(res.out)) {
+    assert.ok(DAMAGE_EXPLAINED_RE.test(res.out),
+      `${label}: ENOENT may only appear inside an explanatory damage warning, never as a bare unexplained error (output: ${res.out.trim().slice(0, 300)})`);
+  }
+}
+
+await test('TC14: damaged entry (spec.md deleted) — list still renders all entries with a placeholder, show degrades gracefully, resolve refuses', async () => {
+  const root = makeTmpRoot();
+  try {
+    // One healthy parked entry + one damaged halted-review entry.
+    createQueueEntry(root, 'healthy-parked', { status: 'parked', validatedAt: '2026-06-01T00:00:00.000Z' });
+    writeScene(root, 'healthy-parked', makeScene());
+    createQueueEntry(root, 'damaged-halt', { status: 'halted-review', validatedAt: '2026-06-02T00:00:00.000Z' });
+    writeScene(root, 'damaged-halt', makeScene({
+      site: 'review-gate',
+      round1: [],
+      questions: ['HALT-QUESTION-X'],
+    }));
+    // The damage: queue spec.md gone (what the live forensic archive did).
+    fs.unlinkSync(path.join(root, 'queue', 'damaged-halt', 'spec.md'));
+
+    // list: exits 0, renders the healthy entry AND a placeholder/warning line
+    // for the damaged one — it must not die on the damaged entry. (Pre-fix:
+    // readQueueEntry's ENOENT killed the whole command, exit 1, nothing
+    // rendered.)
+    const resList = runCli(root, ['park', 'list']);
+    assert.strictEqual(resList.status, 0,
+      `park list must not crash on a damaged entry (got exit ${resList.status}; output: ${resList.out.trim().slice(0, 300)})`);
+    assert.ok(resList.stdout.includes('healthy-parked'),
+      'park list must still render the healthy entry');
+    assert.ok(resList.stdout.includes('damaged-halt'),
+      'park list must render the damaged entry as a placeholder/warning line, not drop or die on it');
+    assert.ok(DAMAGE_EXPLAINED_RE.test(resList.out),
+      `park list must mark the damaged entry with explanatory wording (matching ${DAMAGE_EXPLAINED_RE}); output: ${resList.out.trim().slice(0, 300)}`);
+    assertNoRawEnoent(resList, 'park list');
+
+    // show: degrades gracefully — serves what it can (the scene is intact),
+    // flags the damage with an explanation, no crash.
+    const resShow = runCli(root, ['park', 'show', 'damaged-halt']);
+    assert.strictEqual(resShow.status, 0,
+      `park show must degrade gracefully on a damaged entry (got exit ${resShow.status}; output: ${resShow.out.trim().slice(0, 300)})`);
+    assert.ok(resShow.stdout.includes('review-gate'),
+      'park show must still render the readable scene data (site) for a damaged entry');
+    assert.ok(resShow.stdout.includes('HALT-QUESTION-X'),
+      'park show must still render the readable scene data (questions) for a damaged entry');
+    assert.ok(DAMAGE_EXPLAINED_RE.test(resShow.out),
+      `park show must explain the degradation (matching ${DAMAGE_EXPLAINED_RE}); output: ${resShow.out.trim().slice(0, 300)}`);
+    assertNoRawEnoent(resShow, 'park show');
+
+    // resolve: refused with an explanatory error — never operates on a
+    // half-entry. State unchanged.
+    const resResolve = runCli(root, ['park', 'resolve', 'damaged-halt', '--requeue']);
+    assertNonSilentFailure(resResolve, 'resolve on a damaged entry');
+    assert.ok(DAMAGE_EXPLAINED_RE.test(resResolve.out),
+      `the resolve refusal must explain the damage, not surface a bare errno (matching ${DAMAGE_EXPLAINED_RE}); output: ${resResolve.out.trim().slice(0, 300)}`);
+    assertNoRawEnoent(resResolve, 'park resolve');
+    assert.strictEqual(readStatus(root, 'damaged-halt'), 'halted-review',
+      'a refused resolve on a damaged entry must leave the status unchanged');
+    const scene = readScene(root, 'damaged-halt');
+    assert.ok(scene && scene.resolution === null,
+      'a refused resolve on a damaged entry must not write a resolution into the scene');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC15: halted-analyzer entries (analyzer-closure spec, AC9) ──────────────
+// Extension written by the INDEPENDENT test author against
+// analyzer-closure.spec.md / .json (Scope item 4 / AC9), before the
+// implementation exists. At a pre-feature HEAD this fails behaviorally:
+// 'halted-analyzer' is not in the park list filter and resolve refuses it as
+// an illegal transition. Verb matrix mirrors halted-review: --requeue and
+// --reject are legal, --waive is refused with an explanatory error.
+// Fixture discipline unchanged: entries via the production writeQueueEntry
+// (status is the new 'halted-analyzer' string — writeQueueEntry does not
+// validate status values, so this file still loads and runs at HEAD);
+// scenes are plain-fs fixture INPUT at the spec-pinned location.
+
+await test("TC15: park list includes halted-analyzer entries; resolve accepts --requeue/--reject and refuses --waive with an explanatory error", async () => {
+  const root = makeTmpRoot();
+  try {
+    const analyzerScene = () => makeScene({
+      site: 'analyzer-human',
+      round1: [],
+      questions: ['ANALYZER-QUESTION-X (see .harness/analysis/gate-failure-001-001-001-001-123.json)'],
+    });
+
+    // list: the halted-analyzer entry must appear with slug, status, site,
+    // and question summary (alongside an existing parked entry).
+    createQueueEntry(root, 'plain-parked', { status: 'parked', validatedAt: '2026-06-01T00:00:00.000Z' });
+    writeScene(root, 'plain-parked', makeScene());
+    createQueueEntry(root, 'halt-an-list', { status: 'halted-analyzer', validatedAt: '2026-06-02T00:00:00.000Z' });
+    writeScene(root, 'halt-an-list', analyzerScene());
+
+    const resList = runCli(root, ['park', 'list']);
+    assert.strictEqual(resList.status, 0,
+      `park list must exit 0 (got ${resList.status}; output: ${resList.out.trim().slice(0, 200)})`);
+    assert.ok(resList.stdout.includes('halt-an-list'),
+      "park list must include halted-analyzer entries — at the pre-feature HEAD the filter only admits parked/halted-review");
+    assert.ok(resList.stdout.includes('halted-analyzer'),
+      'park list must show the halted-analyzer status');
+    assert.ok(resList.stdout.includes('analyzer-human'),
+      "park list must show the scene's 'analyzer-human' site");
+    assert.ok(resList.stdout.includes('ANALYZER-QUESTION-X'),
+      'park list must show the question summary for the halted-analyzer entry');
+    assert.ok(resList.stdout.includes('plain-parked'),
+      'existing parked entries must remain listed (additive filter change)');
+
+    // --waive must be refused with an explanatory error, state unchanged.
+    createQueueEntry(root, 'halt-an-wv', { status: 'halted-analyzer' });
+    writeScene(root, 'halt-an-wv', analyzerScene());
+    const resWaive = runCli(root, ['park', 'resolve', 'halt-an-wv', '--waive']);
+    assertNonSilentFailure(resWaive, 'resolve --waive on halted-analyzer');
+    assert.ok(/waive/i.test(resWaive.out),
+      `the refusal must explain the --waive restriction (mirroring halted-review: there is no assumption uncertainty to accept); output: ${resWaive.out.trim().slice(0, 300)}`);
+    assert.strictEqual(readStatus(root, 'halt-an-wv'), 'halted-analyzer',
+      'a refused --waive must leave the status unchanged');
+    const waiveScene = readScene(root, 'halt-an-wv');
+    assert.strictEqual(waiveScene.resolution, null,
+      'a refused --waive must not write a resolution into the scene');
+
+    // --requeue is legal: halted-analyzer → pending (full re-validation +
+    // re-execution on the next batch pass).
+    createQueueEntry(root, 'halt-an-rq', { status: 'halted-analyzer' });
+    writeScene(root, 'halt-an-rq', analyzerScene());
+    ageSpecFiles(root, 'halt-an-rq'); // no divergence noise
+    const resRq = runCli(root, ['park', 'resolve', 'halt-an-rq', '--requeue', '--note', 'analyzer escalation reviewed']);
+    assert.strictEqual(resRq.status, 0,
+      `resolve --requeue must succeed on halted-analyzer (got exit ${resRq.status}; output: ${resRq.out.trim().slice(0, 300)})`);
+    assert.strictEqual(readStatus(root, 'halt-an-rq'), 'pending',
+      "halted-analyzer --requeue must transition to 'pending'");
+    const rqScene = readScene(root, 'halt-an-rq');
+    assert.ok(rqScene && rqScene.resolution && rqScene.resolution.action === 'requeue',
+      `the requeue resolution must be written into the scene (got ${JSON.stringify(rqScene && rqScene.resolution)})`);
+    assert.strictEqual(rqScene.resolution.note, 'analyzer escalation reviewed',
+      '--note must be persisted into resolution.note');
+
+    // --reject is legal: halted-analyzer → rejected (terminal).
+    createQueueEntry(root, 'halt-an-rj', { status: 'halted-analyzer' });
+    writeScene(root, 'halt-an-rj', analyzerScene());
+    const resRj = runCli(root, ['park', 'resolve', 'halt-an-rj', '--reject']);
+    assert.strictEqual(resRj.status, 0,
+      `resolve --reject must succeed on halted-analyzer (got exit ${resRj.status}; output: ${resRj.out.trim().slice(0, 300)})`);
+    assert.strictEqual(readStatus(root, 'halt-an-rj'), 'rejected',
+      "halted-analyzer --reject must transition to 'rejected'");
+    assert.ok(fs.existsSync(path.join(root, 'queue', 'halt-an-rj')),
+      'the rejected entry directory must remain on disk (terminal close, no GC)');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── Summary ────────────────────────────────────────────────────────────────
+
+console.log(`\n${passCount + failCount} tests: ${passCount} passed, ${failCount} failed`);
+process.exit(failCount > 0 ? 1 : 0);

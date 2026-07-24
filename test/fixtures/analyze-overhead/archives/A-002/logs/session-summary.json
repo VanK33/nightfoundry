@@ -1,0 +1,28 @@
+[
+  {
+    "name": "verifier-task-001",
+    "role": "verifier",
+    "inputTokens": 50,
+    "outputTokens": 100,
+    "cacheCreation": 500,
+    "cacheRead": 2000,
+    "totalCost": 0.03,
+    "toolCalls": 3,
+    "durationMs": 5000,
+    "startedAt": "2026-01-02T10:00:00.000Z",
+    "finishedAt": "2026-01-02T10:00:05.000Z"
+  },
+  {
+    "name": "planner-global",
+    "role": "planner",
+    "inputTokens": 80,
+    "outputTokens": 160,
+    "cacheCreation": 800,
+    "cacheRead": 4000,
+    "totalCost": 0.04,
+    "toolCalls": 4,
+    "durationMs": 8000,
+    "startedAt": "2026-01-02T10:05:00.000Z",
+    "finishedAt": "2026-01-02T10:05:08.000Z"
+  }
+]

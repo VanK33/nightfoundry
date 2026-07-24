@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>cc-orch — archives</title>
+    <link rel="stylesheet" href="kanban.css">
+  </head>
+  <body>
+    <nav>
+      <a href="/">Home</a>
+    </nav>
+    <main>
+      <table id="archives-table">
+        <thead>
+          <tr>
+            <th data-sort-key="id">ID</th>
+            <th data-sort-key="slug">Slug</th>
+            <th data-sort-key="date">Date</th>
+            <th data-sort-key="totalCostUsd">Total Cost (USD)</th>
+            <th data-sort-key="verifiedTasks">Tasks (verified/total)</th>
+            <th data-sort-key="totalTasks">Total Tasks</th>
+            <th data-sort-key="status">Status</th>
+          </tr>
+        </thead>
+        <tbody id="archives-tbody"></tbody>
+      </table>
+    </main>
+    <script src="/archives.js"></script>
+  </body>
+</html>

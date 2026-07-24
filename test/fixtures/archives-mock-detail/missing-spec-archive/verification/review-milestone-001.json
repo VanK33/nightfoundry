@@ -1,0 +1,17 @@
+{
+  "result": "PASSED",
+  "findings": [
+    {
+      "severity": "warning",
+      "category": "functional",
+      "file": "foo.js",
+      "description": "demo",
+      "relatedFiles": []
+    }
+  ],
+  "notes": "ok",
+  "scopeCompliance": {
+    "verdict": "within_scope",
+    "evidence": "demo"
+  }
+}

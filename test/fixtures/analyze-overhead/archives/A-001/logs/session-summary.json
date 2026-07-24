@@ -1,0 +1,41 @@
+[
+  {
+    "name": "planner-global",
+    "role": "planner",
+    "inputTokens": 100,
+    "outputTokens": 200,
+    "cacheCreation": 1000,
+    "cacheRead": 5000,
+    "totalCost": 0.05,
+    "toolCalls": 5,
+    "durationMs": 10000,
+    "startedAt": "2026-01-01T10:00:00.000Z",
+    "finishedAt": "2026-01-01T10:00:10.000Z"
+  },
+  {
+    "name": "executor-task-001",
+    "role": "executor",
+    "inputTokens": 150,
+    "outputTokens": 300,
+    "cacheCreation": 2000,
+    "cacheRead": 8000,
+    "totalCost": 0.10,
+    "toolCalls": 10,
+    "durationMs": 20000,
+    "startedAt": "2026-01-01T10:05:00.000Z",
+    "finishedAt": "2026-01-01T10:05:20.000Z"
+  },
+  {
+    "name": "executor-task-002",
+    "role": "executor",
+    "inputTokens": 200,
+    "outputTokens": 400,
+    "cacheCreation": 3000,
+    "cacheRead": 10000,
+    "totalCost": 0.15,
+    "toolCalls": 15,
+    "durationMs": 30000,
+    "startedAt": "2026-01-01T10:10:00.000Z",
+    "finishedAt": "2026-01-01T10:10:30.000Z"
+  }
+]

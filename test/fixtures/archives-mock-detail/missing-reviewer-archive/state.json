@@ -1,0 +1,26 @@
+{
+  "projectMeta": {
+    "prdPath": "/mock/spec.md",
+    "createdAt": "2026-05-10T10:00:00.000Z",
+    "createdWithVersion": "0.1.0",
+    "currentPhase": "executing"
+  },
+  "globalStatus": "complete",
+  "milestones": {
+    "001": {
+      "id": "001",
+      "description": "Mock milestone for fixture testing",
+      "status": "complete",
+      "planFile": ".harness/plan/milestone-001.md",
+      "missions": {
+        "001-001": {
+          "id": "001-001",
+          "description": "Mock mission for fixture testing",
+          "status": "complete",
+          "stateFile": ".harness/state/mission-001-001.json",
+          "planFile": ".harness/plan/mission-001-001.md"
+        }
+      }
+    }
+  }
+}
