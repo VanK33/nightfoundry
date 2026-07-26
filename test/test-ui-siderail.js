@@ -20,6 +20,7 @@
  *   TC7 — GET /siderail.html → 200 serving the static page markup
  */
 import { createServer } from '../src/ui/server.js';
+import { deriveDecisionState } from '../src/ui/api/siderail.js';
 import assert from 'assert';
 import http from 'http';
 import fs from 'fs';
@@ -494,6 +495,48 @@ await test('TC7: GET /siderail.html → 200 serving the static page markup', asy
     fs.rmSync(tmp, { recursive: true, force: true });
     dirsToCleanup.splice(dirsToCleanup.indexOf(tmp), 1);
   }
+});
+
+// ---------------------------------------------------------------------------
+// UT1-UT6: deriveDecisionState pure-function unit cases (no server/filesystem)
+// ---------------------------------------------------------------------------
+await test('UT1: { queueStatus: "parked" } → pendingDecision:true, error:false', () => {
+  assert.deepStrictEqual(
+    deriveDecisionState({ queueStatus: 'parked' }),
+    { pendingDecision: true, error: false }
+  );
+});
+
+await test('UT2: { queueStatus: "halted-review" } → pendingDecision:false, error:true', () => {
+  assert.deepStrictEqual(
+    deriveDecisionState({ queueStatus: 'halted-review' }),
+    { pendingDecision: false, error: true }
+  );
+});
+
+await test('UT3: { queueStatus: "halted-analyzer" } → pendingDecision:false, error:true', () => {
+  assert.deepStrictEqual(
+    deriveDecisionState({ queueStatus: 'halted-analyzer' }),
+    { pendingDecision: false, error: true }
+  );
+});
+
+await test('UT4: empty/unknown/absent status with no markers → both flags false', () => {
+  assert.deepStrictEqual(deriveDecisionState({}), { pendingDecision: false, error: false });
+  assert.deepStrictEqual(deriveDecisionState({ queueStatus: '' }), { pendingDecision: false, error: false });
+  assert.deepStrictEqual(deriveDecisionState({ queueStatus: 'running' }), { pendingDecision: false, error: false });
+  assert.deepStrictEqual(deriveDecisionState(undefined), { pendingDecision: false, error: false });
+  assert.deepStrictEqual(deriveDecisionState('not-an-object'), { pendingDecision: false, error: false });
+});
+
+await test('UT5: { gate: true } → pendingDecision:true', () => {
+  const result = deriveDecisionState({ gate: true });
+  assert.strictEqual(result.pendingDecision, true, `Expected pendingDecision:true, got ${result.pendingDecision}`);
+});
+
+await test('UT6: { awaitingDecision: true } → pendingDecision:true', () => {
+  const result = deriveDecisionState({ awaitingDecision: true });
+  assert.strictEqual(result.pendingDecision, true, `Expected pendingDecision:true, got ${result.pendingDecision}`);
 });
 
 // ---------------------------------------------------------------------------

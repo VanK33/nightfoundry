@@ -356,8 +356,6 @@ export const TEST_FILES = [
   'test/test-pipeline-milestone-regression-remediation.js',
   'test/test-regression-remediation-integration.js',
   'test/test-circuit-breaker-human-escalation-routing.js',
-  'test/test-user-spec-projection.js',
-  'test/test-user-spec-cli.js',
   'test/test-gitignore-stanza-and-compound-evidence.js',
   'test/test-git-excludes.js',
   'test/test-assumption-data.js',
@@ -393,6 +391,7 @@ export const TEST_FILES = [
   'test/test-halt-aftermath.js',
   'test/test-init-onboarding.js',
   'test/test-operator-manual.js',
+  'test/test-batch-git-excludes-bare.js',
 ];
 
 /**

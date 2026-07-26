@@ -699,6 +699,43 @@ await test(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────
+// (k) needs_revalidation 'after'-phase caller shape
+// ─────────────────────────────────────────────────────────────────────────
+
+await test(
+  "(k) NEEDS_REVALIDATION SHAPE: T's own after-restore where T is 'needs_revalidation' with no completedAt floor and an older-completedAt complete sibling's after wins",
+  async () => {
+    const FILE = 'shared.js';
+    const T = '001-001-001-001';
+    const S = '001-001-001-002';
+    const { projectRoot, harnessDir } = buildHarness({
+      tasks: [
+        { id: T, status: 'needs_revalidation', completedAt: null, targetFiles: [FILE] },
+        { id: S, status: 'complete', completedAt: '2026-01-01T00:00:00.000Z', targetFiles: [FILE] },
+      ],
+    });
+    try {
+      writeSnapshotFile(harnessDir, T, 'after', FILE, 'T-after-content\n');
+      writeSnapshotFile(harnessDir, S, 'after', FILE, 'S-after-content\n');
+
+      const pipeline = makePipeline(projectRoot);
+      const overrides = pipeline._computeRestoreOverrides({ id: T }, 'after');
+      assert.strictEqual(
+        overrides[FILE],
+        path.join(harnessDir, 'snapshots', S, 'after', FILE),
+        `expected override to point at S's after/ copy since T has no completedAt floor and is skipped, got ${JSON.stringify(overrides)}`
+      );
+
+      restoreSnapshot(harnessDir, projectRoot, T, 'after', overrides);
+      const content = fs.readFileSync(path.join(projectRoot, FILE), 'utf8');
+      assert.strictEqual(content, 'S-after-content\n', `expected S's after content, got "${content}"`);
+    } finally {
+      cleanup(projectRoot);
+    }
+  }
+);
+
 // ── Summary ──────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount + failCount} tests: ${passCount} passed, ${failCount} failed`);

@@ -53,6 +53,7 @@ import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
 import { Pipeline } from '../src/orchestrator/core/pipeline.js';
+import { SpecCriterionError } from '../src/orchestrator/core/spec-criterion-error.js';
 import { seedPassedSidecars } from './helpers/seed-passed-sidecars.js';
 import { makeGitRoot, cleanup, porcelain } from './helpers/batch-fixtures.js';
 
@@ -402,6 +403,122 @@ await test('TC2: passing drain — resume() proceeds unchanged, reaching the rev
     cleanup(env.root);
   }
 });
+
+// ── TC3: degenerate SpecCriterionError.failures — real resume() catch, not a
+// stubbed Pipeline.prototype.resume. Drives the real `err.failures || []`
+// guard (pipeline.js resume() catch, `err instanceof SpecCriterionError`
+// branch) by overriding the pipeline instance's `_runSpecCriteriaDrain` to
+// throw directly, so the throw is caught by the SAME real try/catch that
+// wraps the milestone-execution loop as TC1/TC2 — only the origin of the
+// SpecCriterionError differs (a degenerate failures list instead of a real
+// FAILING_MO_CMD drain run). Both sub-cases must land in the merit-failure
+// arm (resumeCritFailures.length > 0 is false for both, so the all-timedOut
+// infra arm is skipped) and produce byte-identical observable outcomes to
+// TC1: fix-and-re-run hint, globalStatus 'paused', non-zero exit via the
+// sentinel, WIP left in place (no revert), no stack trace.
+const tc3Cases = [
+  {
+    label: 'TC3a',
+    description: 'pipeline._runSpecCriteriaDrain throws SpecCriterionError([]) (empty failures)',
+    makeError: () => new SpecCriterionError([]),
+  },
+  {
+    label: 'TC3b',
+    description: 'pipeline._runSpecCriteriaDrain throws SpecCriterionError with .failures reassigned undefined post-construction',
+    makeError: () => {
+      // The constructor dereferences failures.length/.map, so it must be
+      // constructed with [] first; only AFTER construction do we reassign
+      // .failures to undefined to exercise the `err.failures || []` guard
+      // against a genuinely missing failures list (not just an empty one).
+      const err = new SpecCriterionError([]);
+      err.failures = undefined;
+      return err;
+    },
+  },
+];
+
+for (const tc3 of tc3Cases) {
+  await test(`TC3: resume() catches a degenerate SpecCriterionError from an overridden _runSpecCriteriaDrain (${tc3.label}: ${tc3.description}) — same fix-and-re-run hint, paused globalStatus, non-zero exit, no revert, no stack trace as TC1`, async () => {
+    const env = createResumeFixture({
+      criteria: [cmdCriterion('unused-in-tc3 criterion', PASSING_MO_CMD)],
+    });
+    const { pipeline, trace } = makeWiringPipeline(env.root);
+
+    // Override the REAL Pipeline instance method (not Pipeline.prototype.resume)
+    // so resume()'s own try/catch around the milestone-execution loop is the
+    // thing doing the catching, exactly as it does for a real drain failure.
+    pipeline._runSpecCriteriaDrain = () => {
+      throw tc3.makeError();
+    };
+
+    const capturedExitCodes = [];
+    const sentinel = new Error('__SENTINEL_EXIT__');
+    const origExit = process.exit;
+    process.exit = (code) => {
+      capturedExitCodes.push(code);
+      throw sentinel;
+    };
+
+    try {
+      const dirtyBefore = porcelain(env.root);
+      assert.notStrictEqual(dirtyBefore, '', 'precondition: the working tree must be dirty (WIP present) before resume() runs');
+      assert.ok(fs.existsSync(path.join(env.root, env.wipFileName)),
+        'precondition: the WIP deliverable must exist on disk before resume() runs');
+
+      const output = await captureOutput(async () => {
+        await withTimeout(pipeline.resume(), WIRING_TIMEOUT_MS, `${tc3.label} resume()`);
+      });
+
+      // resume() must escape via the mocked process.exit sentinel — not by
+      // letting the raw SpecCriterionError (or anything else) propagate.
+      assert.strictEqual(output.thrownError, sentinel,
+        `expected resume() to exit via the mocked process.exit sentinel, got: ${output.thrownError && output.thrownError.stack}`);
+      assert.ok(capturedExitCodes.length > 0 && capturedExitCodes.every((c) => c !== 0 && typeof c === 'number'),
+        `expected process.exit to be called with a non-zero code, got [${capturedExitCodes.join(', ')}]`);
+
+      // Fix-and-re-run hint naming `cc-orch resume` as the next step, even
+      // though there is no specific failing criterion to name (degenerate
+      // empty/undefined failures list).
+      assert.ok(output.stderr.includes('Fix the failing criteria above'),
+        `expected the fix-and-re-run hint printed. Got:\n${output.stderr}`);
+      assert.ok(output.stderr.includes('cc-orch resume'),
+        `expected the hint to name \`cc-orch resume\` as the next step. Got:\n${output.stderr}`);
+
+      // No stack trace / source-frame reference printed on this path.
+      const combined = output.stdout + output.stderr;
+      assert.ok(!/\n\s+at .+:\d+:\d+\)?/.test(combined),
+        `expected no stack trace in the captured output. Got:\n${combined}`);
+      assert.ok(!combined.includes('pipeline.js:'),
+        `expected no source-frame reference (stack trace) in the captured output. Got:\n${combined}`);
+
+      // The WIP is left in place — no git revert on this path.
+      assert.ok(fs.existsSync(path.join(env.root, env.wipFileName)),
+        'the WIP deliverable must still exist — resume() must not revert the working tree on a drain failure');
+      assert.strictEqual(porcelain(env.root), dirtyBefore,
+        `the working tree must be unchanged (not reverted) after the drain failure; before="${dirtyBefore}" after="${porcelain(env.root)}"`);
+
+      // .harness/state.json globalStatus persisted marking the drain pending.
+      const state = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state.json'), 'utf8'));
+      assert.strictEqual(state.globalStatus, 'paused',
+        `expected globalStatus to be persisted as 'paused' (drain-pending marker) so a later \`cc-orch resume\` recognizes the pending step, got '${state.globalStatus}'`);
+
+      // Deterministic gate precedes the outer review gate / archive: neither
+      // is reached once the drain has failed. The overridden drain also
+      // means the per-milestone reviewer gate has already run by the time
+      // it throws (drain placement is after the reviewer gate).
+      assert.strictEqual(trace.reviewGateCalls, 0,
+        `the outer review gate must not be reached after a drain failure, got ${trace.reviewGateCalls} call(s)`);
+      assert.strictEqual(trace.archiveCalls.length, 0,
+        `the archive seam must not be reached after a drain failure, got ${trace.archiveCalls.length} call(s)`);
+      assert.strictEqual(trace.verifyCalls, 0,
+        `verifyMilestone must not run after a drain failure, verifier called ${trace.verifyCalls}x`);
+    } finally {
+      process.exit = origExit;
+      teardownPipeline(pipeline);
+      cleanup(env.root);
+    }
+  });
+}
 
 console.log(`\n${passCount} passed, ${failCount} failed`);
 process.exit(failCount > 0 ? 1 : 0);

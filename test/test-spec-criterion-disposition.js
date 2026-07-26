@@ -285,6 +285,15 @@ await test('TC2: single — resume() SpecCriterionError → tree NOT reverted, c
 // overwrite `.failures` to `undefined` post-construction — producing exactly
 // the object shape ({ name: 'SpecCriterionError', failures: undefined }) the
 // disposition code must tolerate.
+//
+// Clarifying note: TC3a-TC3d (like TC2 above) drive their scenario through
+// runSingleResumeWith(), which stubs Pipeline.prototype.resume to throw the
+// constructed SpecCriterionError directly — it never calls through to the
+// real resume() implementation. So these degenerate (empty/undefined
+// .failures) cases verify the CLI/disposition layer's tolerance of that
+// shape, but do NOT exercise the real resume() internal SpecCriterionError
+// catch. Genuine internal-catch coverage of this degenerate shape lives in
+// test/test-spec-criteria-resume-catch.js.
 
 await test('TC3a: batch — SpecCriterionError([]) (empty failures) still lands failed-criteria with a written (empty-bodied) failures file and a reverted tree', async () => {
   const root = makeGitRoot({ prefix: 'cc-orch-spec-crit-degen-' });

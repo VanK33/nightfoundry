@@ -29,6 +29,11 @@
  *       present (ensureGitExcludes fires before the porcelain read), but
  *       still refuses (ok:false, reason 'dirty-tree') on genuine user dirt.
  *   (h) pre-existing unrelated info/exclude lines preserved verbatim.
+ *   (i) subdir guard resolution — projectRoot is a genuine subdirectory of
+ *       gitRoot; gitGuard's own findGitRoot/ensureGitExcludes(projectRoot)
+ *       resolution (not a direct ensureGitExcludes call) suppresses cc-orch
+ *       dirt created inside the subdir (ok:true) but still refuses genuine
+ *       user dirt inside the subdir (ok:false, reason 'dirty-tree').
  *
  * Run: node test/test-git-excludes.js
  */
@@ -361,6 +366,65 @@ async function acG_guardOrder() {
   }
 }
 
+// ── AC(i): subdir guard resolution — gitGuard's own findGitRoot/ensureGitExcludes(projectRoot) ──
+
+async function acI_subdirGuardResolution() {
+  console.log('\n=== AC(i): subdir guard resolution — cc-orch dirt suppressed, user dirt refused ===\n');
+
+  // Sub-case 1: only cc-orch dirt present INSIDE the subdir — gitGuard walks
+  // up to gitRoot, calls ensureGitExcludes(subdir) which roots the patterns
+  // at the realpathed '/nested/project/' prefix, so this dirt is suppressed
+  // when porcelain is read from gitRoot and ok comes back true.
+  {
+    const gitRoot = makeGitRoot();
+    try {
+      const realGitRoot = fs.realpathSync(gitRoot);
+      const subRel = path.join('nested', 'project');
+      const subdir = path.join(realGitRoot, subRel);
+      fs.mkdirSync(subdir, { recursive: true });
+      const realSubdir = fs.realpathSync(subdir);
+
+      fs.mkdirSync(path.join(realSubdir, '.harness'), { recursive: true });
+      fs.writeFileSync(path.join(realSubdir, '.harness', 'x'), 'a\n');
+      fs.mkdirSync(path.join(realSubdir, 'queue'), { recursive: true });
+      fs.writeFileSync(path.join(realSubdir, 'queue', 'z'), 'a\n');
+      fs.writeFileSync(path.join(realSubdir, 'spec-foo.md'), 'a\n');
+
+      const result = await gitGuard(realSubdir);
+      assert('AC(i): gitGuard returns ok:true with only cc-orch dirt inside the subdir',
+        result.ok === true);
+    } catch (err) {
+      assert(`AC(i) sub-case 1: unexpected exception — ${err && err.message}`, false);
+    } finally {
+      cleanup(gitRoot);
+    }
+  }
+
+  // Sub-case 2: genuine user dirt INSIDE the subdir — gitGuard must still
+  // refuse, since the excludes have no knowledge of this file.
+  {
+    const gitRoot = makeGitRoot();
+    try {
+      const realGitRoot = fs.realpathSync(gitRoot);
+      const subRel = path.join('nested', 'project');
+      const subdir = path.join(realGitRoot, subRel);
+      fs.mkdirSync(subdir, { recursive: true });
+      const realSubdir = fs.realpathSync(subdir);
+
+      fs.writeFileSync(path.join(realSubdir, 'user-file.txt'), 'dirty\n');
+
+      const result = await gitGuard(realSubdir);
+      assert('AC(i): gitGuard returns ok:false with genuine user dirt inside the subdir',
+        result.ok === false);
+      assert('AC(i): reason is "dirty-tree"', result.reason === 'dirty-tree');
+    } catch (err) {
+      assert(`AC(i) sub-case 2: unexpected exception — ${err && err.message}`, false);
+    } finally {
+      cleanup(gitRoot);
+    }
+  }
+}
+
 // ── AC(h): unrelated pre-existing lines preserved verbatim ─────────────────
 
 function acH_unrelatedLinesPreserved() {
@@ -407,6 +471,7 @@ async function main() {
   acE_nonGitRoot();
   acF_productionShapedFiring();
   await acG_guardOrder();
+  await acI_subdirGuardResolution();
   acH_unrelatedLinesPreserved();
 
   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);

@@ -218,6 +218,27 @@ await test('TC10: getSpecTargetFiles second call with the same cache holder retu
   }
 });
 
+await test('TC11: normalizeUncertains([]) returns an explicit length-0 empty array', () => {
+  const result = normalizeUncertains([]);
+  assert.strictEqual(result.length, 0, 'result should have length 0');
+  assert.deepStrictEqual(result, []);
+});
+
+await test('TC12: normalizeUncertains(null) returns []', () => {
+  const result = normalizeUncertains(null);
+  assert.ok(Array.isArray(result), 'result should be an array');
+  assert.deepStrictEqual(result, []);
+});
+
+await test('TC13: extractSpecSection with a missing/absent spec path returns null and never invokes onLog', () => {
+  const missingSpecPath = path.join(os.tmpdir(), 'does-not-exist-ever-assumption-data-extractsection-67890.md');
+  const logCalls = [];
+  const onLog = (msg) => logCalls.push(msg);
+  const result = extractSpecSection(missingSpecPath, 'AnySection', onLog);
+  assert.strictEqual(result, null, 'result should be null when spec path does not exist');
+  assert.strictEqual(logCalls.length, 0, 'onLog should never be invoked on the early guard');
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount + failCount} tests: ${passCount} passed, ${failCount} failed`);

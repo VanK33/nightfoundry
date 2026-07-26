@@ -1,3 +1,8 @@
+## [0.2.3] - 2026-07-26 — Delivered milestone 001: fixed all 7 reviewer test-fidelity warnings and registry hygiene issue with 141 passing tests across 8 files, zero failures
+
+### Bug fixes
+- Remove duplicate TEST_FILES entries (second occurrences of test-user-spec-projection.js and test-user-spec-cli.js at lines ~359-360); register test-batch-git-excludes-bare.js
+
 ## [0.2.2] - 2026-07-26 — Delivered remediation of four orchestrator reviewer-ledger concerns addressing test-gate diagnostics on non-git roots, queue status schema completeness, active-run pointer lifecycle, and reviewer-gate isStub consistency.
 
 ### Bug fixes
