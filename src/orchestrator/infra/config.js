@@ -13,7 +13,7 @@ import os from 'os';
 // the SDK aliases ('opus'/'sonnet'/'haiku'), resolved by the SDK at call time;
 // pinning the full ID makes the exact model each role runs explicit. Edit a
 // constant here to repin every role that references it below.
-const OPUS = 'claude-opus-4-8';
+const OPUS = 'claude-opus-5';
 const SONNET = 'claude-sonnet-5[1m]';
 const HAIKU = 'claude-haiku-4-5';
 
