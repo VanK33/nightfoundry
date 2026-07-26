@@ -1,6 +1,6 @@
 {
   "name": "nightfoundry",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "FSL-1.1-ALv2",
   "repository": {
     "type": "git",
@@ -8,7 +8,7 @@
   },
   "releaseChannel": "beta",
   "type": "module",
-  "description": "External Node.js orchestrator for harness \u2014 dispatches Claude sessions via Agent SDK",
+  "description": "External Node.js orchestrator for harness — dispatches Claude sessions via Agent SDK",
   "main": "index.js",
   "files": [
     "src/",

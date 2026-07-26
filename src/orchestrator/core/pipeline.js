@@ -1890,43 +1890,47 @@ class Pipeline {
               } catch (parkErr) {
                 this.onLog(`  ERROR: failed to snapshot work for '${entry.slug}' before test-gate revert: ${parkErr.message}`);
               }
-              // Unconditional raw-error capture: unlike the [FAIL]/Total:
-              // extraction below (which only writes when it finds marker
-              // lines), this always persists the full TestGateError so a
-              // failure with zero [FAIL] lines in its tail is still on
-              // record. Fail-soft, mirrors the hole-10 error.txt write shape.
-              try {
-                const errorPath = path.join(this.projectRoot, 'queue', entry.slug, 'test-gate-error.txt');
-                fs.writeFileSync(errorPath, `${err.message}\n${err.stack || ''}\n`);
-              } catch (writeErr) {
-                this.onLog(`  Failed to write test-gate-error.txt for '${entry.slug}': ${writeErr.message}`);
+            }
+            // Unconditional raw-error capture: unlike the [FAIL]/Total:
+            // extraction below (which only writes when it finds marker
+            // lines), this always persists the full TestGateError so a
+            // failure with zero [FAIL] lines in its tail is still on
+            // record. Fail-soft, mirrors the hole-10 error.txt write shape.
+            // Runs regardless of isGitRepo so non-git roots still get
+            // diagnostics on disk.
+            try {
+              const errorPath = path.join(this.projectRoot, 'queue', entry.slug, 'test-gate-error.txt');
+              fs.writeFileSync(errorPath, `${err.message}\n${err.stack || ''}\n`);
+            } catch (writeErr) {
+              this.onLog(`  Failed to write test-gate-error.txt for '${entry.slug}': ${writeErr.message}`);
+            }
+            this.onLog(`  Entry '${entry.slug}' test-gate error: ${err.message.split('\n')[0]}`);
+            // Best-effort extraction of the failing-test identity from the
+            // TestGateError message tail: every per-test FAIL marker line
+            // plus the summary Total line. Persisted to
+            // queue/<slug>/test-gate-failures.txt so a human (or a future
+            // remediation pass) can see exactly what failed without
+            // re-running the suite. Fail-soft: any error here must NOT
+            // block the revert / status update / continue flow below.
+            try {
+              const tailMarker = '--- tail of test output ---\n';
+              const tailIdx = err.message.indexOf(tailMarker);
+              const tail = tailIdx !== -1 ? err.message.slice(tailIdx + tailMarker.length) : err.message;
+              const tailLines = tail.split('\n');
+              const failLines = tailLines.filter((line) => /\[FAIL\]/.test(line));
+              const totalLines = tailLines.filter((line) => /^\s*Total:/.test(line));
+              const extractedLines = [...failLines, ...totalLines];
+              if (extractedLines.length > 0) {
+                const failuresPath = path.join(this.projectRoot, 'queue', entry.slug, 'test-gate-failures.txt');
+                fs.writeFileSync(failuresPath, extractedLines.join('\n') + '\n');
               }
-              this.onLog(`  Entry '${entry.slug}' test-gate error: ${err.message.split('\n')[0]}`);
-              // Best-effort extraction of the failing-test identity from the
-              // TestGateError message tail: every per-test FAIL marker line
-              // plus the summary Total line. Persisted to
-              // queue/<slug>/test-gate-failures.txt so a human (or a future
-              // remediation pass) can see exactly what failed without
-              // re-running the suite. Fail-soft: any error here must NOT
-              // block the revert / status update / continue flow below.
-              try {
-                const tailMarker = '--- tail of test output ---\n';
-                const tailIdx = err.message.indexOf(tailMarker);
-                const tail = tailIdx !== -1 ? err.message.slice(tailIdx + tailMarker.length) : err.message;
-                const tailLines = tail.split('\n');
-                const failLines = tailLines.filter((line) => /\[FAIL\]/.test(line));
-                const totalLines = tailLines.filter((line) => /^\s*Total:/.test(line));
-                const extractedLines = [...failLines, ...totalLines];
-                if (extractedLines.length > 0) {
-                  const failuresPath = path.join(this.projectRoot, 'queue', entry.slug, 'test-gate-failures.txt');
-                  fs.writeFileSync(failuresPath, extractedLines.join('\n') + '\n');
-                }
-                for (const line of failLines) {
-                  this.onLog(line);
-                }
-              } catch (extractErr) {
-                this.onLog(`  Failed to extract test-gate failure detail for '${entry.slug}': ${extractErr.message}`);
+              for (const line of failLines) {
+                this.onLog(line);
               }
+            } catch (extractErr) {
+              this.onLog(`  Failed to extract test-gate failure detail for '${entry.slug}': ${extractErr.message}`);
+            }
+            if (isGitRepo) {
               try {
                 execSync('git reset --hard HEAD', { cwd: this.projectRoot, stdio: 'pipe' });
                 execSync('git clean -fd -e queue', { cwd: this.projectRoot, stdio: 'pipe' });
@@ -2125,10 +2129,28 @@ class Pipeline {
           // the clean along with the rest of archives/) instead of being
           // left behind as an untracked file.
           let failedArchiveDir = null;
+          // Capture the active-run pointer BEFORE the forensic archive: the
+          // archive's harness-state reset clears it, but the park / failed-
+          // execution dispositions reached from this catch are non-terminal
+          // (queue list / park show / status / continue all still need to
+          // resolve an active run) — unlike the successful-completion archive
+          // path above, which intentionally leaves the pointer cleared.
+          const preArchivePointer = readActiveRunPointer(this.projectRoot);
           try {
             failedArchiveDir = await this._archive(this.projectRoot, entry.slug, { 'include-failed': true, preserve: true });
           } catch (archiveErr) {
             this.onLog(`  Failed to archive failed run for '${entry.slug}': ${archiveErr.message}`);
+          }
+          // Re-claim the active-run pointer so it's non-null after this
+          // disposition. Fail-soft: any error here must never block the
+          // park/status/continue flow below.
+          try {
+            const restoreRunId = preArchivePointer?.runId ?? entryRunId;
+            const restoreSlug = preArchivePointer?.slug ?? entry.slug;
+            const restoreKind = preArchivePointer?.kind ?? 'batch';
+            claimActiveRun(this.projectRoot, { runId: restoreRunId, slug: restoreSlug, kind: restoreKind });
+          } catch (reclaimErr) {
+            this.onLog(`  Failed to restore active-run pointer for '${entry.slug}': ${reclaimErr.message}`);
           }
           if (failedArchiveDir && !isResolvablePark) {
             try {
@@ -3410,6 +3432,12 @@ class Pipeline {
         // This indicates either a stub response (SDK/network/credits problem) or a warnings-only
         // result that should not enter the remediation retry loop.
         if (criticalFindings.length === 0) {
+          // A stub verdict here gets the same treatment as the post-remediation
+          // re-review arm below (see the reReviewResult.structured?.isStub check):
+          // regardless of which reviewer invocation (first-attempt or re-review)
+          // produced it, a stub response is an SDK/transport failure, not a merit
+          // failure, so both arms classify it as InfrastructureError (retryable)
+          // rather than a CircuitBreakerError hard stop.
           if (reviewResult.structured?.isStub === true) {
             throw new InfrastructureError(
               `Milestone ${msId} reviewer gate: reviewer returned a stub response (no findings). ` +
@@ -3513,10 +3541,15 @@ class Pipeline {
 
         if (!reReviewResult.passed) {
           // A stub re-review verdict is the same SDK/transport failure shape
-          // as the first-attempt arm above (and it already survived the
-          // reviewer-layer one-shot retry inside reviewMilestone) — classify
-          // it infra so the entry stays pending, instead of a merit-failure
-          // hard stop on a milestone whose remediation may well have landed.
+          // as the first-attempt arm above (see the reviewResult.structured?.isStub
+          // check near the top of the reviewer gate) — both reviewer invocations
+          // receive identical stub treatment: a stub verdict is an SDK/transport
+          // failure regardless of which reviewer call produced it, so this arm
+          // stays InfrastructureError (retryable) and must NOT be reverted to
+          // CircuitBreakerError. It already survived the reviewer-layer one-shot
+          // retry inside reviewMilestone, so classify it infra here so the entry
+          // stays pending, instead of a merit-failure hard stop on a milestone
+          // whose remediation may well have landed.
           if (reReviewResult.structured?.isStub === true) {
             throw new InfrastructureError(
               `Milestone ${msId} reviewer gate: post-remediation re-review returned a stub response (no findings). ` +

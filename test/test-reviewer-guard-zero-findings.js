@@ -538,6 +538,10 @@ await test('TC6: multi-attempt where attempt 2 triggers guard with stub diagnost
     `TC6: a stub re-review verdict must throw InfrastructureError, got ${thrown.name}`
   );
   assert.strictEqual(thrown.retryable, true, 'TC6: the re-review stub InfrastructureError must be retryable');
+  assert.ok(
+    !(thrown.name === 'CircuitBreakerError') && !String(thrown.message).startsWith('Circuit breaker'),
+    'TC6: the re-review stub verdict must NOT be classified as a CircuitBreakerError-shaped failure'
+  );
   const tc6msg = thrown.message.toLowerCase();
   assert.ok(
     tc6msg.includes('sdk') || tc6msg.includes('network') || tc6msg.includes('credit'),

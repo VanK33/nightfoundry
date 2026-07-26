@@ -1,3 +1,11 @@
+## [0.2.2] - 2026-07-26 — Delivered remediation of four orchestrator reviewer-ledger concerns addressing test-gate diagnostics on non-git roots, queue status schema completeness, active-run pointer lifecycle, and reviewer-gate isStub consistency.
+
+### Bug fixes
+- Test-gate failure diagnostics (test-gate-failures.txt and [FAIL] logging) now execute unconditionally on all project roots, including non-git repositories
+- Added 'failed-criteria' to VALID_QUEUE_STATUSES in the canonical queue status enum, placed adjacent to 'failed-test-gate' for schema consistency
+- Active-run pointer is now captured before and re-claimed after forensic --include-failed archives in failed-execution dispositions, preserving the pointer across the forensic operation
+- Both reviewer-gate isStub arms now include cross-referencing comments clarifying that stub verdicts are treated identically as SDK/transport failures (InfrastructureError with retryable: true), with explicit notes against reverting to CircuitBreakerError
+
 ## [0.2.1] - 2026-07-24 — Public repository cutover
 
 - No code changes from 0.2.0. Version realigned for the public repository's first release.

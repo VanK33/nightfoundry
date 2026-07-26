@@ -467,6 +467,7 @@ export const VALID_QUEUE_STATUSES = Object.freeze([
   'failed-validation',
   'failed-execution',
   'failed-test-gate',
+  'failed-criteria',
   'parked',
   'halted-review',
   'halted-analyzer',

@@ -49,7 +49,7 @@ import assert from 'assert';
 
 import { Pipeline } from '../src/orchestrator/core/pipeline.js';
 import { archive } from '../src/cli/commands/archive.js';
-import { readQueueEntry } from '../src/orchestrator/core/state.js';
+import { readQueueEntry, writeQueueEntry } from '../src/orchestrator/core/state.js';
 import {
   generateRunId,
   runHarnessDir,
@@ -429,6 +429,58 @@ await test('TC5 (e): run() against a stale pointer to a completed run throws ove
     assert.ok(
       thrown.message.includes('archive the existing run'),
       `expected 'archive the existing run' guidance, got: ${thrown.message}`
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ---------- (f) forensic-archive pointer preservation ----------
+
+await test('TC6 (f): batchResume failed-execution disposition (forensic --include-failed archive) still leaves readActiveRunPointer(projectRoot) non-null, proving the pointer is preserved/re-claimed across the forensic archive', async () => {
+  const root = createRoot();
+  try {
+    writeQueueEntry(root, 'flip-fail', {
+      spec: '# Flip Fail Spec\n\nGoal.\n',
+      plan: cannedGlobalPlan(),
+      validatedAt: new Date().toISOString(),
+      status: 'pending',
+    });
+
+    // Stub the forensic archive (this._archive) so the disposition reaches
+    // completion without any real archive.js work; record calls so we can
+    // assert the forensic (--include-failed) leg actually ran.
+    const archiveCalls = [];
+    const archiveStub = async (_projectRoot, slug, archiveOpts) => {
+      archiveCalls.push({ slug, opts: archiveOpts });
+      const dir = path.join(root, 'fake-archives', String(archiveCalls.length));
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+
+    const pipeline = makeRunnablePipeline(root, { archive: archiveStub });
+    // Drive the failed-execution disposition: _executeAllMilestones throws.
+    pipeline._executeAllMilestones = async () => {
+      throw new Error('milestone execution exploded');
+    };
+
+    const result = await pipeline.batchResume({});
+
+    assert.strictEqual(result.failed, 1, `expected failed:1, got ${result.failed}`);
+    assert.strictEqual(result.archived, 0, `expected archived:0, got ${result.archived}`);
+
+    const forensic = archiveCalls.filter((c) => c.opts && c.opts['include-failed']);
+    assert.strictEqual(forensic.length, 1, `expected exactly one forensic (--include-failed) archive call, got ${forensic.length}`);
+
+    // The invariant under test: only successful completion clears the
+    // active-run pointer slot. A failed-execution disposition performs the
+    // forensic archive (which resets .harness/ and clears the pointer as a
+    // side effect) but must re-claim it afterward, leaving a non-null
+    // pointer for this entry.
+    const pointerAfter = readActiveRunPointer(root);
+    assert.ok(
+      pointerAfter,
+      'active-run pointer must be non-null after the failed-execution disposition completes (preserved/re-claimed across the forensic archive)'
     );
   } finally {
     cleanup(root);
