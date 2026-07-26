@@ -208,6 +208,16 @@ cc-orch init [spec.md] | version | help
 
 </details>
 
+### Global safety flags
+
+Preflight overrides — each trades one safety check for convenience, so the scope of each flag is explicit:
+
+| Flag | Effect | Accepted by |
+|---|---|---|
+| `--allow-dirty` | Skip the clean-working-tree git preflight | `run`, `dry-run` |
+| `--no-git-required` | Proceed without requiring a git repository | `run`, `dry-run` |
+| `--allow-incomplete-scope` | Warn instead of error when the planner flags scope items that match no task | `run`, `dry-run`, `resume`, `task` |
+
 ### Docs
 
 `cc-orch init` deploys an AI-facing operator manual (the `cc-orch-operator` skill) into the target repo's `.claude/skills/`, so Claude sessions working there know how to drive, debug, and write specs for runs — and the manual updates with the engine. Anything this README leaves unexplained (flags, states, recovery verbs) is answered there; ask the session, it reads these files. They double as the docs:

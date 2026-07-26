@@ -505,15 +505,21 @@ test('AC5/TC5_derive_consuming_set: gitGuard consumers are exactly the run/dry-r
   assert.ok(!consuming.has('task'), `'task' must NOT be a gitGuard consumer, derived set: ${[...consuming]}`);
 });
 
-// Extract the "### Global safety flags" section text (heading → next #2/#3 heading).
+// Extract the README section documenting the git-preflight safety flags.
+// Anchored on content, not a fixed heading: the README may rename or move the
+// section, but wherever both flags are documented, the scoping rules below
+// must hold for that section.
 function readmeSafetyFlagsSection() {
   const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-  const heading = '### Global safety flags';
-  const secStart = readme.indexOf(heading);
-  assert.ok(secStart >= 0, 'Expected a "### Global safety flags" section in README.md');
-  const rest = readme.slice(secStart + heading.length);
-  const nextHeading = rest.search(/\n#{2,3}\s/);
-  return nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+  const sections = readme.split(/\n(?=#{2,3}\s)/);
+  const section = sections.find(
+    (s) => s.includes('--allow-dirty') && s.includes('--no-git-required')
+  );
+  assert.ok(
+    section,
+    'Expected a README section documenting both --allow-dirty and --no-git-required'
+  );
+  return section;
 }
 
 // Find the markdown table row (a line containing the flag in a `code` cell and
