@@ -141,7 +141,24 @@ export async function reapOrphanRunDirs(projectRoot, flags = {}) {
   const toKeep = classified.kept;
 
   for (const dir of toKeep) {
-    console.log(`[clean] Keeping terminal/active run dir: ${path.basename(dir)}`);
+    let label = '(state unreadable — keeping as a precaution)';
+    try {
+      const statePath = path.join(dir, 'state.json');
+      const raw = fs.readFileSync(statePath, 'utf8');
+      const state = JSON.parse(raw);
+      const globalStatus = state.globalStatus;
+      if (globalStatus === 'complete' || globalStatus === 'rejected') {
+        label = '(terminal, never archived)';
+      } else if (globalStatus === 'active') {
+        label = '(active — preserved as in-progress work)';
+      } else {
+        label = '(state unreadable — keeping as a precaution)';
+      }
+    } catch {
+      // state.json missing or corrupt — fall back to the generic label above.
+      label = '(state unreadable — keeping as a precaution)';
+    }
+    console.log(`[clean] Keeping terminal/active run dir: ${path.basename(dir)} ${label}`);
   }
 
   if (toDelete.length === 0 && toQuarantine.length === 0) {

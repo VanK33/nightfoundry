@@ -766,6 +766,114 @@ async function runCliPathCanonicalIdentityTests() {
   }
 }
 
+/**
+ * TC23–TC27 — differentiated-label tests. Pins reapOrphanRunDirs' per-dir
+ * label branch (see src/cli/commands/clean.js): a kept dir's globalStatus
+ * drives which parenthetical label is appended to its
+ * '[clean] Keeping terminal/active run dir: <basename> <label>' line —
+ * 'complete'/'rejected' → '(terminal, never archived)', 'active' →
+ * '(active — preserved as in-progress work)', and anything else (including
+ * an unreadable/corrupt state.json, or an unrecognized status like
+ * 'paused') → the generic '(state unreadable — keeping as a precaution)'
+ * fallback. All five cases share ONE fs.mkdtempSync root and ONE
+ * reapOrphanRunDirs(root, { force: true }) pass, mirroring TC1–TC7's shared
+ * root/pass shape above (TC1–TC22 and every helper they use are UNTOUCHED).
+ */
+async function runDifferentiatedLabelTests() {
+  console.log('\n=== Differentiated-label Tests (TC23–TC27) ===\n');
+
+  const root = makeTmpRoot();
+  try {
+    // TC23 — complete kept dir → 'terminal, never archived'.
+    const { harnessDir: dirComplete } = bootstrap(root, { runId: 'run-tc23-complete' });
+    markComplete(dirComplete);
+
+    // TC24 — rejected kept dir → 'terminal, never archived'.
+    const { harnessDir: dirRejected } = bootstrap(root, { runId: 'run-tc24-rejected' });
+    {
+      const state = readState(dirRejected);
+      state.globalStatus = 'rejected';
+      writeState(dirRejected, state);
+    }
+
+    // TC25 — active kept dir → distinct active/preserved label, no
+    // 'terminal, never archived' framing for this dir.
+    const { harnessDir: dirActive } = bootstrap(root, { runId: 'run-tc25-active' });
+    markInProgress(dirActive);
+
+    // TC26 — parked-runId-shielded dir with a corrupt state.json (same
+    // recipe as TC21) → kept, generic fallback label.
+    const parkedRunId = 'run-tc26-parked-corrupt';
+    const dirParkedCorrupt = path.join(harnessRoot(root), parkedRunId);
+    fs.mkdirSync(dirParkedCorrupt, { recursive: true });
+    fs.writeFileSync(path.join(dirParkedCorrupt, 'state.json'), '{ not valid json');
+    plantParkedQueueEntry(root, 'tc26-slug', parkedRunId);
+
+    // TC27 (optional) — paused kept dir → generic fallback label.
+    const { harnessDir: dirPaused } = bootstrap(root, { runId: 'run-tc27-paused' });
+    {
+      const state = readState(dirPaused);
+      state.globalStatus = 'paused';
+      writeState(dirPaused, state);
+    }
+
+    const baseComplete = path.basename(dirComplete);
+    const baseRejected = path.basename(dirRejected);
+    const baseActive = path.basename(dirActive);
+    const basePaused = path.basename(dirPaused);
+
+    const { output, threw, err } = await runReap(root, { force: true });
+    assert('TC23-27: reapOrphanRunDirs did not throw', !threw);
+    if (threw) console.log(`       error: ${err && err.stack}`);
+
+    // ── TC23 ────────────────────────────────────────────────────────────
+    console.log('\nTC23: complete kept dir → "(terminal, never archived)" label\n');
+    assert('TC23a: dirComplete still exists on disk', fs.existsSync(dirComplete));
+    assert(
+      'TC23b: output has "terminal, never archived" line naming dirComplete',
+      output.includes(`[clean] Keeping terminal/active run dir: ${baseComplete} (terminal, never archived)`)
+    );
+
+    // ── TC24 ────────────────────────────────────────────────────────────
+    console.log('\nTC24: rejected kept dir → "(terminal, never archived)" label\n');
+    assert('TC24a: dirRejected still exists on disk', fs.existsSync(dirRejected));
+    assert(
+      'TC24b: output has "terminal, never archived" line naming dirRejected',
+      output.includes(`[clean] Keeping terminal/active run dir: ${baseRejected} (terminal, never archived)`)
+    );
+
+    // ── TC25 ────────────────────────────────────────────────────────────
+    console.log('\nTC25: active kept dir → distinct active/preserved label, NOT terminal\n');
+    assert('TC25a: dirActive still exists on disk', fs.existsSync(dirActive));
+    assert(
+      'TC25b: output has the active/preserved label naming dirActive',
+      output.includes(`[clean] Keeping terminal/active run dir: ${baseActive} (active — preserved as in-progress work)`)
+    );
+    assert(
+      'TC25c: dirActive\'s line does NOT carry the "terminal, never archived" label',
+      !output.includes(`[clean] Keeping terminal/active run dir: ${baseActive} (terminal, never archived)`)
+    );
+
+    // ── TC26 ────────────────────────────────────────────────────────────
+    console.log('\nTC26: parked-shielded corrupt-state kept dir → generic fallback label, no throw\n');
+    assert('TC26a: dirParkedCorrupt still exists on disk', fs.existsSync(dirParkedCorrupt));
+    assert(
+      'TC26b: output has the generic fallback label naming dirParkedCorrupt',
+      output.includes(`[clean] Keeping terminal/active run dir: ${parkedRunId} (state unreadable — keeping as a precaution)`)
+    );
+
+    // ── TC27 (optional) ─────────────────────────────────────────────────
+    console.log('\nTC27: paused kept dir → generic fallback label\n');
+    assert('TC27a: dirPaused still exists on disk', fs.existsSync(dirPaused));
+    assert(
+      'TC27b: output has the generic fallback label naming dirPaused',
+      output.includes(`[clean] Keeping terminal/active run dir: ${basePaused} (state unreadable — keeping as a precaution)`)
+    );
+  } finally {
+    cleanup(root);
+  }
+}
+
 async function main() {
   console.log('=== Clean --runs orphan run-dir reaper Tests ===\n');
 
@@ -884,6 +992,7 @@ async function main() {
 
   await runSupersededClassifierTests();
   await runCliPathCanonicalIdentityTests();
+  await runDifferentiatedLabelTests();
 
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);

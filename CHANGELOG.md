@@ -1,3 +1,13 @@
+## [0.2.4] - 2026-07-27 — Fixed four reviewer-ledger warnings across CLI routing, siderail API, task timing, and clean-command output.
+
+### New features
+- Siderail API response now includes current.missionDescription and current.milestoneDescription fields to provide mission/milestone context in webhook messages
+
+### Bug fixes
+- CLI 'run' and 'dry-run' commands now correctly bypass positional-argument validation when --spec-stdin flag is set, enabling spec input from stdin
+- Task duration averaging (timing.avgTaskDurationMs) now derived from active run's completed tasks; field is omitted entirely when no timing data is available
+- Clean command now logs differentiated status labels for kept runs: 'terminal, never archived' for complete/rejected; 'active — preserved as in-progress work' for active
+
 ## [0.2.3] - 2026-07-26 — Delivered milestone 001: fixed all 7 reviewer test-fidelity warnings and registry hygiene issue with 141 passing tests across 8 files, zero failures
 
 ### Bug fixes

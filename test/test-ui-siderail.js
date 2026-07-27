@@ -13,9 +13,10 @@
  *   TC4 — pendingDecision/error are booleans: both false on a clean run,
  *         and each true when the fixture seeds the corresponding
  *         parked/halted/gate signal
- *   TC5 — timing includes elapsedMs, remainingTasks, avgTaskDurationMs,
- *         with avgTaskDurationMs derived from an archives/*&#47;manifest.json
- *         fixture
+ *   TC5 — timing includes elapsedMs and remainingTasks; avgTaskDurationMs is
+ *         derived in-run from completed tasks' own startedAt/completedAt
+ *         spans and is omitted from timing when the fixture's verified
+ *         tasks expose no such spans
  *   TC6 — empty/missing harness → {active:false}
  *   TC7 — GET /siderail.html → 200 serving the static page markup
  */
@@ -430,9 +431,11 @@ await test('TC4d: seeded gate:true → pendingDecision:true', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// TC5: timing includes elapsedMs, remainingTasks, avgTaskDurationMs
+// TC5: timing has elapsedMs, remainingTasks; avgTaskDurationMs is derived
+// in-run from completed tasks' own startedAt/completedAt spans and is
+// omitted when the fixture's verified tasks expose no such spans
 // ---------------------------------------------------------------------------
-await test('TC5: timing has elapsedMs, remainingTasks, avgTaskDurationMs from archives manifest fixture', async () => {
+await test('TC5: timing has elapsedMs, remainingTasks; avgTaskDurationMs omitted (no in-run task spans in fixture)', async () => {
   const { tmp, harnessDir, archivesDir } = mkPopulatedHarness();
   dirsToCleanup.push(tmp);
   try {
@@ -448,8 +451,8 @@ await test('TC5: timing has elapsedMs, remainingTasks, avgTaskDurationMs from ar
         `Expected timing.remainingTasks 2 (5 total - 3 complete), got ${json.timing.remainingTasks}`
       );
       assert.strictEqual(
-        json.timing.avgTaskDurationMs, 300000,
-        `Expected timing.avgTaskDurationMs 300000 (600000ms / 2 archive tasks), got ${json.timing.avgTaskDurationMs}`
+        json.timing.avgTaskDurationMs, undefined,
+        `Expected timing.avgTaskDurationMs to be omitted (fixture's verified tasks have no startedAt/completedAt), got ${json.timing.avgTaskDurationMs}`
       );
     });
   } finally {

@@ -144,13 +144,15 @@ async function main() {
     case 'run': {
       guardFreshRoot(projectRoot, { refuse: true });
       const specPath = positional[1];
-      if (!specPath) {
-        console.error('Usage: cc-orch run <spec.md>');
-        process.exit(1);
-      }
-      if (!fs.existsSync(specPath)) {
-        console.error(`File not found: ${specPath}`);
-        process.exit(1);
+      if (!flags['spec-stdin']) {
+        if (!specPath) {
+          console.error('Usage: cc-orch run <spec.md>');
+          process.exit(1);
+        }
+        if (!fs.existsSync(specPath)) {
+          console.error(`File not found: ${specPath}`);
+          process.exit(1);
+        }
       }
       const gitResult = await gitGuard(projectRoot, { allowDirty: flags['allow-dirty'], noGitRequired: flags['no-git-required'] });
       if (!gitResult.ok) {
@@ -331,13 +333,15 @@ async function main() {
     case 'dry-run': {
       guardFreshRoot(projectRoot, { refuse: true });
       const specPath = positional[1];
-      if (!specPath) {
-        console.error('Usage: cc-orch dry-run <spec.md>');
-        process.exit(1);
-      }
-      if (!fs.existsSync(specPath)) {
-        console.error(`File not found: ${specPath}`);
-        process.exit(1);
+      if (!flags['spec-stdin']) {
+        if (!specPath) {
+          console.error('Usage: cc-orch dry-run <spec.md>');
+          process.exit(1);
+        }
+        if (!fs.existsSync(specPath)) {
+          console.error(`File not found: ${specPath}`);
+          process.exit(1);
+        }
       }
       const gitResult = await gitGuard(projectRoot, { allowDirty: flags['allow-dirty'], noGitRequired: flags['no-git-required'] });
       if (!gitResult.ok) {

@@ -47,11 +47,15 @@ export function deriveDecisionState(input) {
  * Creates an Express-style handler for GET /api/siderail — aggregates
  * harnessDir/state.json + harnessDir/state/mission-<id>.json (same
  * milestones→missions→subMissions→tasks tree-walk as api/state.js and
- * api/archives.js) plus archivesDir/*&#47;manifest.json timing data into the
- * five side-rail display facts: progress counts, the current in-progress
- * task's lineage, a pendingDecision flag, an error flag, and a timing
- * summary. Never throws — every file read is wrapped in try/catch with a
- * safe fallback, mirroring the defensive pattern in api/state.js.
+ * api/archives.js) into the five side-rail display facts: progress counts,
+ * the current in-progress task's lineage (including its parent mission/
+ * milestone descriptions), a pendingDecision flag, an error flag, and a
+ * timing summary. Average per-task duration is derived in-run from
+ * completed tasks' own startedAt/completedAt spans during the same
+ * tree-walk (the avgTaskDurationMs key is omitted entirely when no task
+ * yields a usable span). Never throws — every file read is wrapped in
+ * try/catch with a safe fallback, mirroring the defensive pattern in
+ * api/state.js.
  *
  * @param {{ projectRoot: string, archivesDir: string }} options
  * @returns {(req: object, res: object) => void}
@@ -84,6 +88,8 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
     let milestonesTotal = 0;
     let milestonesComplete = 0;
     let current = null;
+    let totalTaskDurationMs = 0;
+    let timedTaskCount = 0;
 
     const milestonesMap = state.milestones ?? {};
     for (const milestone of Object.values(milestonesMap)) {
@@ -113,7 +119,18 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
                 description: task.description,
                 missionId: mission.id,
                 milestoneId: milestone.id,
+                missionDescription: mission.description,
+                milestoneDescription: milestone.description,
               };
+            }
+
+            if (task.status === 'verified' && task.startedAt && task.completedAt) {
+              const spanStartMs = Date.parse(task.startedAt);
+              const spanEndMs = Date.parse(task.completedAt);
+              if (Number.isFinite(spanStartMs) && Number.isFinite(spanEndMs)) {
+                totalTaskDurationMs += spanEndMs - spanStartMs;
+                timedTaskCount++;
+              }
             }
           }
         }
@@ -125,7 +142,10 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
     const startedAtMs = startedAtRaw ? Date.parse(startedAtRaw) : NaN;
     const elapsedMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : 0;
     const remainingTasks = tasksTotal - tasksComplete;
-    const avgTaskDurationMs = computeAvgTaskDurationMs(archivesDir);
+    const timing = { elapsedMs, remainingTasks };
+    if (timedTaskCount > 0) {
+      timing.avgTaskDurationMs = totalTaskDurationMs / timedTaskCount;
+    }
 
     // ── pendingDecision / error — sourced from whatever queue/gate markers
     // the state file exposes, fed through the pure deriveDecisionState
@@ -144,85 +164,9 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
       current,
       pendingDecision,
       error,
-      timing: { elapsedMs, remainingTasks, avgTaskDurationMs },
+      timing,
     });
   };
-}
-
-/**
- * Defensively computes the average per-task duration (ms) across all
- * archives in archivesDir, using each archive's manifest.json startedAt/
- * archivedAt timestamps divided by that archive's own task count (found via
- * the same state.json → state/mission-<id>.json tree-walk used for the live
- * run). Archives lacking parseable timestamps or a resolvable task count are
- * skipped rather than allowed to throw or skew the average. Returns 0 when
- * archivesDir is absent/unreadable or no archive yields usable timing data.
- *
- * @param {string} archivesDir
- * @returns {number}
- */
-function computeAvgTaskDurationMs(archivesDir) {
-  let dirents;
-  try {
-    dirents = fs.readdirSync(archivesDir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
-  let totalDurationMs = 0;
-  let totalTaskCount = 0;
-
-  for (const dirent of dirents) {
-    if (!dirent.isDirectory()) continue;
-    const archiveDir = path.join(archivesDir, dirent.name);
-
-    let manifest = null;
-    try {
-      manifest = JSON.parse(fs.readFileSync(path.join(archiveDir, 'manifest.json'), 'utf8'));
-    } catch {
-      manifest = null;
-    }
-    if (!manifest || typeof manifest !== 'object') continue;
-
-    const startMs = manifest.startedAt ? Date.parse(manifest.startedAt) : NaN;
-    const endMs = manifest.archivedAt ? Date.parse(manifest.archivedAt) : NaN;
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
-
-    let archiveState = null;
-    try {
-      archiveState = JSON.parse(fs.readFileSync(path.join(archiveDir, 'state.json'), 'utf8'));
-    } catch {
-      archiveState = null;
-    }
-    if (!archiveState || typeof archiveState !== 'object') continue;
-
-    let archiveTaskCount = 0;
-    const archiveMilestonesMap = archiveState.milestones ?? {};
-    for (const milestone of Object.values(archiveMilestonesMap)) {
-      const missionsMap = milestone.missions ?? {};
-      for (const mission of Object.values(missionsMap)) {
-        let missionState = null;
-        try {
-          missionState = JSON.parse(
-            fs.readFileSync(path.join(archiveDir, 'state', `mission-${mission.id}.json`), 'utf8')
-          );
-        } catch {
-          missionState = null;
-        }
-        if (!missionState || typeof missionState !== 'object') continue;
-        for (const sm of Object.values(missionState.subMissions ?? {})) {
-          archiveTaskCount += Object.keys(sm.tasks ?? {}).length;
-        }
-      }
-    }
-
-    if (archiveTaskCount > 0) {
-      totalDurationMs += endMs - startMs;
-      totalTaskCount += archiveTaskCount;
-    }
-  }
-
-  return totalTaskCount > 0 ? totalDurationMs / totalTaskCount : 0;
 }
 
 export default deriveDecisionState;
