@@ -118,7 +118,7 @@ export const TEST_FILES = [
   'test/test-status-bar-terminal.js',
   'test/test-write-verify-json.js',
   'test/test-hard-checks-integration.js',
-  { npm: true, args: ['run', 'test:hard-checks-pipeline-wiring'] },
+  'test/test-hard-checks-pipeline-wiring.js',
   'test/test-snapshots-integration.js',
   'test/test-restore-sibling-supersede.js',
   'test/test-assert-changes-landed-all-files.js',
@@ -396,6 +396,17 @@ export const TEST_FILES = [
   'test/test-init-onboarding.js',
   'test/test-operator-manual.js',
   'test/test-batch-git-excludes-bare.js',
+  'test/test-extract-spec-section.js',
+  'test/test-git-guard-cli.js',
+  'test/test-git-guard.js',
+  'test/test-hard-checks-milestone-only.js',
+  'test/test-planner-reextract-assumptions.js',
+  'test/test-regression-remediation-planner.js',
+  'test/test-regression-softpass.js',
+  'test/test-remediation-no-line-refs.js',
+  'test/test-spec-edit-logging.js',
+  'test/test-write-json-atomic.js',
+  'test/test-manifest-integrity.js',
 ];
 
 /**

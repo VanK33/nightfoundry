@@ -14,11 +14,40 @@ import { readAffectedFiles } from './snapshots.js';
 import { checkTestRegistration } from '../gates/test-registration.js';
 import { runHardChecks } from '../gates/hard-checks.js';
 import { formatBanner } from './banner.js';
+import { normalizeTargetFile } from './path-utils.js';
+
+/**
+ * Read the flat exemption list from <projectRoot>/scripts/test-exemptions.json
+ * and return the set of exempted candidate files normalised to absolute paths.
+ * Fail-soft: any missing file, unreadable file, invalid JSON, non-array
+ * top-level value, or malformed entry yields an empty set — this must never
+ * throw out of runTestRegistrationGate.
+ * @param {string} projectRoot
+ * @returns {Set<string>}
+ */
+function readTestExemptionSet(projectRoot) {
+  const exemptSet = new Set();
+  try {
+    const exemptionsPath = path.join(projectRoot, 'scripts', 'test-exemptions.json');
+    if (!fs.existsSync(exemptionsPath)) return exemptSet;
+    const parsed = JSON.parse(fs.readFileSync(exemptionsPath, 'utf8'));
+    if (!Array.isArray(parsed)) return exemptSet;
+    for (const entry of parsed) {
+      if (entry && typeof entry.file === 'string' && entry.file.length > 0) {
+        exemptSet.add(normalizeTargetFile(projectRoot, entry.file));
+      }
+    }
+  } catch {
+    return new Set();
+  }
+  return exemptSet;
+}
 
 /**
  * Run the test-registration gate for a single task.
  * Computes the file set as the union of task.targetFiles and readAffectedFiles,
- * then delegates to checkTestRegistration.
+ * removes any candidates listed in scripts/test-exemptions.json, then delegates
+ * to checkTestRegistration.
  * @param {object} task
  * @param {string} harnessDir
  * @param {string} projectRoot
@@ -27,7 +56,11 @@ import { formatBanner } from './banner.js';
  */
 export async function runTestRegistrationGate(task, harnessDir, projectRoot, onLog) {
   const fileSet = [...new Set([...(task.targetFiles || []), ...readAffectedFiles(harnessDir, task.id)])];
-  const result = await checkTestRegistration(fileSet, harnessDir, projectRoot);
+  const exemptSet = readTestExemptionSet(projectRoot);
+  const candidateFiles = exemptSet.size === 0
+    ? fileSet
+    : fileSet.filter(f => !exemptSet.has(normalizeTargetFile(projectRoot, f)));
+  const result = await checkTestRegistration(candidateFiles, harnessDir, projectRoot);
   if (result.notApplicable) {
     onLog(`    Task ${task.id}: test-registration gate not applicable (no scripts/run-tests.js manifest in this project) — skipped`);
   }

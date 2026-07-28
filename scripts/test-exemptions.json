@@ -1,0 +1,6 @@
+[
+  {
+    "file": "test/test-signal-handler-integration.js",
+    "reason": "Exempted from registration due to a known signal-vs-task timing race: the test's assertions on signal delivery ordering relative to in-flight task completion are flaky because the interaction between process signal handlers and task scheduling is not deterministic. A rewrite of this test to eliminate the race is pending before it can be registered in scripts/run-tests.js."
+  }
+]

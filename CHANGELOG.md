@@ -1,3 +1,14 @@
+## [0.2.5] - 2026-07-28 — Closed test-manifest integrity hole: introduced exemption list, registered 11 tests, and added meta-test enforcement.
+
+### New features
+- Introduced test-exemptions.json as single-source-of-truth for exempting specific test files from manifest registration requirement
+- Modified test-registration gate to honor exemption list when validating test registrations
+- Registered 11 previously-unregistered test files in TEST_FILES manifest as plain string entries
+- Added test-manifest-integrity.js meta-test to enforce test-manifest invariants that every on-disk test/test-*.js file is either registered or exempted
+
+### Bug fixes
+- Normalized TEST_FILES array to plain string entries only, removing legacy npm-shaped entry for test-hard-checks-pipeline-wiring.js
+
 ## [0.2.4] - 2026-07-27 — Fixed four reviewer-ledger warnings across CLI routing, siderail API, task timing, and clean-command output.
 
 ### New features
