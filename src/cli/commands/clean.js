@@ -206,8 +206,10 @@ export async function reapOrphanRunDirs(projectRoot, flags = {}) {
  *
  * @param {string} projectRoot - Absolute path to the project root
  * @param {object} [flags={}] - CLI flags; flags.force skips all prompts
+ * @param {object} [deps={}] - Optional dependency overrides, forwarded to archive() as a
+ *   dependency-injection seam (e.g. deps.summarize to suppress a real Summarizer in tests)
  */
-export async function clean(projectRoot, flags = {}) {
+export async function clean(projectRoot, flags = {}, deps = {}) {
   if (flags.runs) {
     await reapOrphanRunDirs(projectRoot, flags);
     return;
@@ -248,7 +250,7 @@ export async function clean(projectRoot, flags = {}) {
     if (archiveFirst) {
       // clean is housekeeping (archive-then-remove), not a release gate — it
       // must not run, or be blocked by, the full test:all suite.
-      await archive(projectRoot, null, { ...flags, 'skip-test-gate': true });
+      await archive(projectRoot, null, { ...flags, 'skip-test-gate': true }, deps);
       // After archive, .harness/ is reinitialized — remove it now (rmSync with
       // force is a no-op if it happens to be absent).
       removeHarness(projectRoot);

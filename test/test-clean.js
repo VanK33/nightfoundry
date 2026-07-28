@@ -101,7 +101,7 @@ async function main() {
    *
    * Restores both streams in a finally block so failures don't poison later tests.
    */
-  async function runClean(tmpDir, flags, responses = []) {
+  async function runClean(tmpDir, flags, responses = [], deps = {}) {
     // Save the original process.stdin descriptor (it's a getter-only property).
     const origStdinDesc = Object.getOwnPropertyDescriptor(process, 'stdin');
     const mockStdin = responses.length > 0 ? createMockStdin(...responses) : null;
@@ -128,7 +128,7 @@ async function main() {
     }
 
     try {
-      await clean(tmpDir, flags);
+      await clean(tmpDir, flags, deps);
     } finally {
       process.stdout.write = origWrite;
       if (mockStdin && origStdinDesc) {
@@ -304,14 +304,37 @@ async function main() {
     // We pass flags.auto=true so that archive() skips its own "Archive anyway?"
     // confirmation (milestones are still in_progress).  The only stdin response
     // needed is 'y' for clean.js's "Archive first?" prompt.
+    //
+    // We set CC_ORCH_TEST=1 and inject a deps.summarize stub so archive()
+    // never constructs a real Summarizer (no SDK/network access). The prior
+    // value of CC_ORCH_TEST is saved and restored in a finally block so this
+    // TC never poisons later state, even if runClean throws.
+    const hadCcOrchTest = Object.prototype.hasOwnProperty.call(process.env, 'CC_ORCH_TEST');
+    const prevCcOrchTest = process.env.CC_ORCH_TEST;
+    process.env.CC_ORCH_TEST = '1';
+
+    const stubSummarize = async () => ({
+      headline: 'Stub headline',
+      bugs: [],
+      summary: 'Stub summary for TC6 (no real Summarizer/SDK contacted).',
+    });
+
     let output = '';
     let threw = false;
     try {
-      output = await runClean(tmpDir, { auto: true }, ['y']);
-    } catch (err) {
-      threw = true;
-      console.log(`  [FAIL] Unexpected error: ${err.message}`);
-      failed++;
+      try {
+        output = await runClean(tmpDir, { auto: true }, ['y'], { summarize: stubSummarize });
+      } catch (err) {
+        threw = true;
+        console.log(`  [FAIL] Unexpected error: ${err.message}`);
+        failed++;
+      }
+    } finally {
+      if (hadCcOrchTest) {
+        process.env.CC_ORCH_TEST = prevCcOrchTest;
+      } else {
+        delete process.env.CC_ORCH_TEST;
+      }
     }
 
     if (!threw) {

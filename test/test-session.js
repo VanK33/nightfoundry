@@ -8,6 +8,11 @@
 import { SessionManager } from '../src/orchestrator/infra/session-manager.js';
 
 async function main() {
+  if (process.env.CC_ORCH_REAL_SDK !== '1') {
+    console.log('  [SKIP] test-session.js requires a real Agent SDK session; set CC_ORCH_REAL_SDK=1 to run it.');
+    process.exit(0);
+  }
+
   const sm = new SessionManager();
   let passed = 0;
   let failed = 0;

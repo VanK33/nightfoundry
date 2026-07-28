@@ -828,7 +828,10 @@ export function validateChangelogSources(changelog, diffSummary) {
  * @param {string|null|undefined} name - Archive name (used to compute slug)
  * @param {object} flags - CLI flags; flags.auto or flags.a enables auto mode; flags.preserve or flags.P keeps the spec file at the project root after archiving
  * @param {object} [deps={}] - Optional dependency overrides for testing
- * @param {function} [deps.summarize] - Override for summarization; called as summarize(state, projectRoot) -> Promise<summaryData>
+ * @param {function} [deps.summarize] - Override for summarization; called as summarize(state, projectRoot) -> Promise<summaryData>.
+ *   Under the default hermetic test suite (process.env.CC_ORCH_TEST === '1'), omitting this
+ *   override causes archive() to throw (rather than construct a real Summarizer) — see the
+ *   hermeticity pre-check below, evaluated once, before the primary summarizer try block.
  * @param {object} [deps.Logger] - Override for Logger class
  * @param {object} [deps.TokenTracker] - Override for TokenTracker class
  * @param {object} [deps.SessionManager] - Override for SessionManager class
@@ -1029,6 +1032,28 @@ export async function archive(projectRoot, name, flags = {}, deps = {}) {
     ? { totalCost: Math.max(0, usageData.totalCost - flags.usageBaseline.totalCost), totalSessions: Math.max(0, usageData.totalSessions - flags.usageBaseline.totalSessions) }
     : usageData;
   const dataPackage = buildSummarizerDataPackage(state, projectRoot, specContent, usageData, archivesDir, deps);
+
+  // Hermeticity pre-check: under the default hermetic test suite
+  // (process.env.CC_ORCH_TEST === '1'), constructing a real Summarizer is
+  // forbidden — it would spawn a real agent session, which the hermetic test
+  // suite must never do. If the caller hasn't injected deps.summarize, fail
+  // fast right here — on the linear success branch, after dataPackage is
+  // built and BEFORE either summarizer try block below — so this rejection
+  // propagates to archive()'s caller instead of being absorbed by the
+  // '[archive] Summarizer failed after ... (continuing)' or
+  // '[archive] Summarizer retry failed ...' warn-and-continue catches. This
+  // single check structurally covers both `new Summarizer(...)` construction
+  // sites (the primary one below and the changelog-validation retry one
+  // further down), since the retry site is only reachable later on this same
+  // branch. No effect when deps.summarize is provided, or when CC_ORCH_TEST
+  // is unset/any value other than '1'.
+  if (process.env.CC_ORCH_TEST === '1' && !deps.summarize) {
+    throw new Error(
+      '[archive] Refusing to construct a real Summarizer: the default hermetic test suite ' +
+      '(process.env.CC_ORCH_TEST === \'1\') forbids constructing a real Summarizer. ' +
+      'Inject a deps.summarize override for this call.'
+    );
+  }
 
   // Step 3: Spawn Summarizer BEFORE slug computation so headline can feed
   // into the directory name when `name` is empty (slug fallback chain:

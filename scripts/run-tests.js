@@ -418,10 +418,12 @@ function runEntry(entry) {
 
   if (typeof entry === 'string') {
     label = entry;
+    console.log(`[RUN] ${label}`);
     result = spawnSync('node', [entry], { stdio: 'inherit' });
   } else {
     // npm special case
     label = `npm ${entry.args.join(' ')}`;
+    console.log(`[RUN] ${label}`);
     result = spawnSync('npm', entry.args, { stdio: 'inherit', shell: true });
   }
 
@@ -434,6 +436,20 @@ function runEntry(entry) {
 const isMain = process.argv[1] && process.argv[1].endsWith('run-tests.js');
 
 if (isMain) {
+  // Force the hermetic test environment for every spawned test child.
+  // These statements live inside the isMain block (not at module top level)
+  // because this module is dynamically imported purely for its TEST_FILES
+  // export (see the checkTestRegistration gate / test/test-test-registration-
+  // gate.js) — mutating process.env at module scope would leak into that
+  // importer's environment. A future real-SDK lane runs
+  // `node test/test-session.js` directly (outside this runner), which is
+  // exactly why the runner clears the CC_ORCH_REAL_SDK opt-in here: the
+  // runner's own children must always run hermetically, while the direct
+  // real-SDK lane invocation bypasses this file entirely and keeps its own
+  // env intact.
+  process.env.CC_ORCH_TEST = '1';
+  delete process.env.CC_ORCH_REAL_SDK;
+
   const results = [];
 
   for (const entry of TEST_FILES) {
