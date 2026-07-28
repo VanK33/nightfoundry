@@ -11,6 +11,8 @@
  *   buildMissionSystemPrompt(maxTasks) — system prompt for mission decomposition
  *   buildMissionUserPrompt(missionId, missionPlan, specConstraints) — user prompt for mission decomposition
  *   buildReplanSystemPrompt()          — system prompt for task replanning
+ *   buildPlanLintCorrectionPrompt(violations) — corrective user prompt for the
+ *     bounded plan-lint feedback retry (one corrective turn in the same session)
  */
 
 export const PROMPT_SECTION_TASK_SPECIFICITY = `## Task description specificity
@@ -184,6 +186,39 @@ export function buildMissionUserPrompt(missionId, missionPlan, specConstraints) 
 
 ${missionPlan ? `Mission plan:\n${missionPlan}\n` : ''}
 ${constraintsBlock}Explore the codebase first to understand existing patterns, then plan.`;
+}
+
+/**
+ * Corrective user prompt for the bounded plan-lint feedback retry: sent as
+ * ONE additional turn to the SAME planner session after a retryable lint
+ * rejection (T1 / T2 / scope-excursion). Renders each violation — its rule
+ * id, the offending task (when applicable), and the offending testCase/
+ * target text verbatim — followed by the three corrective instructions.
+ *
+ * Pure string builder; never throws on malformed input (non-array or
+ * malformed entries are skipped defensively).
+ *
+ * @param {Array<{ ruleId: string, taskId: (string|null), offending: string }>} violations
+ * @returns {string}
+ */
+export function buildPlanLintCorrectionPrompt(violations) {
+  const entries = Array.isArray(violations)
+    ? violations.filter((v) => v && typeof v === 'object' && !Array.isArray(v))
+    : [];
+  const violationLines = entries.map((v) => {
+    const ruleId = typeof v.ruleId === 'string' && v.ruleId.length > 0 ? v.ruleId : '?';
+    const taskPart = typeof v.taskId === 'string' && v.taskId.length > 0 ? ` task "${v.taskId}"` : '';
+    const offending = typeof v.offending === 'string' ? v.offending : String(v.offending ?? '');
+    return `- [${ruleId}]${taskPart}: ${offending}`;
+  });
+
+  return `Your previous plan was REJECTED by a plan lint. Violations:
+${violationLines.join('\n')}
+
+Re-emit the FULL corrected plan as structured JSON matching the session's jsonSchema (not a diff — the complete plan), applying these corrections:
+1. Every testCase must assert ONLY the behavior of that task's own targetFiles.
+2. Do NOT write modification-status predicates of the "X unchanged / existing tests for X still pass" shape — verifying that files outside the task stayed untouched is the regression gate's job, not a task-level check.
+3. A targetFile outside the spec-declared scope set must either be replaced with a declared-set alternative or have its task dropped.`;
 }
 
 export function buildReplanSystemPrompt() {

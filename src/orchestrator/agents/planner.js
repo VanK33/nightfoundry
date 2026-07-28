@@ -20,7 +20,7 @@ import config from '../infra/config.js';
 import { assumptionRemediationSchema, reviewRemediationSchema, regressionRemediationSchema, taskReplanSchema } from './_schemas.js';
 import { extractRejectedPhrases } from '../core/scope-parser.js';
 import { isTestTask } from '../core/state.js';
-import { buildMissionSystemPrompt, buildMissionUserPrompt, buildReplanSystemPrompt, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR } from './planner-prompts.js';
+import { buildMissionSystemPrompt, buildMissionUserPrompt, buildReplanSystemPrompt, buildPlanLintCorrectionPrompt, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR } from './planner-prompts.js';
 import { InfrastructureError } from '../infra/session-manager.js';
 import { buildDeclaredSet, lintPlanScope, lintGlobalPlanScope, checkScopeMappingConsistency } from '../gates/plan-scope-lint.js';
 import { lintPlanStructure, lintTaskCheckShapes, warnCrossMissionDuplicates } from '../gates/plan-structure-lint.js';
@@ -665,88 +665,130 @@ Return structured JSON with your findings.`;
   async _planMissionReusable(missionId, projectRoot, context, maxTasks) {
     const session = this._ensureReusableSession(projectRoot, maxTasks);
 
-    const userPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints);
+    // Bounded plan-lint feedback retry: at most ONE corrective turn per
+    // invocation, tracked in this LOCAL counter (no persisted state).
+    // Retryable rule ids are the planner-fixable violations reachable at
+    // this call site; classification is duck-typed on err.ruleId presence
+    // and membership — never instanceof.
+    const retryableLintRuleIds = new Set(['T1', 'T2', 'scope-excursion']);
+    let lintRetriesUsed = 0;
+    let userPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints);
+    let plan;
 
-    // Each turn records itself as a separate tokenTracker entry so
-    // per-mission cost attribution still works. The per-turn metadata
-    // carries the missionId and a turn index.
-    const turnIdx = session.turnCount + 1;
-    const turnName = `planner-mission-${missionId}-turn${turnIdx}`;
+    for (;;) {
+      // Each turn records itself as a separate tokenTracker entry so
+      // per-mission cost attribution still works. The per-turn metadata
+      // carries the missionId and a turn index. A corrective retry turn
+      // goes through this SAME block — same session, same accounting.
+      const turnIdx = session.turnCount + 1;
+      const turnName = `planner-mission-${missionId}-turn${turnIdx}`;
 
-    // Track per-turn wall time so session-summary.json has a
-    // durationMs field that the overhead analyzer can consume.
-    const turnStartedAt = new Date().toISOString();
-    const turnStartMs = Date.now();
+      // Track per-turn wall time so session-summary.json has a
+      // durationMs field that the overhead analyzer can consume.
+      const turnStartedAt = new Date().toISOString();
+      const turnStartMs = Date.now();
 
-    const result = await session.sendPrompt(userPrompt);
+      const result = await session.sendPrompt(userPrompt);
 
-    const turnFinishedAt = new Date().toISOString();
-    const turnDurationMs = Date.now() - turnStartMs;
+      const turnFinishedAt = new Date().toISOString();
+      const turnDurationMs = Date.now() - turnStartMs;
 
-    // Account the turn BEFORE any parsing/validation that could throw. The
-    // session-manager discards the reusable handle-name in-flight estimate at
-    // the turn boundary, so if recordSession ran only after the validators
-    // below, a validator failure would drop the turn's real token spend from
-    // usage entirely. recordSession + the per-turn summary depend only on the
-    // SDK result, not the parsed plan, so they run first.
-    await this.tokenTracker?.recordSession(turnName, 'planner', result, {
-      phase: '3b',
-      missionId,
-      reused: true,
-      turnIdx,
-      systemPromptTokens: session.handle.systemPromptTokens,
-      toolCallCount: session.handle._toolCallCount,
-    });
-
-    // Also write a per-turn entry to session-summary.json. Without
-    // this, scripts/analyze-overhead.js cannot see reusable-session
-    // turns — the analyzer reads session-summary.json, and the
-    // validation workflow (compare planner cacheCreation across runs)
-    // depends on having per-turn entries. The non-reusable session
-    // helpers (e.g. planGlobal) call writeSessionSummary() via
-    // getSessionSummary() which reads the log file; for reusable turns
-    // we derive the summary fields from the SDK result event directly,
-    // since the shared log file mixes events from all turns and can't
-    // be split per-turn reliably. (Bug caught in Copilot review, 2026-04-09.)
-    const usage = result?.usage || {};
-    const perTurnSummary = {
-      events: null, // not reliably attributable per-turn in a shared log
-      inputTokens: usage.input_tokens || 0,
-      outputTokens: usage.output_tokens || 0,
-      cacheCreation: usage.cache_creation_input_tokens || 0,
-      cacheRead: usage.cache_read_input_tokens || 0,
-      totalCost: result?.total_cost_usd || 0,
-      toolCalls: null, // same as events — not per-turn attributable
-      durationMs: turnDurationMs,
-      startedAt: turnStartedAt,
-      finishedAt: turnFinishedAt,
-    };
-    await this.logger.writeSessionSummary(turnName, perTurnSummary, {
-      role: 'planner',
-      phase: '3b',
-      missionId,
-      reused: true,
-      turnIdx,
-    });
-
-    // Parse + validate after the turn is accounted (these may throw).
-    const plan = this._extractJson(result);
-    _validatePathAnchorPreservation(plan, context.specTargetFiles || [], projectRoot);
-    const declaredSet = buildDeclaredSet(context.specTargetFiles || [], context.specAcceptanceCriteria || []);
-    if (declaredSet.size > 0) {
-      lintPlanScope(plan, declaredSet, {
-        projectRoot,
-        specTargetFiles: context.specTargetFiles || [],
-        specAcceptanceCriteria: context.specAcceptanceCriteria || [],
+      // Account the turn BEFORE any parsing/validation that could throw. The
+      // session-manager discards the reusable handle-name in-flight estimate at
+      // the turn boundary, so if recordSession ran only after the validators
+      // below, a validator failure would drop the turn's real token spend from
+      // usage entirely. recordSession + the per-turn summary depend only on the
+      // SDK result, not the parsed plan, so they run first.
+      await this.tokenTracker?.recordSession(turnName, 'planner', result, {
+        phase: '3b',
+        missionId,
+        reused: true,
+        turnIdx,
+        systemPromptTokens: session.handle.systemPromptTokens,
+        toolCallCount: session.handle._toolCallCount,
       });
+
+      // Also write a per-turn entry to session-summary.json. Without
+      // this, scripts/analyze-overhead.js cannot see reusable-session
+      // turns — the analyzer reads session-summary.json, and the
+      // validation workflow (compare planner cacheCreation across runs)
+      // depends on having per-turn entries. The non-reusable session
+      // helpers (e.g. planGlobal) call writeSessionSummary() via
+      // getSessionSummary() which reads the log file; for reusable turns
+      // we derive the summary fields from the SDK result event directly,
+      // since the shared log file mixes events from all turns and can't
+      // be split per-turn reliably. (Bug caught in Copilot review, 2026-04-09.)
+      const usage = result?.usage || {};
+      const perTurnSummary = {
+        events: null, // not reliably attributable per-turn in a shared log
+        inputTokens: usage.input_tokens || 0,
+        outputTokens: usage.output_tokens || 0,
+        cacheCreation: usage.cache_creation_input_tokens || 0,
+        cacheRead: usage.cache_read_input_tokens || 0,
+        totalCost: result?.total_cost_usd || 0,
+        toolCalls: null, // same as events — not per-turn attributable
+        durationMs: turnDurationMs,
+        startedAt: turnStartedAt,
+        finishedAt: turnFinishedAt,
+      };
+      await this.logger.writeSessionSummary(turnName, perTurnSummary, {
+        role: 'planner',
+        phase: '3b',
+        missionId,
+        reused: true,
+        turnIdx,
+      });
+
+      // Parse + validate after the turn is accounted (these may throw).
+      // The retry structure wraps ONLY the validation chain below — an
+      // _extractJson failure never triggers a lint retry.
+      plan = this._extractJson(result);
+      try {
+        _validatePathAnchorPreservation(plan, context.specTargetFiles || [], projectRoot);
+        const declaredSet = buildDeclaredSet(context.specTargetFiles || [], context.specAcceptanceCriteria || []);
+        if (declaredSet.size > 0) {
+          lintPlanScope(plan, declaredSet, {
+            projectRoot,
+            specTargetFiles: context.specTargetFiles || [],
+            specAcceptanceCriteria: context.specAcceptanceCriteria || [],
+          });
+        }
+        // plan-structure-lint: run UNCONDITIONALLY (independent of declaredSet),
+        // covering mission/milestone leg counts + same-milestone duplicate
+        // targetFiles (no-op here since a mission plan carries no milestones)
+        // and tree-purity check shapes on this mission's own tasks. Both throw
+        // a PlanLintError prefixed '[plan-structure-lint]' on violation.
+        lintPlanStructure(plan, context.specPlanStructure, { projectRoot });
+        lintTaskCheckShapes(plan, { projectRoot });
+      } catch (err) {
+        const retryable = typeof err?.ruleId === 'string' && retryableLintRuleIds.has(err.ruleId);
+        if (retryable && lintRetriesUsed < 1) {
+          lintRetriesUsed++;
+          const violationCount = Array.isArray(err.violations) ? err.violations.length : 0;
+          this.logger.warn(
+            `[plan-lint-retry] mission ${missionId}: plan rejected by lint rule ${err.ruleId} ` +
+            `(${violationCount} violation(s)); sending one corrective turn to the planner session`,
+          );
+          userPrompt = buildPlanLintCorrectionPrompt(Array.isArray(err.violations) ? err.violations : []);
+          continue;
+        }
+        // Second violation of any rule, a non-retryable rule id, or an
+        // error without a ruleId: propagate unchanged. Record the
+        // corrective turn's outcome when one was spent.
+        if (lintRetriesUsed > 0) {
+          const rejectedBy = typeof err?.ruleId === 'string' ? `lint rule ${err.ruleId}` : (err?.name || 'Error');
+          this.logger.warn(
+            `[plan-lint-retry] mission ${missionId}: corrective turn REJECTED by ${rejectedBy}; failing the plan`,
+          );
+        }
+        throw err;
+      }
+      if (lintRetriesUsed > 0) {
+        this.logger.warn(`[plan-lint-retry] mission ${missionId}: corrective turn ACCEPTED; plan passes the validation chain`);
+      }
+      break;
     }
-    // plan-structure-lint: run UNCONDITIONALLY (independent of declaredSet),
-    // covering mission/milestone leg counts + same-milestone duplicate
-    // targetFiles (no-op here since a mission plan carries no milestones)
-    // and tree-purity check shapes on this mission's own tasks. Both throw
-    // a plain Error prefixed '[plan-structure-lint]' on violation.
-    lintPlanStructure(plan, context.specPlanStructure, { projectRoot });
-    lintTaskCheckShapes(plan, { projectRoot });
+
     // WARN-level: same-milestone sibling missions' already-planned task
     // targetFiles that collide with this mission's own — never throws;
     // surfaced through the same scopeWarnings channel as scope-mapping

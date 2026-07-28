@@ -45,7 +45,7 @@ import { formatBanner } from './banner.js';
 import { preflight as runPreflight } from './preflight.js';
 import { snapshotFiles, restoreSnapshot, cleanupSnapshots, readAffectedFiles, assertChangesLanded } from './snapshots.js';
 import { createParkSnapshot } from './park-snapshot.js';
-import { appendCandidate } from './candidates-ledger.js';
+import { appendCandidate, lintErrorClass } from './candidates-ledger.js';
 import { assertNoReentrantLiveRun } from './reentrancy-guard.js';
 import { sweepOrphanRunDirs } from './harness-reaper.js';
 import {
@@ -1837,7 +1837,12 @@ class Pipeline {
                   slug: entry.slug,
                   signature: {
                     phase: 'failed-plan',
-                    errorClass: err.constructor.name,
+                    // Granular lint signature: plan-lint:<ruleId> for
+                    // ruleId-bearing lint errors, the error's name
+                    // otherwise. ONLY this failed-plan emit uses
+                    // lintErrorClass; every other emit keeps deriving
+                    // errorClass as before.
+                    errorClass: lintErrorClass(err),
                     analyzerRecommendation: null,
                     taskState: null,
                   },

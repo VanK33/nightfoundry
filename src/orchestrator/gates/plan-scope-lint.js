@@ -61,6 +61,7 @@ import {
   scopeSpecHardChecks,
   isMilestoneOnlyCheck,
 } from '../agents/planner.js';
+import { PlanLintError } from './plan-structure-lint.js';
 
 /**
  * Builds the declared-path set from the spec's authoritative target_files
@@ -261,23 +262,35 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
   const flatTasks = [];
 
   // (a) Every task targetFile must fall within (or be equivalent to) the
-  // declared set — no hard excursions.
+  // declared set — no hard excursions. Collect-all: the excursion pass
+  // COMPLETES (in today's scan order — do not reorder) gathering every
+  // excursion before throwing; the thrown message is the first
+  // violation's text, byte-identical to before. The coverage pass below
+  // is only reached when no excursion exists, exactly as before.
+  const excursionViolations = [];
+  let firstExcursionMessage = null;
   for (const tasks of taskArrays) {
     for (const task of tasks) {
       if (!task) continue;
       flatTasks.push(task);
       if (!Array.isArray(task.targetFiles)) continue;
+      const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : null;
       for (const emitted of task.targetFiles) {
         if (typeof emitted !== 'string' || emitted.length === 0) continue;
         allEmitted.push(emitted);
         if (!_isDeclaredEquivalent(emitted, declared, projectRoot)) {
-          throw new Error(
-            `[plan-scope-lint] scope excursion: task "${task.id || '?'}" targets "${emitted}" ` +
-            'which is outside the spec-declared scope set',
-          );
+          excursionViolations.push({ ruleId: 'scope-excursion', taskId, offending: emitted });
+          if (firstExcursionMessage === null) {
+            firstExcursionMessage =
+              `[plan-scope-lint] scope excursion: task "${task.id || '?'}" targets "${emitted}" ` +
+              'which is outside the spec-declared scope set';
+          }
         }
       }
     }
+  }
+  if (excursionViolations.length > 0) {
+    throw new PlanLintError(firstExcursionMessage, 'scope-excursion', excursionViolations);
   }
 
   // (b) Per-scoped-check coverage: for every acceptance command
@@ -294,10 +307,15 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
       checkableChecks.push({ name: item.description, command: v.command });
     }
     if (checkableChecks.length > 0) {
+      // Collect-all: gather every uncovered token (in today's scan order)
+      // before throwing; the thrown message is the first violation's text.
+      const coverageViolations = [];
+      let firstCoverageMessage = null;
       const scopedMap = scopeSpecHardChecks(checkableChecks, flatTasks, specTargetFiles, projectRoot);
       for (const task of flatTasks) {
         const assigned = scopedMap.get(task.id);
         if (!Array.isArray(assigned) || assigned.length === 0) continue;
+        const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : null;
         for (const check of assigned) {
           const tokens = extractPathTokens(check.command, projectRoot);
           const exemptTokens = _exemptCommandTokens(check.command, projectRoot);
@@ -307,13 +325,18 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
               (emitted) => emitted === token || _pathsEquivalent(emitted, token, projectRoot),
             );
             if (!covered) {
-              throw new Error(
-                `[plan-scope-lint] scoped acceptance command "${check.command}" references ` +
-                `"${token}" not covered by any task's targetFiles`,
-              );
+              coverageViolations.push({ ruleId: 'uncovered-token', taskId, offending: token });
+              if (firstCoverageMessage === null) {
+                firstCoverageMessage =
+                  `[plan-scope-lint] scoped acceptance command "${check.command}" references ` +
+                  `"${token}" not covered by any task's targetFiles`;
+              }
             }
           }
         }
+      }
+      if (coverageViolations.length > 0) {
+        throw new PlanLintError(firstCoverageMessage, 'uncovered-token', coverageViolations);
       }
     }
   }
@@ -369,6 +392,10 @@ export function lintGlobalPlanScope(globalPlan, specTargetFiles, specAcceptanceC
 
   const criteria = Array.isArray(specAcceptanceCriteria) ? specAcceptanceCriteria : [];
   const specTargets = Array.isArray(specTargetFiles) ? specTargetFiles : [];
+  // Collect-all: gather every uncovered command (in today's scan order)
+  // before throwing; the thrown message is the first violation's text.
+  const globalViolations = [];
+  let firstGlobalMessage = null;
   for (const item of criteria) {
     if (!isCheckableCriterion(item)) continue;
     const v = item.verification;
@@ -383,10 +410,15 @@ export function lintGlobalPlanScope(globalPlan, specTargetFiles, specAcceptanceC
       ),
     );
     if (!covered) {
-      throw new Error(
-        `[plan-scope-lint] acceptance command "${v.command}" is not covered by any mission's targetFiles`,
-      );
+      globalViolations.push({ ruleId: 'global-uncovered-token', taskId: null, offending: v.command });
+      if (firstGlobalMessage === null) {
+        firstGlobalMessage =
+          `[plan-scope-lint] acceptance command "${v.command}" is not covered by any mission's targetFiles`;
+      }
     }
+  }
+  if (globalViolations.length > 0) {
+    throw new PlanLintError(firstGlobalMessage, 'global-uncovered-token', globalViolations);
   }
 }
 

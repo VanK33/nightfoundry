@@ -12,8 +12,11 @@
  * than imported.
  *
  * Public API:
+ *   PlanLintError — structured lint error (ruleId + violations[]) thrown
+ *     by every rejection leg in this module and plan-scope-lint.js.
+ *     Messages stay byte-identical to the previous plain-Error text.
  *   lintPlanStructure(globalPlan, specPlanStructure, opts) → void
- *     THROWS a plain Error prefixed `[plan-structure-lint]` when:
+ *     THROWS a PlanLintError prefixed `[plan-structure-lint]` when:
  *       L1/L2 — `specPlanStructure` is a plain object carrying integer
  *         `max_missions` / `max_milestones` AND the plan's total mission
  *         count / milestone count exceeds it. Absent or malformed
@@ -25,7 +28,7 @@
  *         and not checked here.
  *     Returns undefined ("pass") otherwise.
  *   lintTaskCheckShapes(plan, opts) → void
- *     THROWS a plain Error prefixed `[plan-structure-lint]` when a task's
+ *     THROWS a PlanLintError prefixed `[plan-structure-lint]` when a task's
  *     `testCases[]` string entry matches a tree-purity check shape (T1 or
  *     T2, see below) with no applicable exemption. Returns undefined
  *     ("pass") otherwise.
@@ -77,6 +80,35 @@
  */
 import path from 'path';
 import { extractPathTokens, resolveSpecPathAnchor } from '../agents/planner.js';
+
+/**
+ * PlanLintError — structured lint rejection carrying a rule id and the
+ * full list of violations of that rule found in the plan.
+ *
+ * The thrown `message` remains the FIRST violation's text, byte-identical
+ * to the plain-Error message thrown before this class existed, so
+ * message-prefix consumers and existing tests are unaffected. Consumers
+ * classify by the PRESENCE of `err.ruleId` (duck-typing), never
+ * instanceof — this class is defined here and imported by
+ * plan-scope-lint.js purely to share the constructor shape.
+ *
+ * `violations[]` elements carry `{ ruleId, taskId, offending }` where
+ * `taskId` is null when not applicable and `offending` is the violating
+ * testCase/target text verbatim.
+ */
+export class PlanLintError extends Error {
+  /**
+   * @param {string} message - First violation's message text (byte-identical to the legacy plain-Error message).
+   * @param {string} ruleId - The violated rule id (e.g. 'T1', 'T2', 'scope-excursion').
+   * @param {Array<{ ruleId: string, taskId: (string|null), offending: string }>} violations
+   */
+  constructor(message, ruleId, violations) {
+    super(message);
+    this.name = 'PlanLintError';
+    this.ruleId = ruleId;
+    this.violations = Array.isArray(violations) ? violations : [];
+  }
+}
 
 /**
  * Path-equivalence wrapper — re-derived locally (normative definition;
@@ -223,23 +255,34 @@ export function lintPlanStructure(globalPlan, specPlanStructure, opts = {}) {
     const milestoneCount = milestoneGroups.length;
 
     if (Number.isInteger(specPlanStructure.max_missions) && missionCount > specPlanStructure.max_missions) {
-      throw new Error(
+      const message =
         `[plan-structure-lint] mission count ${missionCount} exceeds spec-declared ` +
-        `max_missions ${specPlanStructure.max_missions}`,
-      );
+        `max_missions ${specPlanStructure.max_missions}`;
+      // A cap rule has exactly one violation per plan (the single count);
+      // there is no per-testCase/target text, so `offending` carries the
+      // violation description.
+      throw new PlanLintError(message, 'structure-cap-missions', [
+        { ruleId: 'structure-cap-missions', taskId: null, offending: message },
+      ]);
     }
     if (Number.isInteger(specPlanStructure.max_milestones) && milestoneCount > specPlanStructure.max_milestones) {
-      throw new Error(
+      const message =
         `[plan-structure-lint] milestone count ${milestoneCount} exceeds spec-declared ` +
-        `max_milestones ${specPlanStructure.max_milestones}`,
-      );
+        `max_milestones ${specPlanStructure.max_milestones}`;
+      throw new PlanLintError(message, 'structure-cap-milestones', [
+        { ruleId: 'structure-cap-milestones', taskId: null, offending: message },
+      ]);
     }
   }
 
   // L3 (unconditional) — two different missions in the SAME milestone
   // declaring path-equivalent targetFiles. scripts/run-tests.js is exempt.
   // Cross-milestone duplication is legal (each milestone group checked
-  // independently).
+  // independently). Collect-all: the scan gathers EVERY duplicate pair
+  // (in today's scan order — do not reorder) before throwing; the thrown
+  // message is the first violation's text, byte-identical to before.
+  const duplicateViolations = [];
+  let firstDuplicateMessage = null;
   for (const missions of milestoneGroups) {
     for (let i = 0; i < missions.length; i++) {
       for (let j = i + 1; j < missions.length; j++) {
@@ -250,15 +293,20 @@ export function lintPlanStructure(globalPlan, specPlanStructure, opts = {}) {
           for (const pathB of b.targetFiles) {
             if (pathB === _RUN_TESTS_EXEMPT_PATH) continue;
             if (_pathsSameFile(pathA, pathB, projectRoot)) {
-              throw new Error(
-                `[plan-structure-lint] declared-duplicate targetFile: mission "${a.id}" and ` +
-                `mission "${b.id}" in the same milestone both declare "${pathA}"`,
-              );
+              duplicateViolations.push({ ruleId: 'declared-duplicate', taskId: null, offending: pathA });
+              if (firstDuplicateMessage === null) {
+                firstDuplicateMessage =
+                  `[plan-structure-lint] declared-duplicate targetFile: mission "${a.id}" and ` +
+                  `mission "${b.id}" in the same milestone both declare "${pathA}"`;
+              }
             }
           }
         }
       }
     }
+  }
+  if (duplicateViolations.length > 0) {
+    throw new PlanLintError(firstDuplicateMessage, 'declared-duplicate', duplicateViolations);
   }
 }
 
@@ -373,6 +421,15 @@ export function lintTaskCheckShapes(plan, opts = {}) {
     ? opts.projectRoot
     : null;
 
+  // Collect-all: the first violation encountered in today's scan order
+  // (per-testCase T2-before-T1 — do not reorder) fixes the THROWING rule
+  // and the thrown message (byte-identical to before); the scan then
+  // continues, gathering every further violation OF THAT RULE across the
+  // whole plan before throwing.
+  let throwRuleId = null;
+  let firstMessage = null;
+  const violations = [];
+
   const taskArrays = _collectTaskArrays(plan);
   for (const tasks of taskArrays) {
     for (const task of tasks) {
@@ -380,6 +437,7 @@ export function lintTaskCheckShapes(plan, opts = {}) {
       const ownTargetFiles = Array.isArray(task.targetFiles)
         ? task.targetFiles.filter((f) => typeof f === 'string' && f.length > 0)
         : [];
+      const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : null;
 
       for (const testCase of task.testCases) {
         if (typeof testCase !== 'string' || testCase.length === 0) continue;
@@ -392,21 +450,33 @@ export function lintTaskCheckShapes(plan, opts = {}) {
         // before shape checks run.
         const strippedText = _stripBacktickSpans(testCase);
 
-        if (_hasT2Violation(strippedText)) {
-          throw new Error(
-            `[plan-structure-lint] task "${task.id || '?'}" testCase "${testCase}" asserts a ` +
-            'literal tree-state shape (T2), which is out of scope for a task-level check',
-          );
+        if ((throwRuleId === null || throwRuleId === 'T2') && _hasT2Violation(strippedText)) {
+          if (throwRuleId === null) {
+            throwRuleId = 'T2';
+            firstMessage =
+              `[plan-structure-lint] task "${task.id || '?'}" testCase "${testCase}" asserts a ` +
+              'literal tree-state shape (T2), which is out of scope for a task-level check';
+          }
+          violations.push({ ruleId: 'T2', taskId, offending: testCase });
+          continue;
         }
 
-        if (_hasT1Violation(strippedText, ownTargetFiles, projectRoot)) {
-          throw new Error(
-            `[plan-structure-lint] task "${task.id || '?'}" testCase "${testCase}" asserts a ` +
-            'modification-status predicate (T1) referencing a file outside its own targetFiles',
-          );
+        if ((throwRuleId === null || throwRuleId === 'T1')
+          && _hasT1Violation(strippedText, ownTargetFiles, projectRoot)) {
+          if (throwRuleId === null) {
+            throwRuleId = 'T1';
+            firstMessage =
+              `[plan-structure-lint] task "${task.id || '?'}" testCase "${testCase}" asserts a ` +
+              'modification-status predicate (T1) referencing a file outside its own targetFiles';
+          }
+          violations.push({ ruleId: 'T1', taskId, offending: testCase });
         }
       }
     }
+  }
+
+  if (throwRuleId !== null) {
+    throw new PlanLintError(firstMessage, throwRuleId, violations);
   }
 }
 

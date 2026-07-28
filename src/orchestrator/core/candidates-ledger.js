@@ -18,6 +18,7 @@
  * Public API:
  *   candidatesLedgerPath(projectRoot)
  *   hashSignature(signature)
+ *   lintErrorClass(err)
  *   appendCandidate(projectRoot, entry, { onWarn })
  */
 import fs from 'fs';
@@ -47,6 +48,20 @@ export function hashSignature(signature) {
     signature?.taskState ?? null,
   ]);
   return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+/**
+ * Granular errorClass for a candidates-ledger signature. A lint error
+ * carrying a structured `ruleId` (duck-typed presence check — never
+ * instanceof) maps to `plan-lint:<ruleId>` so recurring lint-specific
+ * failure patterns are distinguishable in the ledger; any other error
+ * maps to its name ('Error' as the last resort). Pure — no I/O.
+ *
+ * @param {*} err
+ * @returns {string}
+ */
+export function lintErrorClass(err) {
+  return err?.ruleId ? `plan-lint:${err.ruleId}` : (err?.name ?? 'Error');
 }
 
 /**
