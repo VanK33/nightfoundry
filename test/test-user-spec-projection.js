@@ -168,6 +168,28 @@ test('projectUserSpec: specMd fed through the real extractScopeItems yields one 
   assert.deepStrictEqual(labels, expectedLabels);
 });
 
+test('projectUserSpec: specMd fed through the real extractScopeItems drops no scope item when two scope_in entries share an identical label', () => {
+  const userSpec = {
+    goal: 'Normalize duplicate scope labels',
+    scope_in: [
+      { label: 'Update handler', files: ['src/handler-a.js'] },
+      { label: 'Update handler', files: ['src/handler-b.js'] },
+    ],
+    success_criteria: [
+      { description: 'Handlers pass', evidence: 'node test/handlers.test.js' },
+    ],
+  };
+
+  const { specMd } = projectUserSpec(userSpec);
+  const scopeItems = extractScopeItems(specMd);
+
+  assert.strictEqual(
+    scopeItems.length,
+    userSpec.scope_in.length,
+    `expected ${userSpec.scope_in.length} scope items (one per scope_in entry), got ${scopeItems.length}`
+  );
+});
+
 // ── (6) BY-CONSTRUCTION INVARIANT ─────────────────────────────────────────
 
 const representativeUserSpecs = [

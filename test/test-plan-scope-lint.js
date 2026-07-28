@@ -613,7 +613,7 @@ await test('TC9: checkScopeMappingConsistency returns warnings and never throws 
   );
 });
 
-// ── TC10-TC17: argv[0] / assignment-token exemption from the per-scoped- ──
+// ── TC10-TC18: argv[0] / assignment-token exemption from the per-scoped- ──
 // ── check coverage requirement (see _exemptCommandTokens in ────────────────
 // ── plan-scope-lint.js). Each case follows the TC6 fixture shape: a ────────
 // ── kind='command' specAcceptanceCriteria entry plus a plan whose task's ───
@@ -852,6 +852,45 @@ await test('TC17: SHARED-EXTRACTOR PIN (g) — extractPathTokens still returns "
   assert.ok(
     tokens.includes('.venv/bin/python'),
     `extractPathTokens should still include ".venv/bin/python" among its path-like tokens, got: ${JSON.stringify(tokens)}`,
+  );
+});
+
+await test('TC18: NEGATIVE (h) — the same ".venv/bin/python" string occupies BOTH the exempt argv[0] position AND a genuine trailing-argument position; the trailing occurrence must still throw', async () => {
+  const specTargetFiles = ['tests/dup.py'];
+  const specAcceptanceCriteria = [
+    {
+      description: 'venv python runner reappears as a trailing argument',
+      verification: {
+        kind: 'command',
+        command: '.venv/bin/python tests/dup.py .venv/bin/python',
+      },
+    },
+  ];
+  const declaredSet = buildDeclaredSet(specTargetFiles, specAcceptanceCriteria);
+  const plan = {
+    subMissions: [
+      {
+        id: 'sm-001',
+        tasks: [
+          { id: 'task-dup', targetFiles: ['tests/dup.py'], dependencies: [] },
+        ],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => lintPlanScope(plan, declaredSet, { specTargetFiles, specAcceptanceCriteria }),
+    (err) => {
+      assert.ok(err instanceof Error, 'should be an Error instance');
+      assert.ok(
+        err.message.includes('.venv/bin/python'),
+        `message should name the uncovered token ".venv/bin/python", got: ${err.message}`,
+      );
+      return true;
+    },
+    'exemption is decided per occurrence (raw-token position), not per cleaned string value: ' +
+    'the identical ".venv/bin/python" string is exempt at argv[0] but the SAME string ' +
+    'reappearing as a trailing argument is a distinct, non-exempt occurrence that must still throw',
   );
 });
 

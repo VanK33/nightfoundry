@@ -172,34 +172,40 @@ const _SHELL_CONNECTOR_TOKENS = new Set(['&&', '||', ';', '|']);
 const _ASSIGNMENT_TOKEN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
- * Gathers the set of CLEANED path tokens that are exempt from the
- * per-scoped-check coverage requirement in lintPlanScope's coverage loop:
+ * Gathers the set of raw-token OCCURRENCE POSITIONS (indices into
+ * `command.split(/\s+/)` with empty entries filtered out) that are exempt
+ * from the per-scoped-check coverage requirement in lintPlanScope's
+ * coverage loop:
  *   - argv[0] of the whole command, and argv[0] of each segment following
  *     a standalone shell-connector token (&&, ||, ;, |) — in both cases
  *     skipping any leading assignment tokens (VAR=value) when locating
  *     argv[0]; and
  *   - every assignment token (VAR=value) found anywhere in the command.
  *
- * Each raw candidate token is cleaned via the planner's shared
- * `extractPathTokens`, which returns [] for non-path-like runners (grep,
- * node, npm) and for URLs/directories, so only genuinely path-like
- * runners/config-values end up exempt. Consults no filesystem state beyond
- * what `extractPathTokens` itself already does. Never throws.
+ * Exemption is decided PER OCCURRENCE (raw-token position), never per
+ * cleaned string value: the same string appearing again at a non-exempt
+ * position (e.g. as a trailing argument) still requires coverage even
+ * though an identical string is exempt at argv[0]. The call site cleans
+ * each raw token through the planner's shared `extractPathTokens`, which
+ * returns [] for non-path-like runners (grep, node, npm) and for
+ * URLs/directories, so a position only ever contributes a token when it is
+ * genuinely path-like — this function itself decides exemption purely from
+ * token position/shape (assignment regex, connector boundaries), never
+ * from a cleaned value. Consults no filesystem state. Never throws.
  *
  * @param {string} command
- * @param {string|null} [projectRoot]
- * @returns {Set<string>}
+ * @param {string|null} [projectRoot] - unused; kept for call-site symmetry.
+ * @returns {Set<number>}
  */
-function _exemptCommandTokens(command, projectRoot) {
-  const exempt = new Set();
-  if (typeof command !== 'string' || command.length === 0) return exempt;
+function _exemptCommandTokens(command, _projectRoot) {
+  const exemptPositions = new Set();
+  if (typeof command !== 'string' || command.length === 0) return exemptPositions;
 
   const rawTokens = command.split(/\s+/).filter((t) => t.length > 0);
-  const candidateRawTokens = new Set();
 
   // Every assignment token anywhere in the command.
-  for (const t of rawTokens) {
-    if (_ASSIGNMENT_TOKEN_RE.test(t)) candidateRawTokens.add(t);
+  for (let i = 0; i < rawTokens.length; i++) {
+    if (_ASSIGNMENT_TOKEN_RE.test(rawTokens[i])) exemptPositions.add(i);
   }
 
   // argv[0] of the whole command, and of each segment following a
@@ -210,17 +216,11 @@ function _exemptCommandTokens(command, projectRoot) {
     if (!atBoundary) continue;
     let j = segmentStart;
     while (j < i && _ASSIGNMENT_TOKEN_RE.test(rawTokens[j])) j++;
-    if (j < i) candidateRawTokens.add(rawTokens[j]);
+    if (j < i) exemptPositions.add(j);
     segmentStart = i + 1;
   }
 
-  for (const raw of candidateRawTokens) {
-    for (const cleaned of extractPathTokens(raw, projectRoot)) {
-      exempt.add(cleaned);
-    }
-  }
-
-  return exempt;
+  return exemptPositions;
 }
 
 /**
@@ -317,19 +317,23 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
         if (!Array.isArray(assigned) || assigned.length === 0) continue;
         const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : null;
         for (const check of assigned) {
-          const tokens = extractPathTokens(check.command, projectRoot);
-          const exemptTokens = _exemptCommandTokens(check.command, projectRoot);
-          for (const token of tokens) {
-            if (exemptTokens.has(token)) continue;
-            const covered = allEmitted.some(
-              (emitted) => emitted === token || _pathsEquivalent(emitted, token, projectRoot),
-            );
-            if (!covered) {
-              coverageViolations.push({ ruleId: 'uncovered-token', taskId, offending: token });
-              if (firstCoverageMessage === null) {
-                firstCoverageMessage =
-                  `[plan-scope-lint] scoped acceptance command "${check.command}" references ` +
-                  `"${token}" not covered by any task's targetFiles`;
+          const rawTokens = typeof check.command === 'string'
+            ? check.command.split(/\s+/).filter((t) => t.length > 0)
+            : [];
+          const exemptPositions = _exemptCommandTokens(check.command, projectRoot);
+          for (let i = 0; i < rawTokens.length; i++) {
+            if (exemptPositions.has(i)) continue;
+            for (const token of extractPathTokens(rawTokens[i], projectRoot)) {
+              const covered = allEmitted.some(
+                (emitted) => emitted === token || _pathsEquivalent(emitted, token, projectRoot),
+              );
+              if (!covered) {
+                coverageViolations.push({ ruleId: 'uncovered-token', taskId, offending: token });
+                if (firstCoverageMessage === null) {
+                  firstCoverageMessage =
+                    `[plan-scope-lint] scoped acceptance command "${check.command}" references ` +
+                    `"${token}" not covered by any task's targetFiles`;
+                }
               }
             }
           }

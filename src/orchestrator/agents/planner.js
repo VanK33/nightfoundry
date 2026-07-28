@@ -20,7 +20,7 @@ import config from '../infra/config.js';
 import { assumptionRemediationSchema, reviewRemediationSchema, regressionRemediationSchema, taskReplanSchema } from './_schemas.js';
 import { extractRejectedPhrases } from '../core/scope-parser.js';
 import { isTestTask } from '../core/state.js';
-import { buildMissionSystemPrompt, buildMissionUserPrompt, buildReplanSystemPrompt, buildPlanLintCorrectionPrompt, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR } from './planner-prompts.js';
+import { buildMissionSystemPrompt, buildMissionUserPrompt, buildReplanSystemPrompt, buildPlanLintCorrectionPrompt, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS } from './planner-prompts.js';
 import { InfrastructureError } from '../infra/session-manager.js';
 import { buildDeclaredSet, lintPlanScope, lintGlobalPlanScope, checkScopeMappingConsistency } from '../gates/plan-scope-lint.js';
 import { lintPlanStructure, lintTaskCheckShapes, warnCrossMissionDuplicates } from '../gates/plan-structure-lint.js';
@@ -2265,4 +2265,4 @@ function enrichTestTaskTargetFiles(missionDecomp, projectRoot) {
   }
 }
 
-export { Planner, extractPathTokens, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, pathTokenMatchesFile, isMilestoneOnlyCheck, isWholeSuiteCommand, scopeSpecHardChecks, findOrphanedSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, _validatePathAnchorPreservation, resolveSpecPathAnchor, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, isCheckableCriterion };
+export { Planner, extractPathTokens, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, pathTokenMatchesFile, isMilestoneOnlyCheck, isWholeSuiteCommand, scopeSpecHardChecks, findOrphanedSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, _validatePathAnchorPreservation, resolveSpecPathAnchor, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS, isCheckableCriterion };

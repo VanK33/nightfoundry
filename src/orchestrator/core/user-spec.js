@@ -147,10 +147,29 @@ function renderTitleSection(spec, specJson) {
  * numbered-bold dialect:
  *
  *   N. **<label>** — <behavior>
+ *   <!-- scope-item: <marker> -->
  *      - <file>
  *
  * `— <behavior>` is omitted when the entry has no behavior string, and the
  * file bullets are omitted when the entry has no files array.
+ *
+ * Every entry additionally emits an HTML `<!-- scope-item: ... -->` comment
+ * marker — the `comment-marker` pattern `extractScopeItems` (scope-parser.js)
+ * already recognises — so the rendered markdown round-trips losslessly
+ * through `extractScopeItems` even when two or more entries share an
+ * identical label (which `extractScopeItems` would otherwise collapse via
+ * its dedupe-by-label step). The marker text is unique per *entry*:
+ *
+ *   - the first occurrence of a given label emits a marker carrying the
+ *     bare label, which harmlessly collapses (during extractScopeItems'
+ *     dedupe) with that same entry's `N. **label**` numbered-bold line — so
+ *     the entry still contributes exactly one item, with its `source` still
+ *     'numbered-bold-item' (the bold line is emitted, and therefore parsed,
+ *     first).
+ *   - each repeat occurrence of a label emits a marker with a deterministic
+ *     disambiguating suffix (` (dup N)`, where N is the 1-based occurrence
+ *     count for that label within this scope_in array), so it survives the
+ *     dedupe-by-label step as its own distinct item.
  *
  * @param {Array<{label?: string, behavior?: string, files?: string[]}>} scopeIn
  * @returns {string}
@@ -158,6 +177,7 @@ function renderTitleSection(spec, specJson) {
 function renderScopeInSection(scopeIn) {
   const items = Array.isArray(scopeIn) ? scopeIn : [];
   const lines = ['## Scope — in', ''];
+  const labelOccurrences = new Map();
   items.forEach((item, idx) => {
     const entry = item && typeof item === 'object' ? item : {};
     const label = typeof entry.label === 'string' ? entry.label : '';
@@ -169,6 +189,10 @@ function renderScopeInSection(scopeIn) {
         ? `${idx + 1}. **${label}** — ${behavior}`
         : `${idx + 1}. **${label}**`,
     );
+    const occurrence = (labelOccurrences.get(label) || 0) + 1;
+    labelOccurrences.set(label, occurrence);
+    const marker = occurrence === 1 ? label : `${label} (dup ${occurrence})`;
+    lines.push(`<!-- scope-item: ${marker} -->`);
     const files = Array.isArray(entry.files) ? entry.files : [];
     for (const file of files) {
       lines.push(`   - ${file}`);

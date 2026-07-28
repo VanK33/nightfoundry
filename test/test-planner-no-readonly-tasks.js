@@ -19,6 +19,7 @@ import {
   buildMissionSystemPrompt,
   buildReplanSystemPrompt,
 } from '../src/orchestrator/agents/planner-prompts.js';
+import { PROMPT_SECTION_NO_READONLY_TASKS as PUBLIC_NO_READONLY_TASKS } from '../src/orchestrator/agents/planner.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -119,6 +120,16 @@ await test('buildReplanSystemPrompt includes PROMPT_SECTION_NO_READONLY_TASKS ex
     occurrences,
     1,
     `buildReplanSystemPrompt output should contain the no-readonly-tasks section exactly once, found ${occurrences}`,
+  );
+});
+
+// ── TC5: planner.js re-export is reference-identical to planner-prompts.js original ──
+
+await test('planner.js re-export of PROMPT_SECTION_NO_READONLY_TASKS is reference-identical (===) to planner-prompts.js original', async () => {
+  assert.strictEqual(
+    PUBLIC_NO_READONLY_TASKS,
+    PROMPT_SECTION_NO_READONLY_TASKS,
+    'planner.js must re-export the exact same PROMPT_SECTION_NO_READONLY_TASKS reference as planner-prompts.js',
   );
 });
 

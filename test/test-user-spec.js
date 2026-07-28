@@ -15,6 +15,7 @@ import {
   isCommandShaped,
   renderUserSpecMd,
 } from '../src/orchestrator/core/user-spec.js';
+import { extractScopeItems } from '../src/orchestrator/core/scope-parser.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -180,6 +181,62 @@ await test('TC10: projectUserSpec(fixtureMain) is deterministic across two calls
   const first = projectUserSpec(fixtureMain);
   const second = projectUserSpec(fixtureMain);
   assert.deepEqual(first, second);
+});
+
+// ── TC11: duplicate-label scope_in round-trips through extractScopeItems ─
+
+await test('TC11: renderUserSpecMd + extractScopeItems round-trips a duplicate-label scope_in to one item per entry', () => {
+  const dupLabelUserSpec = {
+    goal: 'Duplicate-label round-trip guard',
+    scope_in: [
+      { label: 'Dup', behavior: 'first duplicate entry', files: ['src/a.js'] },
+      { label: 'Dup', behavior: 'second duplicate entry', files: ['src/b.js'] },
+      { label: 'Unique', behavior: 'non-duplicate entry', files: ['src/c.js'] },
+    ],
+    success_criteria: [
+      { description: 'd1', evidence: 'src/a.js' },
+    ],
+  };
+
+  const specMd = renderUserSpecMd(dupLabelUserSpec);
+  const items = extractScopeItems(specMd);
+  assert.strictEqual(
+    items.length,
+    dupLabelUserSpec.scope_in.length,
+    `expected one extracted item per scope_in entry (${dupLabelUserSpec.scope_in.length}), got ${items.length}:\n${JSON.stringify(items)}\n\nspecMd:\n${specMd}`
+  );
+});
+
+// ── TC12: distinct-label scope_in still round-trips (backward-compat) ───
+
+await test('TC12: renderUserSpecMd + extractScopeItems round-trips a distinct-label scope_in to matching count, labels, and ids', () => {
+  const distinctLabelUserSpec = {
+    goal: 'Distinct-label round-trip backward-compat guard',
+    scope_in: [
+      { label: 'Alpha', behavior: 'first entry', files: ['src/a.js'] },
+      { label: 'Beta', behavior: 'second entry', files: ['src/b.js'] },
+      { label: 'Gamma', behavior: 'third entry', files: ['src/c.js'] },
+    ],
+    success_criteria: [
+      { description: 'd1', evidence: 'src/a.js' },
+    ],
+  };
+
+  const specMd = renderUserSpecMd(distinctLabelUserSpec);
+  const items = extractScopeItems(specMd);
+  assert.strictEqual(
+    items.length,
+    distinctLabelUserSpec.scope_in.length,
+    `expected one extracted item per scope_in entry (${distinctLabelUserSpec.scope_in.length}), got ${items.length}:\n${JSON.stringify(items)}\n\nspecMd:\n${specMd}`
+  );
+  assert.deepEqual(
+    items.map((item) => item.label),
+    distinctLabelUserSpec.scope_in.map((entry) => entry.label)
+  );
+  assert.deepEqual(
+    items.map((item) => item.id),
+    ['s1', 's2', 's3']
+  );
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────
