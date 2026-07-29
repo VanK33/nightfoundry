@@ -407,6 +407,7 @@ export const TEST_FILES = [
   'test/test-spec-edit-logging.js',
   'test/test-write-json-atomic.js',
   'test/test-manifest-integrity.js',
+  'test/test-suite-hermeticity.js',
 ];
 
 /**

@@ -3,6 +3,7 @@
 /**
  * Test: SessionManager — spawn a claude session via Agent SDK.
  * Requires: claude CLI installed and authenticated.
+ * Opt-in: skipped unless CC_ORCH_REAL_SDK=1 is set (real Agent SDK session).
  */
 
 import { SessionManager } from '../src/orchestrator/infra/session-manager.js';

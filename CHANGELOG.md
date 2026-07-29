@@ -1,3 +1,7 @@
+## [0.2.6] - 2026-07-29 — Delivered hermetic test suite: closed three SDK escape routes and hardened runner
+
+Maintenance release (no notable changes).
+
 ## [0.2.5] - 2026-07-28 — Closed test-manifest integrity hole: introduced exemption list, registered 11 tests, and added meta-test enforcement.
 
 ### New features

@@ -126,6 +126,11 @@ function createIntegrationHarness({
       prdPath: '',
       createdAt: new Date().toISOString(),
       currentPhase: 'executing',
+      // Present & empty → scope-coverage gate treats this as a GOAL-ONLY run
+      // and skips the check. Without this key present, resume() would throw
+      // IncompleteScopeError (legacy/no-scope-set) before ever reaching the
+      // this._archive() call sites this task stubs out.
+      scopeItems: [],
     },
     globalStatus: 'active',
     milestones: {
@@ -239,6 +244,9 @@ function makePipeline(projectRoot) {
   const pipeline = new Pipeline(projectRoot, {
     onLog: (msg) => logs.push(msg),
     onConfirm: async () => true,
+    // Stub archive() so signal tests never touch the filesystem, build a
+    // Summarizer, or spawn an SDK session. Ignores all argument shapes.
+    archive: async () => 'archives/001-stub-archive',
   });
 
   const restore = () => {
