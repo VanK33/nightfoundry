@@ -101,6 +101,8 @@ Ripple files are real scope, not accidental scope. Declare them the same way as 
 
 When present with integer values, the plan-structure lint throws if the emitted plan exceeds either cap — e.g. use `{ "max_milestones": 1, "max_missions": 1 }` to pin a small, single-mission change and get an early, clear failure instead of an unexpectedly large decomposition. When `plan_structure` is absent, or present but malformed (not an object, or non-integer fields), the lint is skipped entirely — no cap is enforced.
 
+**Set caps as a runaway fuse, not a prescription: leave roughly 2x headroom over the decomposition you expect.** The planner's grouping instincts legitimately differ from a spec author's guess — it may split by src-vs-test, or emit one mission per scope item — and a cap written to the exact expected shape turns that ordinary variance into a hard failed-plan, with every retry re-paying the full baseline gate. Reserve the tight `{ "max_milestones": 1, "max_missions": 1 }` pin for changes that genuinely touch a single file in a single mission.
+
 ## (f) Check-shape
 
 Each acceptance criterion carries a `verification` with one of three kinds:
