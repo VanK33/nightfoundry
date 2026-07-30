@@ -4944,15 +4944,8 @@ class Pipeline {
       this._writeElapsedToSidecar(task.id, 'executorElapsedMs', Date.now() - execStart);
 
       if (execResult.status === 'BLOCKED') {
-        this.onLog(`    Task ${task.id}: BLOCKED by executor`);
+        this.onLog(`    Task ${task.id}: BLOCKED by executor — deterministic refusal, non-retryable, dispatching analyzer`);
         await transitionTask(this.harnessDir, task.id, 'failed');
-
-        if (retryCount < config.maxRetries) {
-          this.onLog(`    Retrying (attempt ${retryCount + 2}/${config.maxRetries + 1})...`);
-          return this._executeAndVerifyTask(missionId, subMissionId, task, retryCount + 1, opts);
-        }
-
-        this.onLog(`    CIRCUIT BREAKER: Task ${task.id} failed ${config.maxRetries + 1} times.`);
         this._captureLastFailed(task);
         restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
         await this._dispatchAnalyzer(task, 'execution', retryCount);
@@ -4963,8 +4956,10 @@ class Pipeline {
       // JSON, but the {status, affectedFiles} fields are model output — not
       // observed disk writes. Compare each declared file's SHA-256 against
       // the before/ snapshot; if all are byte-identical, the COMPLETED claim
-      // is unsubstantiated. Route through the same circuit-breaker path as
-      // BLOCKED. Defect #14 (self-attestation gap, distinct from #2's
+      // is unsubstantiated. Like the BLOCKED branch above, this is a
+      // deterministic failure that skips the retry chain; the probe routes to
+      // the verifier and, on probe-FAIL, dispatches the analyzer.
+      // Defect #14 (self-attestation gap, distinct from #2's
       // evidence-preservation closure in v0.1.27).
       //
       // Gated on the exact production status word ('COMPLETED' per the

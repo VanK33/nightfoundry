@@ -324,6 +324,7 @@ export const TEST_FILES = [
   'test/test-batch-failure-input-boundary.js',
   'test/test-batch-interrupt-preserve.js',
   'test/test-replan-cap-retry-budget.js',
+  'test/test-blocked-direct-analyzer.js',
   'test/test-p1-prompt-hardening.js',
   'test/test-hardcheck-rehoming.js',
   'test/test-invalidation-reason.js',

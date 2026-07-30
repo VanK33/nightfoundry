@@ -34,8 +34,10 @@
  *        same family; the counter accumulates on canonical X; at
  *        MAX_REPLAN_ATTEMPTS the next replaceTask for the family throws.
  *  TC6a. Retry budget survives: persisted retryCount = config.maxRetries →
- *        a BLOCKED executor stub runs EXACTLY once and the analyzer is
- *        dispatched (no fresh retry chain).
+ *        a retryable (COMPLETED-then-verifier-FAIL) executor stub runs
+ *        EXACTLY once and the analyzer is dispatched (no fresh retry chain).
+ *        BLOCKED is deterministically non-retryable now, so a verifier FAIL
+ *        is the vehicle that exercises the durable budget.
  *  TC6b. Control: persisted retryCount = 0 → the normal chain runs
  *        (executor called config.maxRetries + 1 times, then analyzer).
  *
@@ -232,11 +234,15 @@ function createPipelineHarness({
 }
 
 /**
- * Build a Pipeline whose executor always reports BLOCKED and whose
- * _dispatchAnalyzer is a capturing stub (pattern from
- * test-circuit-breaker-replan.js / test-pipeline-replan.js).
+ * Build a Pipeline whose executor genuinely writes to the target file and
+ * self-reports COMPLETED (so the phantom-write guard passes) while the
+ * verifier returns a FAILED verdict — driving the CLASSICAL verify-FAIL retry
+ * chain. This is the retryable vehicle for the retry-budget tests: BLOCKED is
+ * now deterministically non-retryable, so a verifier FAIL is what exercises
+ * the durable retryCount budget. _dispatchAnalyzer is a capturing stub
+ * (pattern from test-phantom-write-guard.js TC-PW-PROBE-6).
  */
-function makeBlockedPipeline(projectRoot) {
+function makeRetryFailPipeline(projectRoot) {
   const logs = [];
   const pipeline = new Pipeline(projectRoot, {
     onLog: (msg) => logs.push(msg),
@@ -245,10 +251,18 @@ function makeBlockedPipeline(projectRoot) {
 
   let execCalls = 0;
   pipeline.executor = {
-    executeTask: async () => {
+    executeTask: async (_task, projRoot) => {
       execCalls++;
-      return { status: 'BLOCKED' };
+      // Actually edit the target file so the phantom-write guard (SHA-256
+      // disk-diff vs before-snapshot) sees a real change and falls through
+      // to the verifier instead of firing the no-op probe.
+      fs.writeFileSync(path.join(projRoot, 'src', 'foo.js'), `// foo ${execCalls} ${Math.random()}\n`);
+      return { status: 'COMPLETED', affectedFiles: ['src/foo.js'] };
     },
+  };
+
+  pipeline.verifier = {
+    verifyTask: async () => ({ verified: false, report: 'stubbed verification failure' }),
   };
 
   const analyzerCalls = [];
@@ -530,13 +544,13 @@ await test('TC5 cap across generations: counter accumulates on canonical X regar
 });
 
 // ── TC6a: retry budget survives — persisted retryCount at maxRetries ─────────
-await test('TC6a retry budget survives: persisted retryCount = config.maxRetries → BLOCKED executor runs exactly once, analyzer dispatched', async () => {
+await test('TC6a retry budget survives: persisted retryCount = config.maxRetries → retryable (verify-FAIL) executor runs exactly once, analyzer dispatched', async () => {
   const { projectRoot, subMissionId } = createPipelineHarness({
     status: 'failed',
     retryCount: config.maxRetries,
   });
   try {
-    const { pipeline, getExecCalls, analyzerCalls } = makeBlockedPipeline(projectRoot);
+    const { pipeline, getExecCalls, analyzerCalls } = makeRetryFailPipeline(projectRoot);
 
     const task = {
       id: '001-001-001-001',
@@ -553,8 +567,8 @@ await test('TC6a retry budget survives: persisted retryCount = config.maxRetries
       `executor must run EXACTLY once when persisted retryCount (${config.maxRetries}) is already at config.maxRetries — no fresh retry chain`);
     assert.strictEqual(analyzerCalls.length, 1,
       `analyzer must be dispatched exactly once, got ${analyzerCalls.length} call(s)`);
-    assert.strictEqual(analyzerCalls[0].failureType, 'execution',
-      `analyzer must be dispatched for the execution failure, got: "${analyzerCalls[0].failureType}"`);
+    assert.strictEqual(analyzerCalls[0].failureType, 'verification',
+      `analyzer must be dispatched for the verification failure, got: "${analyzerCalls[0].failureType}"`);
     assert.ok(analyzerCalls[0].retryCount >= config.maxRetries,
       `analyzer retryCount must reflect the adopted persisted budget (>= ${config.maxRetries}), got: ${analyzerCalls[0].retryCount}`);
   } finally { cleanup(projectRoot); }
@@ -567,7 +581,7 @@ await test('TC6b control: persisted retryCount = 0 → normal chain runs (execut
     retryCount: 0,
   });
   try {
-    const { pipeline, getExecCalls, analyzerCalls } = makeBlockedPipeline(projectRoot);
+    const { pipeline, getExecCalls, analyzerCalls } = makeRetryFailPipeline(projectRoot);
 
     const task = {
       id: '001-001-001-001',
@@ -581,11 +595,11 @@ await test('TC6b control: persisted retryCount = 0 → normal chain runs (execut
     await pipeline._executeAndVerifyTask('001-001', subMissionId, task, 0);
 
     assert.strictEqual(getExecCalls(), config.maxRetries + 1,
-      `with a fresh budget the BLOCKED executor must run config.maxRetries + 1 = ${config.maxRetries + 1} times, got: ${getExecCalls()}`);
+      `with a fresh budget the retryable (verify-FAIL) executor must run config.maxRetries + 1 = ${config.maxRetries + 1} times, got: ${getExecCalls()}`);
     assert.strictEqual(analyzerCalls.length, 1,
       `analyzer must be dispatched exactly once after the chain is exhausted, got ${analyzerCalls.length} call(s)`);
-    assert.strictEqual(analyzerCalls[0].failureType, 'execution',
-      `analyzer must be dispatched for the execution failure, got: "${analyzerCalls[0].failureType}"`);
+    assert.strictEqual(analyzerCalls[0].failureType, 'verification',
+      `analyzer must be dispatched for the verification failure, got: "${analyzerCalls[0].failureType}"`);
     assert.strictEqual(analyzerCalls[0].retryCount, config.maxRetries,
       `analyzer retryCount must equal config.maxRetries (${config.maxRetries}), got: ${analyzerCalls[0].retryCount}`);
   } finally { cleanup(projectRoot); }
