@@ -23,12 +23,15 @@ const RUN_NPM_TEST_TIMEOUT_MS = 120_000;
 /**
  * Spawns the configured smoke-test command (config.execution.testCommand,
  * default `npm test`) in the given projectRoot.
- * Returns { exitCode: number, output: string }.
- * exitCode 0 on success, non-zero on failure, -1 on timeout.
+ * Returns { exitCode: number, output: string, signal: string|null }.
+ * exitCode 0 on success, non-zero on failure, -1 on timeout or when the
+ * child was terminated by any signal. `signal` carries the signal name
+ * (e.g. 'SIGKILL') when the child was killed by a signal, else null.
  */
 export function runTestCommand(projectRoot) {
   let exitCode = 0;
   let output = '';
+  let signal = null;
 
   try {
     const stdout = execSync(config.execution.testCommand, {
@@ -40,17 +43,24 @@ export function runTestCommand(projectRoot) {
     });
     output = stdout || '';
   } catch (err) {
-    if (err.signal === 'SIGTERM' || err.code === 'ETIMEDOUT') {
-      exitCode = -1;
-    } else {
-      exitCode = err.status != null ? err.status : 1;
-    }
     const stdout = (err.stdout || '').toString();
     const stderr = (err.stderr || '').toString();
-    output = [stdout, stderr].filter(Boolean).join('\n');
+    const captured = [stdout, stderr].filter(Boolean).join('\n');
+
+    if (err.signal) {
+      exitCode = -1;
+      signal = err.signal;
+      output = [`Process killed by ${err.signal}`, captured].filter(Boolean).join('\n');
+    } else if (err.code === 'ETIMEDOUT') {
+      exitCode = -1;
+      output = captured;
+    } else {
+      exitCode = err.status != null ? err.status : 1;
+      output = captured;
+    }
   }
 
-  return { exitCode, output };
+  return { exitCode, output, signal };
 }
 
 // The full suite (config.execution.testAllCommand, default `npm run
@@ -73,8 +83,12 @@ const RUN_TEST_ALL_MAX_BUFFER = 16 * 1024 * 1024;
 /**
  * Spawns the configured full-suite command (config.execution.testAllCommand,
  * default `npm run test:all`) in the given projectRoot.
- * Returns { exitCode: number, output: string }.
- * exitCode 0 on success, non-zero on failure, -1 on timeout.
+ * Returns { exitCode: number, output: string, signal: string|null }.
+ * exitCode 0 on success, non-zero on failure, -1 on timeout or when the
+ * child was terminated by any signal. `signal` carries the signal name
+ * (e.g. 'SIGKILL') when the child was killed by a signal, else null — a
+ * maxBuffer overflow (which also arrives wearing SIGTERM) is NOT treated as
+ * a signal-kill and always reports signal: null.
  *
  * This is the archive-time final gate's runner: the per-milestone regression
  * uses runTestCommand (a fast smoke test), but a spec must not be archived
@@ -83,6 +97,7 @@ const RUN_TEST_ALL_MAX_BUFFER = 16 * 1024 * 1024;
 export function runFullTestSuite(projectRoot) {
   let exitCode = 0;
   let output = '';
+  let signal = null;
 
   try {
     const stdout = execSync(config.execution.testAllCommand, {
@@ -97,11 +112,15 @@ export function runFullTestSuite(projectRoot) {
   } catch (err) {
     const stdout = (err.stdout || '').toString();
     const stderr = (err.stderr || '').toString();
+    const captured = [stdout, stderr].filter(Boolean).join('\n');
     if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || err.code === 'ENOBUFS' || err.message.includes('maxBuffer')) {
       // An overflow is NOT a timeout: Node kills the child with SIGTERM on
-      // maxBuffer, so this branch MUST precede the SIGTERM test below or the
+      // maxBuffer, so this branch MUST precede the signal test below or the
       // overflow would ride the -1/timedOut/infra leg and leave the entry
-      // pending forever on a suite that may well be green.
+      // pending forever on a suite that may well be green. It is also NOT a
+      // signal-kill for reporting purposes: signal stays null even though
+      // the child was in fact SIGTERM'd, since the cause here is the buffer
+      // ceiling, not an external kill.
       //
       // REPLACE the captured output rather than prefixing it: what we captured
       // is a truncated fragment with no verdict in it, and the consumer
@@ -111,16 +130,20 @@ export function runFullTestSuite(projectRoot) {
       // slice intact, and the discarded fragment is worthless anyway.
       exitCode = 1;
       output = `maxBuffer exceeded (stdout > ${RUN_TEST_ALL_MAX_BUFFER / (1024 * 1024)} MiB) — the command produced more output than the harness can capture. The output was discarded, so the suite's pass/fail state is UNKNOWN: this is NOT a test failure. Use a quieter reporter, or raise the ceiling.`;
-    } else if (err.signal === 'SIGTERM' || err.code === 'ETIMEDOUT') {
+    } else if (err.signal) {
       exitCode = -1;
-      output = [stdout, stderr].filter(Boolean).join('\n');
+      signal = err.signal;
+      output = [`Process killed by ${err.signal}`, captured].filter(Boolean).join('\n');
+    } else if (err.code === 'ETIMEDOUT') {
+      exitCode = -1;
+      output = captured;
     } else {
       exitCode = err.status != null ? err.status : 1;
-      output = [stdout, stderr].filter(Boolean).join('\n');
+      output = captured;
     }
   }
 
-  return { exitCode, output };
+  return { exitCode, output, signal };
 }
 
 /**

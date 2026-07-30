@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Pipeline } from '../../orchestrator/core/pipeline.js';
 import { InfrastructureError } from '../../orchestrator/infra/session-manager.js';
+import { emitCliFailureCandidate } from '../../orchestrator/core/candidates-ledger.js';
 import { usage as printUsage, renderRunCostSummary } from './usage.js';
 import { askYesNo, askMenu } from '../prompt.js';
 import { isUserSpecInvocation, prepareUserSpecInput, warnOnEngineSpecJson } from '../user-spec-input.js';
@@ -76,6 +77,11 @@ export async function run(projectRoot, specPath, flags) {
     if (err instanceof InfrastructureError) {
       console.error(infraErrorHint({ batch: false, projectRoot }));
       process.exit(75);
+    }
+    try {
+      emitCliFailureCandidate(projectRoot, { phase: 'run', err, specPath: resolvedSpec });
+    } catch (ledgerErr) {
+      console.warn(`Failed to append candidate to candidates.jsonl: ${ledgerErr.message}`);
     }
     console.error(`\nPipeline error: ${err.message}`);
     process.exit(1);

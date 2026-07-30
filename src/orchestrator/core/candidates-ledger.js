@@ -20,6 +20,7 @@
  *   hashSignature(signature)
  *   lintErrorClass(err)
  *   appendCandidate(projectRoot, entry, { onWarn })
+ *   emitCliFailureCandidate(projectRoot, { phase, err, specPath, onWarn })
  */
 import fs from 'fs';
 import path from 'path';
@@ -106,4 +107,39 @@ export function appendCandidate(projectRoot, entry, options = {}) {
   } catch (err) {
     onWarn(`Failed to append candidate to candidates.jsonl: ${err.message}`);
   }
+}
+
+/**
+ * Emit exactly one candidates-ledger fact for a CLI-level failure. This is a
+ * thin, pure-fact wrapper over `appendCandidate`: the signature carries only
+ * `phase` and the `lintErrorClass(err)`-derived `errorClass` (the remaining
+ * two signature fields are always null), the summary is the first line of
+ * `err.message` (no diagnostic prose is added), and the slug is derived from
+ * `specPath`'s basename with a trailing '.spec.md' stripped. Ledger write
+ * failures are forwarded to `onWarn` (via `appendCandidate`) rather than
+ * thrown.
+ *
+ * @param {string} projectRoot
+ * @param {{ phase: string, err: *, specPath?: (string|null), onWarn?: (message: string) => void }} options
+ * @returns {void}
+ */
+export function emitCliFailureCandidate(projectRoot, { phase, err, specPath, onWarn } = {}) {
+  const message = err?.message;
+  const summary = (message === null || message === undefined)
+    ? null
+    : String(message).split('\n')[0];
+  const slug = (typeof specPath === 'string')
+    ? path.basename(specPath).replace(/\.spec\.md$/, '')
+    : null;
+
+  appendCandidate(projectRoot, {
+    slug,
+    signature: {
+      phase,
+      errorClass: lintErrorClass(err),
+      analyzerRecommendation: null,
+      taskState: null,
+    },
+    summary,
+  }, { onWarn });
 }

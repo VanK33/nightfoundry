@@ -1,3 +1,10 @@
+## [0.2.7] - 2026-07-30 — Delivered milestone 001 with 12/12 tasks passed: CLI failure observability, signal preservation in test runners, and queue retry command
+
+### New features
+- Single-entry CLI commands (dry-run, run, task) now emit failure records to candidates ledger for cross-run observability
+- Regression test runners preserve kill signals (SIGKILL, SIGTERM, etc.) in output for diagnostic clarity instead of generic exit codes
+- New CLI verb `cc-orch queue retry <slug>` resets a failed queue entry's status to pending for operator-initiated retry
+
 ## [0.2.6] - 2026-07-29 — Delivered hermetic test suite: closed three SDK escape routes and hardened runner
 
 Maintenance release (no notable changes).

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Pipeline } from '../../orchestrator/core/pipeline.js';
+import { emitCliFailureCandidate } from '../../orchestrator/core/candidates-ledger.js';
 import { InfrastructureError } from '../../orchestrator/infra/session-manager.js';
 import { usage as printUsage, renderSmallTaskCostSummary } from './usage.js';
 import { askYesNo, askMenu } from '../prompt.js';
@@ -66,6 +67,11 @@ ${description}
     if (err instanceof InfrastructureError) {
       console.error(`\nInfrastructure error: ${err.message}\n${infraErrorHint({ batch: false, projectRoot })}`);
       process.exit(75);
+    }
+    try {
+      emitCliFailureCandidate(projectRoot, { phase: 'task', err, specPath: tmpSpecPath });
+    } catch (ledgerErr) {
+      console.warn(`  Failed to append candidate to candidates.jsonl: ${ledgerErr.message}`);
     }
     console.error(`\nPipeline error: ${err.message}`);
     process.exit(1);

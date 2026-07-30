@@ -4,6 +4,7 @@ import { Pipeline } from '../../orchestrator/core/pipeline.js';
 import { usage as printUsage } from './usage.js';
 import { askYesNo, askMenu } from '../prompt.js';
 import { isUserSpecInvocation, prepareUserSpecInput, warnOnEngineSpecJson } from '../user-spec-input.js';
+import { emitCliFailureCandidate } from '../../orchestrator/core/candidates-ledger.js';
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -68,6 +69,11 @@ export async function dryRun(projectRoot, specPath, flags) {
       console.log('\nSpec validated and queued. Run cc-orch resume --batch to execute.');
     }
   } catch (err) {
+    try {
+      emitCliFailureCandidate(projectRoot, { phase: 'dry-run', err, specPath: resolvedSpec });
+    } catch (ledgerErr) {
+      console.warn(`Failed to append candidate to candidates.jsonl: ${ledgerErr.message}`);
+    }
     console.error(`\nPipeline error: ${err.message}`);
     process.exit(1);
   }

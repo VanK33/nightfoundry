@@ -23,7 +23,7 @@ import { health } from './commands/health.js';
 import { ui } from './commands/ui.js';
 import { dryRun } from './commands/dry-run.js';
 import { task } from './commands/task.js';
-import { queueList, queueRemove } from './commands/queue.js';
+import { queueList, queueRemove, queueRetry } from './commands/queue.js';
 import { parkList, parkShow, parkResolve } from './commands/park.js';
 import { warningsList, warningsShow, warningsResolve, warningsBrainstorm } from './commands/warnings.js';
 import { clean } from './commands/clean.js';
@@ -72,6 +72,7 @@ const USAGE = `
     cc-orch archive diff <a> <b>         Diff two archives
     cc-orch queue list                   List queued specs
     cc-orch queue remove <slug>          Remove a queue entry
+    cc-orch queue retry <slug>           Reset a queue entry's status to pending for resume --batch
     cc-orch park list                    List parked / halted-review / halted-analyzer queue entries
     cc-orch park show <slug>             Show a parked entry's scene and spec paths
     cc-orch park resolve <slug> --requeue|--waive|--reject [--note <text>]   Resolve a parked entry
@@ -267,8 +268,10 @@ async function main() {
         return queueList(projectRoot, { json: jsonOut });
       } else if (sub === 'remove') {
         return queueRemove(projectRoot, positional[2], { json: jsonOut });
+      } else if (sub === 'retry') {
+        return queueRetry(projectRoot, positional[2]);
       } else {
-        console.error('Usage: cc-orch queue list|remove <slug>');
+        console.error('Usage: cc-orch queue list|remove|retry <slug>');
         process.exit(1);
       }
       break;

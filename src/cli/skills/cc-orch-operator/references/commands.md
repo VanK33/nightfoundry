@@ -85,6 +85,7 @@ Long flags that always consume the next arg as a value: `--role`, `--task`, `--p
 |---|---|---|---|
 | `cc-orch queue list` | — | `-j` | List queue entries and their status. |
 | `cc-orch queue remove <slug>` | slug | — | Remove a queue entry. |
+| `cc-orch queue retry <slug>` | slug | — | Reset a non-pending entry's status to pending so `cc-orch resume --batch` picks it up again. |
 
 ## Park
 

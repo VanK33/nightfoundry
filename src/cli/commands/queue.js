@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { readQueueEntry, removeQueueEntry } from '../../orchestrator/core/state.js';
+import { readQueueEntry, removeQueueEntry, updateQueueEntryStatus } from '../../orchestrator/core/state.js';
 
 /**
  * Read one queue entry without letting a damaged directory throw.
@@ -152,4 +152,59 @@ export function queueRemove(projectRoot, slug) {
   }
   removeQueueEntry(projectRoot, slug);
   console.log(`Queue entry '${slug}' removed.`);
+}
+
+/**
+ * Reset a queue entry back to 'pending' so `cc-orch resume --batch` will
+ * pick it up again. Reads the entry via readQueueEntryTolerant and handles
+ * four arms:
+ *
+ *  (a) DAMAGED — the entry directory exists but is unreadable (damage !=
+ *      null). Refused without changing anything, same refusal posture as
+ *      parkResolve's damaged-entry leg: names the slug, the damage reason,
+ *      and `cc-orch queue remove <slug>` as the way out.
+ *  (b) UNKNOWN — entry, status, and damage are all null (readQueueEntry
+ *      returns null for a missing entry directory rather than throwing).
+ *      Reports a not-found error following queueRemove's message
+ *      convention and changes nothing.
+ *  (c) NO-OP — the entry's status is already 'pending'. Prints a friendly
+ *      message and changes nothing.
+ *  (d) RESET — any other status. Sets the status to 'pending' via
+ *      updateQueueEntryStatus(projectRoot, slug, 'pending') — status-only,
+ *      never writeQueueEntry, so spec.md/plan.json/spec.json/validated-at.json
+ *      are left untouched — and prints a confirmation naming the previous
+ *      status and directing the operator to `cc-orch resume --batch`.
+ *
+ * @param {string} projectRoot
+ * @param {string} slug
+ */
+export function queueRetry(projectRoot, slug) {
+  const { entry, status, damage } = readQueueEntryTolerant(projectRoot, slug);
+
+  if (damage) {
+    console.error(
+      `Refusing to retry '${slug}': queue entry is damaged (${damage}). ` +
+      `There is nothing left to reset — inspect queue/${slug}/ and the ` +
+      `failed archive for this run, or remove the entry with cc-orch queue remove ${slug}.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (entry === null && status === null) {
+    console.error(`Queue entry '${slug}' not found.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (status === 'pending') {
+    console.log(`Queue entry '${slug}' is already pending.`);
+    return;
+  }
+
+  updateQueueEntryStatus(projectRoot, slug, 'pending');
+  console.log(
+    `Queue entry '${slug}' reset from '${status}' to 'pending'. ` +
+    `Run cc-orch resume --batch to pick it up.`
+  );
 }
