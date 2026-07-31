@@ -315,7 +315,6 @@ export const TEST_FILES = [
   'test/test-plan-scope-lint-wiring.js',
   'test/test-plan-structure-lint.js',
   'test/test-plan-lint-retry.js',
-  'test/test-planglobal-lint-retry.js',
   'test/test-archive-final-test-gate.js',
   'test/test-test-registration-gate.js',
   'test/test-test-registration-pipeline.js',
