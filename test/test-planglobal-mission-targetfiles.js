@@ -32,11 +32,12 @@ function test(name, fn) {
 }
 
 /**
- * Returns a fake session manager whose spawn(opts) captures opts.jsonSchema
- * into `capturedSchemas` and returns an awaitable Promise (with a `.handle`
- * property set synchronously, mirroring the real spawnPromise shape) that
- * resolves to `{ handle, result }` where `result.structured_output` is the
- * caller-supplied real-shape plan.
+ * Returns a fake session manager whose spawnReusable(opts) captures
+ * opts.jsonSchema into `capturedSchemas` and returns a fake reusable
+ * session object (mirroring the real ReusableSession shape used by
+ * planGlobal's bounded corrective-turn loop: a `.handle` property and a
+ * scripted `sendPrompt()`/`turnCount`) whose sendPrompt() resolves to a
+ * result whose `structured_output` is the caller-supplied real-shape plan.
  */
 function makeFakeSessionManager(capturedSchemas, structuredOutput) {
   const fakeHandle = {
@@ -54,11 +55,18 @@ function makeFakeSessionManager(capturedSchemas, structuredOutput) {
     total_cost_usd: 0,
   };
   return {
-    spawn(opts) {
+    spawnReusable(opts) {
       capturedSchemas.push(opts.jsonSchema);
-      const p = Promise.resolve({ handle: fakeHandle, result: fakeResult });
-      p.handle = fakeHandle;
-      return p;
+      let turnCount = 0;
+      return {
+        handle: fakeHandle,
+        get turnCount() { return turnCount; },
+        async sendPrompt() {
+          turnCount++;
+          return fakeResult;
+        },
+        async close() {},
+      };
     },
   };
 }
@@ -92,7 +100,7 @@ await test('(a) captured planGlobal jsonSchema mission items require targetFiles
 
   await planner.planGlobal('test goal', '/fake/root');
 
-  assert.equal(capturedSchemas.length, 1, 'spawn() should have been called exactly once');
+  assert.equal(capturedSchemas.length, 1, 'spawnReusable() should have been called exactly once');
   const schema = capturedSchemas[0];
 
   const missionItemsSchema = schema?.properties?.milestones?.items?.properties?.missions?.items;

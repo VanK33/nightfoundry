@@ -1,3 +1,8 @@
+## [0.2.8] - 2026-07-31 — Delivered planGlobal bounded corrective-turn retry for automatic lint violation correction
+
+### New features
+- planGlobal now automatically attempts one corrective turn on retryable lint errors (structure-cap-missions, structure-cap-milestones, declared-duplicate, T1, T2) before propagating errors, improving robustness and reducing run failures from planner-fixable violations
+
 ## [0.2.7] - 2026-07-30 — Delivered milestone 001 with 12/12 tasks passed: CLI failure observability, signal preservation in test runners, and queue retry command
 
 ### New features

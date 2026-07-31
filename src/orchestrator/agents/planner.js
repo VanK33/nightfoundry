@@ -416,59 +416,164 @@ Decompose this into milestones and missions. Output structured JSON.`;
     };
 
     const log = this.logger.createSessionLog('planner-global');
+    // Call-local reusable session (NOT this._reusableSession — that field is
+    // reserved for the Phase 3b mission-decomposition session managed via
+    // _ensureReusableSession()/closeReusableSession()). spawnReusable's
+    // maxBudget is a single cumulative ceiling across every sendPrompt()
+    // turn on the session, not a per-turn budget, so it's set to twice the
+    // single-turn planner budget even though today we only send one turn.
+    let session;
 
     try {
-      const spawnPromise = this.sessionManager.spawn({
+      session = this.sessionManager.spawnReusable({
         name: 'planner-global',
-        prompt,
         systemPrompt,
         model: config.execution.plannerModel,
         tools: config.tools.planner,
         jsonSchema: schema,
-        maxBudget: config.budgets.planner,
+        maxBudget: config.budgets.planner * 2,
         cwd: projectRoot,
       });
 
-      this.logger.attachToSession(spawnPromise.handle, log, { role: 'planner', phase: '3a' });
+      this.logger.attachToSession(session.handle, log, { role: 'planner', phase: '3a' });
 
-      const { handle, result } = await spawnPromise;
-      const plan = this._extractJson(result);
+      // Bounded corrective-turn loop: at most ONE extra turn is spent on
+      // this SAME call-local session when the full validation chain below
+      // rejects the plan for a retryable structural/scope rule. Retry
+      // state lives only in this local counter — no persisted state, no
+      // instance field — and the loop always exits after at most two
+      // sendPrompt() turns.
+      const retryableLintRuleIds = new Set([
+        'structure-cap-missions',
+        'structure-cap-milestones',
+        'declared-duplicate',
+        'T1',
+        'T2',
+      ]);
+      let lintRetriesUsed = 0;
+      let userPrompt = prompt;
+      let plan;
 
-      if (opts.mode === 'small-task' && Array.isArray(plan.milestones) && plan.milestones.length > config.smallTask.maxMilestones) {
-        this.logger.warn(`[planner] small-task mode: planner returned ${plan.milestones.length} milestones, truncating to ${config.smallTask.maxMilestones}`);
-        plan.milestones = plan.milestones.slice(0, config.smallTask.maxMilestones);
+      for (;;) {
+        if (lintRetriesUsed === 0) {
+          // First turn: accounting unchanged from the pre-retry-loop
+          // behavior — 'planner-global' name, phase '3a', summary derived
+          // from the shared per-call log file.
+          const result = await session.sendPrompt(userPrompt);
+          plan = this._extractJson(result);
+
+          const summary = this.logger.getSessionSummary(log.logPath);
+          await this.logger.writeSessionSummary('planner-global', summary, { role: 'planner', phase: '3a' });
+          await this.tokenTracker?.recordSession('planner-global', 'planner', result, {
+            phase: '3a',
+            systemPromptTokens: session.handle.systemPromptTokens,
+            toolCallCount: session.handle._toolCallCount,
+          });
+        } else {
+          // Corrective turn: accounted separately under a distinct name
+          // (e.g. 'planner-global-turn2'). The shared log file mixes
+          // events from every turn on this reusable session, so the
+          // summary's token/cost/duration fields are derived from the SDK
+          // result event directly instead of getSessionSummary(log.logPath).
+          const turnIdx = session.turnCount + 1;
+          const turnName = `planner-global-turn${turnIdx}`;
+          const turnStartedAt = new Date().toISOString();
+          const turnStartMs = Date.now();
+
+          const result = await session.sendPrompt(userPrompt);
+
+          const turnFinishedAt = new Date().toISOString();
+          const turnDurationMs = Date.now() - turnStartMs;
+
+          await this.tokenTracker?.recordSession(turnName, 'planner', result, {
+            phase: '3a',
+            reused: true,
+            turnIdx,
+            systemPromptTokens: session.handle.systemPromptTokens,
+            toolCallCount: session.handle._toolCallCount,
+          });
+
+          const usage = result?.usage || {};
+          const perTurnSummary = {
+            events: null, // not reliably attributable per-turn in a shared log
+            inputTokens: usage.input_tokens || 0,
+            outputTokens: usage.output_tokens || 0,
+            cacheCreation: usage.cache_creation_input_tokens || 0,
+            cacheRead: usage.cache_read_input_tokens || 0,
+            totalCost: result?.total_cost_usd || 0,
+            toolCalls: null, // same as events — not per-turn attributable
+            durationMs: turnDurationMs,
+            startedAt: turnStartedAt,
+            finishedAt: turnFinishedAt,
+          };
+          await this.logger.writeSessionSummary(turnName, perTurnSummary, {
+            role: 'planner',
+            phase: '3a',
+            reused: true,
+            turnIdx,
+          });
+
+          plan = this._extractJson(result);
+        }
+
+        // Parse + validate after the turn is accounted (an _extractJson
+        // failure above propagates immediately and is never caught by the
+        // retry logic below — it never spends a corrective turn).
+        try {
+          if (opts.mode === 'small-task' && Array.isArray(plan.milestones) && plan.milestones.length > config.smallTask.maxMilestones) {
+            this.logger.warn(`[planner] small-task mode: planner returned ${plan.milestones.length} milestones, truncating to ${config.smallTask.maxMilestones}`);
+            plan.milestones = plan.milestones.slice(0, config.smallTask.maxMilestones);
+          }
+
+          // planGlobal-time pure-omission catcher (the 165 class per-mission
+          // lintPlanScope cannot see across missions). Requires each
+          // non-milestone-only acceptance command's path tokens to be covered
+          // by at least one mission's declared targetFiles across the plan.
+          // No-op when missions declare no targetFiles (schema is optional
+          // there) or when the spec ships no ACs.
+          lintGlobalPlanScope(
+            plan,
+            Array.isArray(opts.specTargetFiles) ? opts.specTargetFiles : [],
+            Array.isArray(opts.specAcceptanceCriteria) ? opts.specAcceptanceCriteria : [],
+            { projectRoot },
+          );
+
+          // plan-structure-lint: mission/milestone leg counts + same-milestone
+          // declared-duplicate targetFiles (L1/L2/L3), plus tree-purity check
+          // shapes on any tasks the global plan already carries. Both throw a
+          // plain Error prefixed '[plan-structure-lint]' on violation.
+          lintPlanStructure(plan, opts.specPlanStructure, { projectRoot });
+          lintTaskCheckShapes(plan, { projectRoot });
+        } catch (err) {
+          const retryable = typeof err?.ruleId === 'string' && retryableLintRuleIds.has(err.ruleId);
+          if (retryable && lintRetriesUsed < 1) {
+            lintRetriesUsed++;
+            const violationCount = Array.isArray(err.violations) ? err.violations.length : 0;
+            this.logger.warn(
+              `[plan-lint-retry] planGlobal: plan rejected by lint rule ${err.ruleId} ` +
+              `(${violationCount} violation(s)); sending one corrective turn to the planner session`,
+            );
+            userPrompt = buildPlanLintCorrectionPrompt(Array.isArray(err.violations) ? err.violations : []);
+            continue;
+          }
+          // Second violation of any rule, a non-retryable rule id (e.g.
+          // 'global-uncovered-token'), or an error without a ruleId:
+          // propagate unchanged.
+          throw err;
+        }
+
+        break;
       }
-
-      const summary = this.logger.getSessionSummary(log.logPath);
-      await this.logger.writeSessionSummary('planner-global', summary, { role: 'planner', phase: '3a' });
-      await this.tokenTracker?.recordSession('planner-global', 'planner', result, {
-        phase: '3a',
-        systemPromptTokens: handle.systemPromptTokens,
-        toolCallCount: handle._toolCallCount,
-      });
-
-      // planGlobal-time pure-omission catcher (the 165 class per-mission
-      // lintPlanScope cannot see across missions). Requires each
-      // non-milestone-only acceptance command's path tokens to be covered
-      // by at least one mission's declared targetFiles across the plan.
-      // No-op when missions declare no targetFiles (schema is optional
-      // there) or when the spec ships no ACs.
-      lintGlobalPlanScope(
-        plan,
-        Array.isArray(opts.specTargetFiles) ? opts.specTargetFiles : [],
-        Array.isArray(opts.specAcceptanceCriteria) ? opts.specAcceptanceCriteria : [],
-        { projectRoot },
-      );
-
-      // plan-structure-lint: mission/milestone leg counts + same-milestone
-      // declared-duplicate targetFiles (L1/L2/L3), plus tree-purity check
-      // shapes on any tasks the global plan already carries. Both throw a
-      // plain Error prefixed '[plan-structure-lint]' on violation.
-      lintPlanStructure(plan, opts.specPlanStructure, { projectRoot });
-      lintTaskCheckShapes(plan, { projectRoot });
 
       return plan;
     } finally {
+      if (session) {
+        try {
+          await session.close();
+        } catch {
+          // swallow — session may have already errored
+        }
+      }
       log.close();
     }
   }

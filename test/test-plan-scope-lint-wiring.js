@@ -463,29 +463,35 @@ await test('TC3: pipeline planMission opts include specAcceptanceCriteria, scope
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Fake sessionManager whose one-shot spawn resolves with the supplied
+ * Fake sessionManager whose spawnReusable() returns a fake reusable session
+ * (turnCount, handle, sendPrompt) resolving with the supplied
  * globalPlan-shaped structured_output — enough to drive planGlobal to
  * the lintGlobalPlanScope call site.
  */
 function makeFakeGlobalSpawnSessionManager(structuredPlan) {
   return {
-    spawn() {
+    spawnReusable() {
       const fakeHandle = { systemPromptTokens: 0, _toolCallCount: 0 };
-      const p = Promise.resolve({
-        handle: fakeHandle,
-        result: {
-          structured_output: structuredPlan,
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-          },
-          total_cost_usd: 0,
+      const fakeResult = {
+        structured_output: structuredPlan,
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
         },
-      });
-      p.handle = fakeHandle;
-      return p;
+        total_cost_usd: 0,
+      };
+      let turnCount = 0;
+      return {
+        handle: fakeHandle,
+        get turnCount() { return turnCount; },
+        sendPrompt: async () => {
+          turnCount++;
+          return fakeResult;
+        },
+        close: async () => {},
+      };
     },
   };
 }

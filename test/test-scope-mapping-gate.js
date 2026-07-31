@@ -523,7 +523,7 @@ await test('AC7: fresh plan with scopeItems present but scopeMapping omitting an
 // ─────────────────────────────────────────────────────────────────────────────
 // AC8 — planGlobal inline schema has a top-level scopeMapping array requiring
 //   scopeItemId (string) + missionIds (string array, minItems 1); scopeMapping
-//   is NOT in the top-level required. Captured by stubbing sessionManager.spawn
+//   is NOT in the top-level required. Captured by stubbing sessionManager.spawnReusable
 //   (planGlobal's path) and reading opts.jsonSchema — mirrors the established
 //   planner-test harness (test-planner-prompt.js / test-planner-sequential-ordering.js).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,12 +541,19 @@ function makeSchemaCapturingSessionManager(capturedSchemas) {
     total_cost_usd: 0,
   };
   return {
-    // planGlobal goes through spawn() (not spawnReusable). Capture jsonSchema.
-    spawn(opts) {
+    // planGlobal goes through spawnReusable() + session.sendPrompt(). Capture jsonSchema.
+    spawnReusable(opts) {
       capturedSchemas.push(opts.jsonSchema);
-      const p = Promise.resolve({ handle: fakeHandle, result: fakeResult });
-      p.handle = fakeHandle;
-      return p;
+      let turnCount = 0;
+      return {
+        handle: fakeHandle,
+        get turnCount() { return turnCount; },
+        async sendPrompt() {
+          turnCount++;
+          return fakeResult;
+        },
+        async close() {},
+      };
     },
   };
 }
@@ -572,7 +579,7 @@ await test('AC8: planGlobal inline schema carries a top-level scopeMapping array
 
   await planner.planGlobal('test goal', '/fake/root');
 
-  assert.strictEqual(capturedSchemas.length, 1, 'spawn() should have been called exactly once by planGlobal');
+  assert.strictEqual(capturedSchemas.length, 1, 'spawnReusable() should have been called exactly once by planGlobal');
   const schema = capturedSchemas[0];
   assert.ok(schema && schema.properties, 'planGlobal jsonSchema should have properties');
 

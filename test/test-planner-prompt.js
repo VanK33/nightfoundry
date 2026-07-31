@@ -553,11 +553,16 @@ function makeFakeSessionManagerCaptureBoth(capturedSystem, capturedUser) {
     },
     spawnReusable(opts) {
       capturedSystem.push(opts.systemPrompt);
-      capturedUser.push(opts.prompt);
+      let turnCount = 0;
       return {
         handle: fakeHandle,
-        turnCount: 0,
-        sendPrompt: async () => fakeResult,
+        get turnCount() { return turnCount; },
+        sendPrompt: async (prompt) => {
+          capturedUser.push(prompt);
+          turnCount++;
+          return fakeResult;
+        },
+        close: async () => {},
       };
     },
   };

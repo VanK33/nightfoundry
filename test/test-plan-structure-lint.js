@@ -908,31 +908,37 @@ await test('TC11: five-cache-bust-repoint — _repointHarness clears the specPla
 // ── rejected at validation time, no queue entry written ───────────────────
 
 /**
- * Fake ONE-SHOT sessionManager (planGlobal uses sessionManager.spawn(), not
- * spawnReusable()) whose spawn() resolves the supplied globalPlan-shaped
- * structured_output. Installed on planner.sessionManager directly — NEVER
- * on planner.planGlobal itself — so the real planGlobal method (and its
- * lintPlanStructure call) runs.
+ * Fake reusable-session-capable sessionManager (planGlobal uses
+ * sessionManager.spawnReusable() + session.sendPrompt(), for its bounded
+ * corrective-turn retry loop) whose sendPrompt() resolves the supplied
+ * globalPlan-shaped structured_output. Installed on planner.sessionManager
+ * directly — NEVER on planner.planGlobal itself — so the real planGlobal
+ * method (and its lintPlanStructure call) runs.
  */
 function makeFakeGlobalSpawnSessionManagerForDryRun(structuredPlan) {
   return {
-    spawn() {
+    spawnReusable() {
       const fakeHandle = { systemPromptTokens: 0, _toolCallCount: 0, on: () => {} };
-      const p = Promise.resolve({
-        handle: fakeHandle,
-        result: {
-          structured_output: structuredPlan,
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-          },
-          total_cost_usd: 0,
+      const fakeResult = {
+        structured_output: structuredPlan,
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
         },
-      });
-      p.handle = fakeHandle;
-      return p;
+        total_cost_usd: 0,
+      };
+      let turnCount = 0;
+      return {
+        handle: fakeHandle,
+        get turnCount() { return turnCount; },
+        sendPrompt: async () => {
+          turnCount++;
+          return fakeResult;
+        },
+        close: async () => {},
+      };
     },
   };
 }
