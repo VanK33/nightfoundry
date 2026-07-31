@@ -44,6 +44,36 @@ import config from '../infra/config.js';
 import { summarizerSchema, extractStructured, validateStructured } from './_schemas.js';
 
 /**
+ * Cap a headline into a git-commit-title shape. Pure, no I/O.
+ *
+ * The headline is consumed VERBATIM by pipeline.js as the delivery commit
+ * title, so it must be constrained deterministically regardless of what the
+ * model produced. This is the structural half of the "deterministic gates
+ * over prompt guidance" pairing (the prompt also asks for a commit-title
+ * style headline, but the model is not trusted to obey it).
+ *
+ * Rules:
+ * - coerce to string, keep the FIRST line only, collapse whitespace runs to
+ *   single spaces, trim;
+ * - if longer than 72 chars, cut at the last word boundary at or before 72;
+ *   if that boundary lands before char 40, hard-cut at 72 instead; no
+ *   ellipsis; strip any trailing punctuation/whitespace left by the cut;
+ * - empty/nullish input → '' (callers fall back to the slug).
+ */
+export function capHeadline(s) {
+  if (s == null) return '';
+  let text = String(s);
+  const nl = text.search(/[\r\n]/);
+  if (nl !== -1) text = text.slice(0, nl);
+  text = text.replace(/\s+/g, ' ').trim();
+  if (text.length <= 72) return text;
+
+  const lastSpace = text.slice(0, 72).lastIndexOf(' ');
+  const cut = lastSpace >= 40 ? text.slice(0, lastSpace) : text.slice(0, 72);
+  return cut.replace(/[\p{P}\s]+$/u, '');
+}
+
+/**
  * Extract a summary from an SDK result. Pure function, no I/O.
  *
  * Return shape:
@@ -100,7 +130,7 @@ export function extractSummary(sdkResult, opts = {}) {
     }
 
     return {
-      headline: structured.headline,
+      headline: capHeadline(structured.headline),
       bugs: structured.bugs,
       summary: structured.summary,
       changelog,
@@ -117,7 +147,7 @@ export function extractSummary(sdkResult, opts = {}) {
   };
 
   return {
-    headline: stub.headline,
+    headline: capHeadline(stub.headline),
     bugs: [],
     summary: '',
     changelog: [],
@@ -193,7 +223,7 @@ Return your summary as the session's structured output matching the session's at
 Rules:
 - Synthesize ONLY from the data above. Do NOT read additional files.
 - Do NOT use Bash, Read, Grep, or Glob tools — everything you need is in this prompt.
-- headline: single sentence, starts with the outcome (e.g. "Delivered X", "Failed to Y")
+- headline: this string is used VERBATIM as a git commit title — write it like one. Describe WHAT changed at an abstract level (e.g. "Add queue retry verb and preserve runner kill signals"). MUST be <= 72 characters. NO test counts, NO "N/N tasks passed", NO verification-result claims ("all tests green", "fully verified"), NO milestone numbering, no trailing period.
 - bugs: one entry per distinct bug, brief, or empty array if none
 - summary: 2-5 sentences, factual and concise
 - changelog: one entry per user-visible change; type must be "feature", "fix", or "breaking"; empty array if no user-visible changes

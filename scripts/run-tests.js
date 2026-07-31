@@ -63,6 +63,7 @@ export const TEST_FILES = [
   'test/test-executor-contract.js',
   'test/test-analyzer-contract.js',
   'test/test-summarizer-contract.js',
+  'test/test-headline-cap.js',
   'test/test-import-graph.js',
   'test/test-blast-radius.js',
   'test/test-archive-list.js',
