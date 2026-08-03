@@ -90,6 +90,7 @@ import { ProgressTracker } from './progress-tracker.js';
 import { normalizeUncertains, persistUncertainsToState, extractSpecSection, getSpecTargetFiles, applySpecEdit } from './assumption-data.js';
 import { runTestRegistrationGate, recordGateOverride, applyHardCheckGate, formatBannerLines, writeVerificationSummary, parseVerificationSidecar, logVerifierPassCounts, writeElapsedToSidecar } from './verification-helpers.js';
 import { enumerateSymbolConsumers, readChangedSymbols } from '../gates/blast-radius.js';
+import { expandCoupledTargets } from './coupled-files.js';
 
 // Re-export for external importers/tests that reference deriveSpecJsonPath
 // from pipeline.js (the function now lives in spec-paths.js, a pure module
@@ -138,7 +139,9 @@ function applySpecHardChecks(missionDecomp, projectRoot, harnessDir) {
   // Spec-declared deliverables, fed to scopeSpecHardChecks so a path-bearing
   // check referencing no declared target_file classifies milestone-only
   // (e.g. a suite-runner command) instead of being scoped/orphaned.
-  const specTargetFiles = parseSpecTargetFiles(specJsonPath);
+  const declaredSpecTargetFiles = parseSpecTargetFiles(specJsonPath);
+  const coupledRules = config.scope?.coupledFiles ?? [];
+  const specTargetFiles = expandCoupledTargets(declaredSpecTargetFiles, coupledRules);
   // Backward cross-mission deps: collect every task id already persisted by
   // earlier missions (lazy DFS order) so validateTaskDependencies's dep validation
   // does not falsely kill a plan referencing them (W1-F7). Same fail-soft walk
@@ -3911,6 +3914,8 @@ class Pipeline {
     try {
       parsedChecks = parseSpecHardChecks(specJsonPath);
       specTargetFiles = parseSpecTargetFiles(specJsonPath);
+      const coupledRules = config.scope?.coupledFiles ?? [];
+      specTargetFiles = expandCoupledTargets(specTargetFiles, coupledRules);
     } catch (err) {
       this.onLog('Spec hard-check coverage drain skipped: spec.json at ' + specJsonPath + ' became unreadable post-planning (' + err.message + '); deterministic gates will not fire for this run.');
       return;
@@ -4055,6 +4060,8 @@ class Pipeline {
       parsedChecks = parseSpecHardChecks(specJsonPath);
       fileChecks = parseSpecFileChecks(specJsonPath);
       specTargetFiles = parseSpecTargetFiles(specJsonPath);
+      const coupledRules = config.scope?.coupledFiles ?? [];
+      specTargetFiles = expandCoupledTargets(specTargetFiles, coupledRules);
     } catch (err) {
       this.onLog('Spec-criteria drain skipped: spec.json at ' + specJsonPath + ' became unreadable post-planning (' + err.message + '); milestone-only checks and file-check criteria will not run.');
       return;
@@ -5629,8 +5636,12 @@ class Pipeline {
 
   /**
    * _getSpecTargetFiles() — Read the spec file and extract backtick-wrapped
-   * file paths, or fall back to spec.json target_files if available.
-   * Result is cached on this._specTargetFilesCache.
+   * file paths, or fall back to spec.json target_files if available. The
+   * declared list is then expanded with any `config.scope.coupledFiles`
+   * rules (read defensively — an absent scope section or coupledFiles key
+   * yields no rules and the declared list is returned unchanged).
+   * Result is cached on this._specTargetFilesCache (the declared,
+   * pre-expansion list); expansion is re-applied on every call.
    *
    * @returns {string[]} Array of target file paths (may be empty).
    */
@@ -5640,7 +5651,9 @@ class Pipeline {
       get value() { return pipeline._specTargetFilesCache; },
       set value(v) { pipeline._specTargetFilesCache = v; },
     };
-    return getSpecTargetFiles(this.harnessDir, this.projectRoot, cache);
+    const declared = getSpecTargetFiles(this.harnessDir, this.projectRoot, cache);
+    const coupledRules = config.scope?.coupledFiles ?? [];
+    return expandCoupledTargets(declared, coupledRules);
   }
 
   /**

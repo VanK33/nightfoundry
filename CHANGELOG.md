@@ -1,3 +1,12 @@
+## [0.2.9] - 2026-08-03 — Make coupled-files declarative in .cc-orch.json with engine expansion
+
+### New features
+- Glob matcher and coupled-file target expansion helper in new src/orchestrator/core/coupled-files.js with matchesGlob() and expandCoupledTargets()
+- Configuration surface for scope.coupledFiles in .cc-orch.json with shipped default and fail-loud validation
+- Engine-side expansion of coupled targets at all spec-target-files reader surfaces in pipeline.js
+- Repo-root .cc-orch.json with scope.coupledFiles rule declaring test/test-*.js → scripts/run-tests.js coupling
+- Operator documentation for scope.coupledFiles in spec-authoring.md with glob patterns and validation discipline
+
 ## [0.2.8] - 2026-07-31 — Delivered planGlobal bounded corrective-turn retry for automatic lint violation correction
 
 ### New features

@@ -289,6 +289,25 @@ const config = {
     siderailPollMs: Math.max(2000, 3000),
   },
 
+  // --- Scope / coupled-files rules ---
+  /**
+   * scope: rules that widen an executor task's target-file scope to include
+   * related files that must change in lockstep.
+   *
+   * coupledFiles ([]): shipped default is an empty array — the coupled-
+   * targets feature is OFF by default; no task's scope is ever widened
+   * unless this list is explicitly populated. Each entry is a rule of shape
+   * `{ when: string, alsoTarget: string[] }`:
+   *   - `when`: a glob matched against project-root-relative, forward-slash
+   *     paths (e.g. 'src/orchestrator/infra/config.js'). When a task's
+   *     target file matches this glob, the rule fires.
+   *   - `alsoTarget`: the list of additional project-root-relative paths to
+   *     add to that task's allowed target-file scope when the rule fires.
+   */
+  scope: {
+    coupledFiles: [],
+  },
+
   /**
    * Resolve the .harness dir for a given project root.
    */

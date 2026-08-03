@@ -1,0 +1,10 @@
+{
+  "scope": {
+    "coupledFiles": [
+      {
+        "when": "test/test-*.js",
+        "alsoTarget": ["scripts/run-tests.js"]
+      }
+    ]
+  }
+}

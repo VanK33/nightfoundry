@@ -77,6 +77,7 @@ export const TEST_FILES = [
   'test/test-archive-manifest.js',
   'test/test-cache-efficiency.js',
   'test/test-config-contract.js',
+  'test/test-coupled-files.js',
   'test/test-ui-config-contract.js',
   'test/test-dry-run.js',
   'test/test-dry-run-integration.js',
