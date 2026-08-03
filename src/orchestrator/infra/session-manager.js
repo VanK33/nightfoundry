@@ -438,6 +438,8 @@ class ReusableSession {
       throw new Error(`ReusableSession: session errored — ${this._error.message}`);
     }
 
+    this._sessionManager._assertUnderRunCeiling(this.handle.name);
+
     this._turnCount++;
     // `|| 0` base: tolerate test-fabricated handles that aren't real
     // SessionHandle instances and lack the rider fields.
@@ -585,6 +587,21 @@ class WallClockExceededError extends Error {
 }
 
 /**
+ * CostCeilingExceededError — thrown when a session exceeds the configured cost ceiling.
+ *
+ * Fields:
+ *   name      {string}  — 'CostCeilingExceededError'
+ *   retryable {boolean} — always false (cost ceiling exhaustion is non-retryable)
+ *   category  {string}  — 'cost-ceiling'
+ */
+class CostCeilingExceededError extends InfrastructureError {
+  constructor(message) {
+    super(message, { category: 'cost-ceiling', retryable: false });
+    this.name = 'CostCeilingExceededError';
+  }
+}
+
+/**
  * classifyError — inspects an SDK or generic error and returns an InfrastructureError.
  *
  * Classification rules:
@@ -692,6 +709,44 @@ class SessionManager {
   }
 
   /**
+   * Ceiling gate — refuses to dispatch a new session once cumulative run
+   * spend has reached the configured ceiling.
+   *
+   * Reads config.budgets.runCeilingUsd and this._tokenTracker.getTotalUsage()
+   * at call time (not cached) so a ceiling set/changed or spend accrued
+   * between spawns is always seen fresh. Throws CostCeilingExceededError
+   * ONLY when all of: the tracker is wired, the ceiling is a real number
+   * (not null/undefined), AND cumulative totalCostUsd >= ceiling.
+   *
+   * Fails open in every other case — no tracker, no/null ceiling, or any
+   * unexpected error while reading the tracker/config — so a gate
+   * malfunction never blocks dispatch. The ceiling comparison itself is
+   * the only path that ever throws.
+   *
+   * @param {string} sessionName - name of the session about to be spawned,
+   *   included in the thrown error's message for diagnosis.
+   */
+  _assertUnderRunCeiling(sessionName) {
+    let ceiling;
+    let totalCostUsd;
+    try {
+      if (!this._tokenTracker) return;
+      ceiling = config.budgets.runCeilingUsd;
+      if (ceiling === null || ceiling === undefined) return;
+      totalCostUsd = this._tokenTracker.getTotalUsage().totalCostUsd;
+    } catch {
+      // Fail open: an unexpected error reading tracker/config must never
+      // block dispatch.
+      return;
+    }
+    if (totalCostUsd >= ceiling) {
+      throw new CostCeilingExceededError(
+        `Run cost ceiling of $${ceiling} reached (cumulative spend $${totalCostUsd}) — refusing to spawn session '${sessionName}'`
+      );
+    }
+  }
+
+  /**
    * Spawn a new claude session via the Agent SDK.
    *
    * @param {Object} options
@@ -767,6 +822,8 @@ class SessionManager {
       };
 
       try {
+        this._assertUnderRunCeiling(handle.name);
+
         const q = this._queryFn({
           prompt: options.prompt,
           options: sdkOptions,
@@ -1230,4 +1287,4 @@ class SessionManager {
   }
 }
 
-export { SessionManager, SessionHandle, ReusableSession, PromptStream, InfrastructureError, WallClockExceededError, classifyError, classifyResult, RESULT_WATCHDOG_MS };
+export { SessionManager, SessionHandle, ReusableSession, PromptStream, InfrastructureError, WallClockExceededError, CostCeilingExceededError, classifyError, classifyResult, RESULT_WATCHDOG_MS };

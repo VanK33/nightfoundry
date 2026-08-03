@@ -49,6 +49,13 @@ const config = {
      */
     reviewer: 4.0,
     brainstormer: 6.0,
+    /**
+     * runCeilingUsd (50): a runaway fuse for the whole-run spend, not a
+     * target. Historical single-spec runs measure $10-30 total; 50 gives
+     * roughly 2x headroom above that observed range before the gate trips.
+     * Set to a literal `null` to disable the gate entirely.
+     */
+    runCeilingUsd: 50,
   },
 
   // --- Tool sets per role ---

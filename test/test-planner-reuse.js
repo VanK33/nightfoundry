@@ -186,6 +186,11 @@ class FakeSessionManager {
       handle.emit?.('result', event);
     }
   }
+  // ReusableSession.sendPrompt() calls this on its sessionManager before every
+  // turn (cost-ceiling gate). The real method is fail-open — with no tokenTracker
+  // it returns immediately — so a no-op faithfully mirrors that contract for the
+  // fixture (these tests set up no tracker and never exercise the ceiling).
+  _assertUnderRunCeiling() {}
 }
 
 // We can't call the real ReusableSession constructor directly because

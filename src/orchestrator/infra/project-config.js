@@ -9,24 +9,31 @@
  * execution.testAllCommand docs in config.js).
  *
  * Behavior:
- *   - Absent file: silent no-op. config.execution.testCommand and
- *     testAllCommand are left byte-identical to their current values.
+ *   - Absent file: silent no-op. config.execution.testCommand,
+ *     testAllCommand, and config.budgets.runCeilingUsd are left
+ *     byte-identical to their current values.
  *   - Present file: parsed as JSON and validated against the recognised
- *     shape { execution: { testCommand?, testAllCommand? } }. Only
- *     config.execution.testCommand and/or config.execution.testAllCommand
- *     are ever mutated; an omitted key keeps its current value.
+ *     shape { execution: { testCommand?, testAllCommand? },
+ *     budgets: { runCeilingUsd? } }. Only config.execution.testCommand,
+ *     config.execution.testAllCommand, and config.budgets.runCeilingUsd
+ *     are ever mutated; an omitted key (or an omitted section) keeps its
+ *     current value. A runCeilingUsd of literal null disables the run
+ *     spend gate; any other accepted value must be a positive finite
+ *     number.
  *   - Fail-loud: any unparseable JSON, unknown key (top-level or nested),
- *     non-string command value, or empty-string command value throws an
- *     Error naming both the file path and the offending key. The entire
- *     recognised shape is validated BEFORE any field is mutated — there
- *     is no partial-apply and no silent skip.
+ *     non-string command value, empty-string command value, or invalid
+ *     runCeilingUsd value (anything other than a positive finite number
+ *     or literal null) throws an Error naming both the file path and the
+ *     offending key. The entire recognised shape — execution AND
+ *     budgets — is validated BEFORE any field is mutated — there is no
+ *     partial-apply and no silent skip.
  *   - Idempotent: calling loadProjectConfig(projectRoot) twice with the
  *     same projectRoot re-reads the same file and re-applies the same
  *     values, producing the same result with no additional side effect.
  *
  * This module imports the config singleton from ./config.js and mutates
- * only the two runtime command fields described above; it does not
- * restructure or otherwise modify config.js.
+ * only the three runtime fields described above; it does not restructure
+ * or otherwise modify config.js.
  *
  * Public API:
  *   loadProjectConfig(projectRoot): void
@@ -35,8 +42,9 @@ import fs from 'fs';
 import path from 'path';
 import config from './config.js';
 
-const TOP_LEVEL_KEYS = new Set(['execution']);
+const TOP_LEVEL_KEYS = new Set(['execution', 'budgets']);
 const EXECUTION_KEYS = new Set(['testCommand', 'testAllCommand']);
+const BUDGETS_KEYS = new Set(['runCeilingUsd']);
 
 /**
  * Load and apply the optional per-project override file, if present.
@@ -71,7 +79,7 @@ export function loadProjectConfig(projectRoot) {
     }
   }
 
-  /** @type {{ testCommand?: string, testAllCommand?: string }} */
+  /** @type {{ testCommand?: string, testAllCommand?: string, runCeilingUsd?: number | null }} */
   const validated = {};
 
   if (Object.prototype.hasOwnProperty.call(parsed, 'execution')) {
@@ -112,12 +120,47 @@ export function loadProjectConfig(projectRoot) {
     }
   }
 
-  // Entire recognised shape has been validated — apply now. Only these two
-  // fields are ever mutated on the config singleton.
+  if (Object.prototype.hasOwnProperty.call(parsed, 'budgets')) {
+    const budgets = parsed.budgets;
+
+    if (
+      budgets === null ||
+      typeof budgets !== 'object' ||
+      Array.isArray(budgets)
+    ) {
+      throw new Error(
+        `Invalid config in ${filePath}: "budgets" must be an object`
+      );
+    }
+
+    for (const key of Object.keys(budgets)) {
+      if (!BUDGETS_KEYS.has(key)) {
+        throw new Error(`Unknown key "budgets.${key}" in ${filePath}`);
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(budgets, 'runCeilingUsd')) {
+      const value = budgets.runCeilingUsd;
+      const isValidNumber =
+        typeof value === 'number' && Number.isFinite(value) && value > 0;
+      if (value !== null && !isValidNumber) {
+        throw new Error(
+          `Invalid value for "budgets.runCeilingUsd" in ${filePath}: must be a positive finite number or null`
+        );
+      }
+      validated.runCeilingUsd = value;
+    }
+  }
+
+  // Entire recognised shape has been validated — apply now. Only these
+  // three fields are ever mutated on the config singleton.
   if (Object.prototype.hasOwnProperty.call(validated, 'testCommand')) {
     config.execution.testCommand = validated.testCommand;
   }
   if (Object.prototype.hasOwnProperty.call(validated, 'testAllCommand')) {
     config.execution.testAllCommand = validated.testAllCommand;
+  }
+  if (Object.prototype.hasOwnProperty.call(validated, 'runCeilingUsd')) {
+    config.budgets.runCeilingUsd = validated.runCeilingUsd;
   }
 }

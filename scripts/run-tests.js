@@ -414,6 +414,7 @@ export const TEST_FILES = [
   'test/test-write-json-atomic.js',
   'test/test-manifest-integrity.js',
   'test/test-suite-hermeticity.js',
+  'test/test-cost-ceiling.js',
 ];
 
 /**
