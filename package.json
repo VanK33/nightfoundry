@@ -6,7 +6,7 @@
     "type": "git",
     "url": "git+https://github.com/VanK33/nightfoundry.git"
   },
-  "releaseChannel": "beta",
+  "releaseChannel": "alpha",
   "type": "module",
   "description": "External Node.js orchestrator for harness — dispatches Claude sessions via Agent SDK",
   "main": "index.js",
