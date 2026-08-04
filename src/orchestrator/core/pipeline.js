@@ -466,6 +466,53 @@ class Pipeline {
     }
   }
 
+  /**
+   * Decides whether to release the active-run pointer after a failure that
+   * occurred somewhere in the planning window (claim → bootstrap →
+   * preflight → planGlobal, before any milestone has been committed to
+   * state.json). Only the invocation that itself claimed the pointer via
+   * claimActiveRun(kind:'run') owns it and may release it here — the
+   * opts.preclaimedRun path never owns the pointer, so it always leaves it
+   * in place.
+   *
+   * Even when this invocation owns the claim, the pointer is only cleared
+   * while the persisted state still has zero milestones — i.e. the failure
+   * happened before any milestone existed. Once milestones exist the
+   * pointer must be left in place so resume() can find the run.
+   *
+   * Deliberately does NOT use isUnresumableState: that predicate returns
+   * false when state.json is entirely absent, which would leak the pointer
+   * on failures that happen before bootstrap ever writes state.json.
+   *
+   * Best-effort throughout: any failure reading/parsing state.json, or
+   * clearing the pointer, is swallowed here — this must never mask the
+   * original error that triggered the call.
+   */
+  _releaseActiveRunPointerOnPlanningFailure(claimedInThisInvocation) {
+    if (!claimedInThisInvocation) return;
+
+    let shouldRelease = false;
+    try {
+      const state = readState(this.harnessDir);
+      const milestoneCount = Object.keys(state?.milestones || {}).length;
+      shouldRelease = milestoneCount === 0;
+    } catch {
+      // state.json absent, unreadable, or malformed — treat as "release".
+      shouldRelease = true;
+    }
+
+    if (!shouldRelease) return;
+
+    try {
+      const pointer = readActiveRunPointer(this.projectRoot);
+      const pointerRunId = (pointer && typeof pointer.runId === 'string') ? pointer.runId : 'unknown';
+      clearActiveRunPointer(this.projectRoot);
+      this.onLog(`Released active-run pointer for run ${pointerRunId} after planning failure.`);
+    } catch {
+      // best-effort — pointer cleanup must never mask the triggering error.
+    }
+  }
+
   // ── Public API ──
 
   async run(goal, opts = {}) {
@@ -484,6 +531,13 @@ class Pipeline {
     // entirely — when the on-disk active-run pointer still matches the
     // supplied runId; otherwise (stale/foreign/no pointer) we fall through
     // to the pre-existing derive-slug/claim path below unchanged.
+    // Tracks whether THIS invocation's own claimActiveRun(kind:'run') call
+    // succeeded — only that owning invocation may release the pointer on a
+    // planning-window failure (see _releaseActiveRunPointerOnPlanningFailure).
+    // Stays false on the opts.preclaimedRun path, where the caller owns the
+    // pointer.
+    let claimedInThisInvocation = false;
+
     const preclaimedRun = opts.preclaimedRun;
     const _onDiskPointer = preclaimedRun ? readActiveRunPointer(this.projectRoot) : null;
     const _preclaimedMatches = !!(
@@ -493,202 +547,214 @@ class Pipeline {
       _onDiskPointer.runId === preclaimedRun.runId
     );
 
-    if (_preclaimedMatches) {
-      const runId = preclaimedRun.runId;
-      this.onLog('Initializing harness...');
-      bootstrap(this.projectRoot, { runId, prdPath: opts.prdPath });
-      this._repointHarness(runHarnessDir(this.projectRoot, runId));
-      this.onLog(`Harness initialized at ${this.harnessDir}`);
-    } else {
-      const specFilename = opts.prdPath ? path.basename(opts.prdPath) : 'spec';
-      const slug = specFilename.replace(/\.[^.]+$/, '');
-      const runId = generateRunId(slug);
-      const claimed = claimActiveRun(this.projectRoot, { runId, slug, kind: 'run' });
-      if (claimed) {
-        sweepOrphanRunDirs(this.projectRoot, { log: (m) => this.onLog(m) });
+    try {
+      if (_preclaimedMatches) {
+        const runId = preclaimedRun.runId;
         this.onLog('Initializing harness...');
         bootstrap(this.projectRoot, { runId, prdPath: opts.prdPath });
         this._repointHarness(runHarnessDir(this.projectRoot, runId));
         this.onLog(`Harness initialized at ${this.harnessDir}`);
       } else {
-        // Another run already holds the active-run pointer. Classify its
-        // disposition via the existing overwrite-protection check: a
-        // completed-unarchived or halted-after-all-milestones-done run
-        // throws there (its existing complete/all-done throw semantics
-        // propagate unchanged, satisfying the "route to
-        // _checkOverwriteProtection" requirement); anything else — the
-        // claim owner is still bootstrapping, still actively working through
-        // milestones, or resumably paused with pending work — does NOT
-        // throw there, meaning the pointer denotes a still-active run, so we
-        // refuse outright and return without bootstrapping.
-        const pointer = readActiveRunPointer(this.projectRoot);
-        const pointerRunId = (pointer && typeof pointer.runId === 'string') ? pointer.runId : null;
-        const pointerDir = pointerRunId ? runHarnessDir(this.projectRoot, pointerRunId) : this.harnessDir;
+        const specFilename = opts.prdPath ? path.basename(opts.prdPath) : 'spec';
+        const slug = specFilename.replace(/\.[^.]+$/, '');
+        const runId = generateRunId(slug);
+        const claimed = claimActiveRun(this.projectRoot, { runId, slug, kind: 'run' });
+        if (claimed) {
+          claimedInThisInvocation = true;
+          sweepOrphanRunDirs(this.projectRoot, { log: (m) => this.onLog(m) });
+          this.onLog('Initializing harness...');
+          // bootstrap() is NOT individually try/catch'd here — it's covered by
+          // the single outer try/catch (added below, wrapping this entire
+          // if/else through the end of the planning window) that invokes
+          // _releaseActiveRunPointerOnPlanningFailure exactly once on any
+          // throw before the error propagates.
+          bootstrap(this.projectRoot, { runId, prdPath: opts.prdPath });
+          this._repointHarness(runHarnessDir(this.projectRoot, runId));
+          this.onLog(`Harness initialized at ${this.harnessDir}`);
+        } else {
+          // Another run already holds the active-run pointer. Classify its
+          // disposition via the existing overwrite-protection check: a
+          // completed-unarchived or halted-after-all-milestones-done run
+          // throws there (its existing complete/all-done throw semantics
+          // propagate unchanged, satisfying the "route to
+          // _checkOverwriteProtection" requirement); anything else — the
+          // claim owner is still bootstrapping, still actively working through
+          // milestones, or resumably paused with pending work — does NOT
+          // throw there, meaning the pointer denotes a still-active run, so we
+          // refuse outright and return without bootstrapping.
+          const pointer = readActiveRunPointer(this.projectRoot);
+          const pointerRunId = (pointer && typeof pointer.runId === 'string') ? pointer.runId : null;
+          const pointerDir = pointerRunId ? runHarnessDir(this.projectRoot, pointerRunId) : this.harnessDir;
 
-        this._checkOverwriteProtection(pointerDir);
+          this._checkOverwriteProtection(pointerDir);
 
-        this.onLog(
-          `Refusing to start a new run: the active-run pointer at ${pointerDir} is already held` +
-          (pointerRunId ? ` by run ${pointerRunId}` : '') +
-          `. Wait for it to finish, or resume it directly.`
-        );
-        return;
+          this.onLog(
+            `Refusing to start a new run: the active-run pointer at ${pointerDir} is already held` +
+            (pointerRunId ? ` by run ${pointerRunId}` : '') +
+            `. If it is still progressing or resumable, run \`cc-orch resume\`; ` +
+            `if it is wedged and should be discarded, run \`cc-orch clean\`.`
+          );
+          return;
+        }
       }
-    }
 
-    this._anchorPrdPath(opts);
+      this._anchorPrdPath(opts);
 
-    // w4-state-resume-persistence Fix #2: persist the --allow-incomplete-scope
-    // disposition granted at run entry so a later bare `cc-orch resume` honors
-    // what this run legitimately allowed (gate warned, plan approved, money
-    // spent) instead of hard-failing with IncompleteScopeError.
-    if (this._allowIncompleteScope) {
-      writeGateFlags(this.harnessDir, { allowIncompleteScope: true });
-    }
+      // w4-state-resume-persistence Fix #2: persist the --allow-incomplete-scope
+      // disposition granted at run entry so a later bare `cc-orch resume` honors
+      // what this run legitimately allowed (gate warned, plan approved, money
+      // spent) instead of hard-failing with IncompleteScopeError.
+      if (this._allowIncompleteScope) {
+        writeGateFlags(this.harnessDir, { allowIncompleteScope: true });
+      }
 
-    this._runPreflight();
-    this._startAgentTicker();
+      this._runPreflight();
+      this._startAgentTicker();
 
-    try {
-      // Phase 3a: Global decomposition
-      this.onLog('Planning: decomposing goal into milestones and missions...');
-      const learningPath = path.join(harnessRoot(this.projectRoot), 'learning', 'patterns.md');
-      const learningData = fs.existsSync(learningPath) ? fs.readFileSync(learningPath, 'utf8') : undefined;
-
-      // Phase I items 4+5: build the project's import graph and inject
-      // it into the planner's context so planGlobal can decompose by
-      // runtime dependency (call-graph topology) rather than by
-      // file-tree proximity (directory grouping). Auto-generated from
-      // source on every run — never stale.
-      const importGraph = formatGraphForPrompt(buildImportGraph(this.projectRoot));
-      this._cachedImportGraph = importGraph;
-
-      // Extract the authoritative scope-item set ONCE, before planning. The
-      // ids are position-derived and stay authoritative for the life of the
-      // run (no re-extraction anywhere); the planner declares the mapping
-      // against them, the gate verifies completeness against the plan object.
-      const specMarkdown = (opts.prdPath && fs.existsSync(opts.prdPath)) ? fs.readFileSync(opts.prdPath, 'utf8') : '';
-      const scopeItems = extractScopeItems(specMarkdown);
-
-      const _planGlobalStart = Date.now();
-      this.statusBar.updateAgent('planner', { role: 'planner', status: 'active', startedAt: _planGlobalStart, cost: this.tokenTracker.getUsageByType('planner').totalCostUsd });
-      this.statusBar.setPhase('planning global');
-      let globalPlan;
       try {
-        globalPlan = await this.planner.planGlobal(goal, this.projectRoot, {
-          prdPath: opts.prdPath,
-          learningData,
-          importGraph,
-          mode: opts.mode,
-          specTargetFiles: this._getSpecTargetFiles(),
-          specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
-          specScopeItems: scopeItems,
-          specConstraints: this._getSpecConstraints(),
-          specPlanStructure: this._getSpecPlanStructure(),
-        });
+        // Phase 3a: Global decomposition
+        this.onLog('Planning: decomposing goal into milestones and missions...');
+        const learningPath = path.join(harnessRoot(this.projectRoot), 'learning', 'patterns.md');
+        const learningData = fs.existsSync(learningPath) ? fs.readFileSync(learningPath, 'utf8') : undefined;
+
+        // Phase I items 4+5: build the project's import graph and inject
+        // it into the planner's context so planGlobal can decompose by
+        // runtime dependency (call-graph topology) rather than by
+        // file-tree proximity (directory grouping). Auto-generated from
+        // source on every run — never stale.
+        const importGraph = formatGraphForPrompt(buildImportGraph(this.projectRoot));
+        this._cachedImportGraph = importGraph;
+
+        // Extract the authoritative scope-item set ONCE, before planning. The
+        // ids are position-derived and stay authoritative for the life of the
+        // run (no re-extraction anywhere); the planner declares the mapping
+        // against them, the gate verifies completeness against the plan object.
+        const specMarkdown = (opts.prdPath && fs.existsSync(opts.prdPath)) ? fs.readFileSync(opts.prdPath, 'utf8') : '';
+        const scopeItems = extractScopeItems(specMarkdown);
+
+        const _planGlobalStart = Date.now();
+        this.statusBar.updateAgent('planner', { role: 'planner', status: 'active', startedAt: _planGlobalStart, cost: this.tokenTracker.getUsageByType('planner').totalCostUsd });
+        this.statusBar.setPhase('planning global');
+        let globalPlan;
+        try {
+          globalPlan = await this.planner.planGlobal(goal, this.projectRoot, {
+            prdPath: opts.prdPath,
+            learningData,
+            importGraph,
+            mode: opts.mode,
+            specTargetFiles: this._getSpecTargetFiles(),
+            specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
+            specScopeItems: scopeItems,
+            specConstraints: this._getSpecConstraints(),
+            specPlanStructure: this._getSpecPlanStructure(),
+          });
+        } finally {
+          this.statusBar.updateAgent('planner', null);
+        }
+        this.onLog(`  planGlobal completed in ${this._formatElapsed(Date.now() - _planGlobalStart)}`);
+
+        // Attach the authoritative scope set + normalise the planner's mapping
+        // onto the in-memory plan object BEFORE the gate and writeGlobalPlan.
+        globalPlan.scopeItems = scopeItems;
+        if (!Array.isArray(globalPlan.scopeMapping)) globalPlan.scopeMapping = [];
+
+        // Small-task mode: enforce plan complexity limits.
+        this._mode = opts.mode;
+        if (opts.mode === 'small-task') {
+          this._skipCoverageGate = true;
+          // w4-state-resume-persistence Fix #2: persist the skipCoverageGate
+          // disposition at the point run() grants it (small-task mode), so a
+          // bare resume of a small-task run does not re-impose the coverage gate
+          // the original invocation legitimately skipped.
+          writeGateFlags(this.harnessDir, { skipCoverageGate: true });
+          const numMilestones = globalPlan.milestones.length;
+          const numMissions = globalPlan.milestones.reduce((sum, ms) => sum + ms.missions.length, 0);
+          if (numMilestones > config.smallTask.maxMilestones || numMissions > config.smallTask.maxMissions) {
+            this.onLog('Task is too complex for small-task mode. Write a full spec instead.');
+            return;
+          }
+        }
+
+        // Phase 3a steps 5-6: Verify assumptions + remediation
+        if (globalPlan.assumptions?.length) {
+          const remResult = await this._remediateAssumptions(globalPlan, { prdPath: opts.prdPath ?? null, mode: opts.auto ? 'autonomous' : 'interactive' });
+          if (!remResult.passed) return;
+        }
+
+        if (!this._skipCoverageGate) {
+          await this._scopeCoverageGate(globalPlan, opts);
+          this._detectUncheckableSpec(opts);
+        }
+
+        writeGlobalPlan(this.harnessDir, globalPlan);
+
+        this.onLog('\n=== Proposed Plan ===');
+        for (const ms of globalPlan.milestones) {
+          this.onLog(this._formatBanner('Milestone', ms.id, ms.description, { indent: '  ' }).join('\n'));
+          for (const mi of ms.missions) {
+            this.onLog(this._formatBanner('Mission', mi.id, mi.description, { indent: '    ' }).join('\n'));
+          }
+        }
+
+        if (this.autoFromHere) {
+          // auto-approve mode active — skip plan-confirm prompt and proceed
+        } else if (this.onMenu) {
+          const choice = await this.onMenu('Proceed with this plan?', [
+            { key: 'y', label: 'Yes' },
+            { key: 'n', label: 'No' },
+            { key: 'a', label: 'Yes, and auto-approve from here' },
+          ]);
+          if (choice === 'n') {
+            this.onLog('Plan rejected by user. Stopping.');
+            return;
+          }
+          if (choice === 'a') {
+            this.autoFromHere = true;
+          }
+        }
+
+        await this._executeAllMilestones(globalPlan);
+
+        if (this._cancelController.signal.aborted) {
+          this.onLog('Pipeline cancelled — skipping review gate');
+          return;
+        }
+
+        await this._reviewGate({ ...opts, autoAccept: this.autoFromHere });
+
+        // Fix 1: run() never archives, so archive()'s full-suite gate never fires on this
+        // path. Run it here (no archive, no bump) so `cc-orch run` fails closed when the whole
+        // suite is red. Auto-skips when the target has no test:all script.
+        this._runFinalTestGate(this.projectRoot, {});
+
+        try {
+          const completeState = readState(this.harnessDir);
+          completeState.globalStatus = 'complete';
+          writeJsonAtomic(path.join(this.harnessDir, 'state.json'), completeState);
+        } catch { /* best-effort marker */ }
       } finally {
-        this.statusBar.updateAgent('planner', null);
-      }
-      this.onLog(`  planGlobal completed in ${this._formatElapsed(Date.now() - _planGlobalStart)}`);
-
-      // Attach the authoritative scope set + normalise the planner's mapping
-      // onto the in-memory plan object BEFORE the gate and writeGlobalPlan.
-      globalPlan.scopeItems = scopeItems;
-      if (!Array.isArray(globalPlan.scopeMapping)) globalPlan.scopeMapping = [];
-
-      // Small-task mode: enforce plan complexity limits.
-      this._mode = opts.mode;
-      if (opts.mode === 'small-task') {
-        this._skipCoverageGate = true;
-        // w4-state-resume-persistence Fix #2: persist the skipCoverageGate
-        // disposition at the point run() grants it (small-task mode), so a
-        // bare resume of a small-task run does not re-impose the coverage gate
-        // the original invocation legitimately skipped.
-        writeGateFlags(this.harnessDir, { skipCoverageGate: true });
-        const numMilestones = globalPlan.milestones.length;
-        const numMissions = globalPlan.milestones.reduce((sum, ms) => sum + ms.missions.length, 0);
-        if (numMilestones > config.smallTask.maxMilestones || numMissions > config.smallTask.maxMissions) {
-          this.onLog('Task is too complex for small-task mode. Write a full spec instead.');
-          return;
+        // Release the reusable planner session. Safe no-op if no session
+        // was opened. MUST be in a finally block so the SDK subprocess is
+        // released even if the pipeline throws.
+        await this.planner.closeReusableSession();
+        if (this._msElapsedInterval !== null) {
+          clearInterval(this._msElapsedInterval);
+          this._msElapsedInterval = null;
         }
+        this._stopAgentTicker();
+        // Remove signal handlers to prevent listener leaks across
+        // multiple Pipeline instances (e.g. in tests).
+        process.removeListener('SIGINT', this._signalHandlers.SIGINT);
+        process.removeListener('SIGTERM', this._signalHandlers.SIGTERM);
+        process.removeListener('exit', this._signalHandlers.exit);
+        process.removeListener('uncaughtException', this._signalHandlers.uncaughtException);
+        this.statusBar.destroy();
       }
-
-      // Phase 3a steps 5-6: Verify assumptions + remediation
-      if (globalPlan.assumptions?.length) {
-        const remResult = await this._remediateAssumptions(globalPlan, { prdPath: opts.prdPath ?? null, mode: opts.auto ? 'autonomous' : 'interactive' });
-        if (!remResult.passed) return;
-      }
-
-      if (!this._skipCoverageGate) {
-        await this._scopeCoverageGate(globalPlan, opts);
-        this._detectUncheckableSpec(opts);
-      }
-
-      writeGlobalPlan(this.harnessDir, globalPlan);
-
-      this.onLog('\n=== Proposed Plan ===');
-      for (const ms of globalPlan.milestones) {
-        this.onLog(this._formatBanner('Milestone', ms.id, ms.description, { indent: '  ' }).join('\n'));
-        for (const mi of ms.missions) {
-          this.onLog(this._formatBanner('Mission', mi.id, mi.description, { indent: '    ' }).join('\n'));
-        }
-      }
-
-      if (this.autoFromHere) {
-        // auto-approve mode active — skip plan-confirm prompt and proceed
-      } else if (this.onMenu) {
-        const choice = await this.onMenu('Proceed with this plan?', [
-          { key: 'y', label: 'Yes' },
-          { key: 'n', label: 'No' },
-          { key: 'a', label: 'Yes, and auto-approve from here' },
-        ]);
-        if (choice === 'n') {
-          this.onLog('Plan rejected by user. Stopping.');
-          return;
-        }
-        if (choice === 'a') {
-          this.autoFromHere = true;
-        }
-      }
-
-      await this._executeAllMilestones(globalPlan);
-
-      if (this._cancelController.signal.aborted) {
-        this.onLog('Pipeline cancelled — skipping review gate');
-        return;
-      }
-
-      await this._reviewGate({ ...opts, autoAccept: this.autoFromHere });
-
-      // Fix 1: run() never archives, so archive()'s full-suite gate never fires on this
-      // path. Run it here (no archive, no bump) so `cc-orch run` fails closed when the whole
-      // suite is red. Auto-skips when the target has no test:all script.
-      this._runFinalTestGate(this.projectRoot, {});
-
-      try {
-        const completeState = readState(this.harnessDir);
-        completeState.globalStatus = 'complete';
-        writeJsonAtomic(path.join(this.harnessDir, 'state.json'), completeState);
-      } catch { /* best-effort marker */ }
-    } finally {
-      // Release the reusable planner session. Safe no-op if no session
-      // was opened. MUST be in a finally block so the SDK subprocess is
-      // released even if the pipeline throws.
-      await this.planner.closeReusableSession();
-      if (this._msElapsedInterval !== null) {
-        clearInterval(this._msElapsedInterval);
-        this._msElapsedInterval = null;
-      }
-      this._stopAgentTicker();
-      // Remove signal handlers to prevent listener leaks across
-      // multiple Pipeline instances (e.g. in tests).
-      process.removeListener('SIGINT', this._signalHandlers.SIGINT);
-      process.removeListener('SIGTERM', this._signalHandlers.SIGTERM);
-      process.removeListener('exit', this._signalHandlers.exit);
-      process.removeListener('uncaughtException', this._signalHandlers.uncaughtException);
-      this.statusBar.destroy();
+      return { runStartSessionCount: this._runStartSessionCount };
+    } catch (err) {
+      this._releaseActiveRunPointerOnPlanningFailure(claimedInThisInvocation);
+      throw err;
     }
-    return { runStartSessionCount: this._runStartSessionCount };
   }
 
   /**

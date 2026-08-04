@@ -3,7 +3,13 @@ import { Pipeline } from '../../orchestrator/core/pipeline.js';
 import { InfrastructureError } from '../../orchestrator/infra/session-manager.js';
 import { askYesNo, askMenu } from '../prompt.js';
 import { readState, isUnresumableState } from '../../orchestrator/core/state.js';
-import { activeHarnessDir } from '../../orchestrator/core/run-context.js';
+import {
+  activeHarnessDir,
+  runHarnessDir,
+  readActiveRunPointer,
+  clearActiveRunPointer,
+  activeRunPointerPath,
+} from '../../orchestrator/core/run-context.js';
 import { infraErrorHint } from '../infra-hint.js';
 
 export async function resume(projectRoot, flags) {
@@ -36,10 +42,33 @@ export async function resume(projectRoot, flags) {
       const harnessDir = activeHarnessDir(projectRoot);
       const state = readState(harnessDir);
       if (isUnresumableState(state)) {
-        process.stderr.write(
-          'Cannot resume: planning phase crashed before milestones were created, possibly due to verifyAssumptions escalation.\n' +
-          'Recovery: run `cc-orch run <spec-path>` to start a fresh run.\n'
-        );
+        // Best-effort pointer-scoped auto-clear: only remove the active-run
+        // pointer when it is currently held AND it names this very run (the
+        // one whose state was just read as unresumable). Never touch a
+        // pointer that is absent, unparseable, or names a different run.
+        const pointer = readActiveRunPointer(projectRoot);
+        const heldRunId = (pointer && typeof pointer.runId === 'string' && pointer.runId.length > 0)
+          ? pointer.runId
+          : null;
+        const pointerPath = activeRunPointerPath(projectRoot);
+        let cleared = false;
+        if (heldRunId && runHarnessDir(projectRoot, heldRunId) === harnessDir) {
+          clearActiveRunPointer(projectRoot);
+          cleared = true;
+        }
+        // cleared / heldRunId / pointerPath are captured here for the
+        // resume-recovery message; the pointer clear itself is best-effort
+        // and must never block falling through to the exit(76) below.
+        const currentPhase = state && state.projectMeta && state.projectMeta.currentPhase;
+        const milestoneCount = state && state.milestones ? Object.keys(state.milestones).length : 0;
+        let message =
+          `Cannot resume: state.projectMeta.currentPhase is "${currentPhase}" with ${milestoneCount} milestones recorded.\n`;
+        if (cleared) {
+          message +=
+            `Stale active-run pointer at ${pointerPath} (runId: ${heldRunId}) was cleared.\n`;
+        }
+        message += 'Recovery: run `cc-orch run <spec-path>` to start a fresh run.\n';
+        process.stderr.write(message);
         process.exit(76);
       }
     } catch (_err) {

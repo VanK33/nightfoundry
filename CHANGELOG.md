@@ -1,3 +1,14 @@
+## [0.2.10] - 2026-08-04 — Release active-run pointer on planning failures and auto-clear
+
+### New features
+- Claim-failed refusal message now explicitly names recovery commands: `cc-orch resume` for resumable runs and `cc-orch clean` for wedged ones
+- Added comprehensive regression test suite for active-run pointer recovery, covering planning-phase release, resume auto-clear, claim-failed refusal, and zero-byte pointer guard
+
+### Bug fixes
+- Planning-phase failures now release the active-run pointer before propagating errors, preventing stranded pointers from blocking future runs
+- Resume command auto-clears a stranded active-run pointer when resuming a planning-crashed run in interactive mode, with honest messaging of pointer path and runId
+- Unresumable state error message now contains only observed facts (currentPhase, milestone count), no speculative causes, and includes pointer path/runId when cleared
+
 ## [0.2.9] - 2026-08-03 — Make coupled-files declarative in .cc-orch.json with engine expansion
 
 ### New features
