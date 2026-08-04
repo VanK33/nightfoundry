@@ -60,6 +60,7 @@ import {
   isCheckableCriterion,
   scopeSpecHardChecks,
   isMilestoneOnlyCheck,
+  _exciseEvalPayloads,
 } from '../agents/planner.js';
 import { PlanLintError } from './plan-structure-lint.js';
 
@@ -317,10 +318,13 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
         if (!Array.isArray(assigned) || assigned.length === 0) continue;
         const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : null;
         for (const check of assigned) {
-          const rawTokens = typeof check.command === 'string'
-            ? check.command.split(/\s+/).filter((t) => t.length > 0)
+          const excisedCommand = typeof check.command === 'string'
+            ? _exciseEvalPayloads(check.command)
+            : check.command;
+          const rawTokens = typeof excisedCommand === 'string'
+            ? excisedCommand.split(/\s+/).filter((t) => t.length > 0)
             : [];
-          const exemptPositions = _exemptCommandTokens(check.command, projectRoot);
+          const exemptPositions = _exemptCommandTokens(excisedCommand, projectRoot);
           for (let i = 0; i < rawTokens.length; i++) {
             if (exemptPositions.has(i)) continue;
             for (const token of extractPathTokens(rawTokens[i], projectRoot)) {

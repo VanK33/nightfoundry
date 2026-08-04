@@ -33,19 +33,29 @@
  *         passed to lintGlobalPlanScope — the eval payload is excised and
  *         the real trailing path token is covered by the mission's
  *         targetFiles.
+ *   TC8 — lint-level integration of lintPlanScope's per-task pre-split
+ *         coverage loop: a plan whose subMissions[].tasks[] contains one
+ *         task (with an id) declaring the referenced file in targetFiles,
+ *         linted via lintPlanScope(plan, declaredSet, { specTargetFiles,
+ *         specAcceptanceCriteria }) where the acceptance criterion is a
+ *         kind='command' verification whose command embeds the incident's
+ *         inline JS in a -e payload alongside a reference to that declared
+ *         file, does NOT throw — the payload's path-like strings are
+ *         excised and the real trailing operand is covered.
  *
  * Run: node test/test-eval-token-extraction.js
  *
  * No live Claude sessions are spawned — all agent interactions are stubbed;
  * this file only imports the pure extractPathTokens/isMilestoneOnlyCheck
- * functions from planner.js and the pure lintGlobalPlanScope function from
- * plan-scope-lint.js, asserting on their return values / non-throwing
- * behavior. No real SDK access occurs anywhere in this file.
+ * functions from planner.js and the pure lintGlobalPlanScope/lintPlanScope/
+ * buildDeclaredSet functions from plan-scope-lint.js, asserting on their
+ * return values / non-throwing behavior. No real SDK access occurs
+ * anywhere in this file.
  */
 
 import assert from 'assert';
 import { extractPathTokens, isMilestoneOnlyCheck } from '../src/orchestrator/agents/planner.js';
-import { lintGlobalPlanScope } from '../src/orchestrator/gates/plan-scope-lint.js';
+import { lintGlobalPlanScope, lintPlanScope, buildDeclaredSet } from '../src/orchestrator/gates/plan-scope-lint.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -188,6 +198,63 @@ await test('TC7: lintGlobalPlanScope does not throw for a spec-shaped fixture wh
   assert.doesNotThrow(() => {
     lintGlobalPlanScope(globalPlan, specTargetFiles, specAcceptanceCriteria);
   }, 'lintGlobalPlanScope must not throw when the eval-embedding command\'s real path token is covered by the mission\'s declared targetFiles');
+});
+
+// ── TC8 ──────────────────────────────────────────────────────────────────
+
+await test('TC8: lintPlanScope does not throw for a plan whose task targetFiles declare the file referenced outside the -e payload of a scoped acceptance command', () => {
+  const declaredFile = 'test/test-eval-token-extraction.js';
+
+  // A spec-shaped fixture: a plan whose subMissions[].tasks[] declares the
+  // referenced file in targetFiles.
+  const plan = {
+    subMissions: [
+      {
+        id: 'mission-1',
+        tasks: [
+          {
+            id: 'task-1',
+            targetFiles: [declaredFile],
+          },
+        ],
+      },
+    ],
+  };
+
+  const specTargetFiles = [declaredFile];
+
+  // The acceptance command embeds the incident's inline JS in a -e
+  // payload alongside a reference to the declared file, mirroring TC7's
+  // pattern — the -e payload is excised and the trailing real path
+  // operand is the token that must be covered.
+  const specAcceptanceCriteria = [
+    {
+      description: 'Eval-embedding acceptance command is covered by task targetFiles',
+      verification: {
+        kind: 'command',
+        command: `${INCIDENT_COMMAND} && node ${declaredFile}`,
+      },
+    },
+  ];
+
+  // Sanity: the fixture criterion is checkable via kind === 'command' so
+  // lintPlanScope's per-task pre-split coverage loop treats it as
+  // checkable at all.
+  assert.strictEqual(specAcceptanceCriteria[0].verification.kind, 'command');
+
+  // Build declaredSet via buildDeclaredSet so no hard scope-excursion
+  // masks the coverage assertion below (declaredFile is present both as a
+  // specTargetFile and as a path token extracted from the acceptance
+  // command's excised trailing operand).
+  const declaredSet = buildDeclaredSet(specTargetFiles, specAcceptanceCriteria);
+  assert.ok(
+    declaredSet.has(declaredFile),
+    'buildDeclaredSet must include the declared file so no hard scope-excursion masks the coverage assertion',
+  );
+
+  assert.doesNotThrow(() => {
+    lintPlanScope(plan, declaredSet, { specTargetFiles, specAcceptanceCriteria });
+  }, "lintPlanScope must not throw when the eval-embedding command's real path token is covered by the task's declared targetFiles");
 });
 
 // ── Summary ──────────────────────────────────────────────────────────────

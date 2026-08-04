@@ -1,3 +1,12 @@
+## [0.2.11] - 2026-08-04 — Skip -e/--eval payloads in path-token extraction
+
+### New features
+- Export eval-payload excision helper from planner.js for integration in lint modules
+- Add regression test suite validating eval-payload exclusion across path tokenization and lint surfaces
+
+### Bug fixes
+- Plan-scope-lint per-task coverage loop now excludes eval-payload strings before path tokenization
+
 ## [0.2.10] - 2026-08-04 — Release active-run pointer on planning failures and auto-clear
 
 ### New features
