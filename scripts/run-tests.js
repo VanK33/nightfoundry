@@ -337,6 +337,7 @@ export const TEST_FILES = [
   'test/test-prdpath-anchor.js',
   'test/test-state-resume-persistence.js',
   'test/test-path-token-quote-strip.js',
+  'test/test-eval-token-extraction.js',
   'test/test-cross-mission-dep.js',
   'test/test-park-foundation.js',
   'test/test-cli-park.js',

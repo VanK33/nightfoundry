@@ -1901,13 +1901,58 @@ function _stripTokenEdges(token) {
 }
 
 /**
+ * Matches an `-e` / `--eval` / `--eval=<payload>` flag together with its
+ * argument payload, purely lexically (flag recognition + quote matching —
+ * no JS parsing, no evaluation). Capture group 1 is the boundary
+ * (start-of-string or the whitespace immediately preceding the flag),
+ * which is preserved on replacement so token separation between the
+ * surrounding command pieces is not lost.
+ *
+ * Payload forms recognized (in order): double-quoted ("..."),
+ * single-quoted ('...'), or a bare single whitespace-delimited word.
+ * The `=` form (`--eval=payload`) requires the payload to immediately
+ * follow `=`; the space form (`-e payload` / `--eval payload`) requires
+ * at least one whitespace character before the payload.
+ */
+const _EVAL_FLAG_EXCISION_RE = /(^|\s)(?:-e|--eval)(?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))/g;
+
+/**
+ * Lexically excises the argument payload of every `-e` / `--eval` /
+ * `--eval=<payload>` token from a shell command string, before any
+ * whitespace splitting or path-token extraction runs. This is a blanket
+ * excision over any leading command (node/sed/grep/etc.) — the flag's
+ * argument is never treated as a path operand, since it is opaque
+ * inline-script/expression content, not a filesystem path. Detection and
+ * excision are purely lexical (flag recognition + quote matching); no
+ * JavaScript parsing or evaluation is performed.
+ *
+ * @param {string} commandStr - Raw shell command string
+ * @returns {string} commandStr with every -e/--eval flag+payload removed
+ */
+function _exciseEvalPayloads(commandStr) {
+  return commandStr.replace(_EVAL_FLAG_EXCISION_RE, '$1');
+}
+
+/**
  * Scans a shell command string for path-like tokens.
- * Each whitespace-token is first cleaned of shell-syntax punctuation on
- * both ends (see _TOKEN_EDGE_PUNCTUATION); the path test runs on the
- * CLEANED token and the cleaned token is what's returned. Tokens that
- * strip to empty are dropped. A cleaned token qualifies if it contains
- * '/' (a path separator) or ends with a recognized code/test file
- * extension (.js, .ts, .py, .md, etc.).
+ *
+ * Before any splitting occurs, the argument payload of every `-e` /
+ * `--eval` / `--eval=<payload>` token is lexically excised from
+ * `commandStr` (see `_exciseEvalPayloads`): flag recognition plus quote
+ * matching over the raw string, with no JavaScript parsing or evaluation.
+ * Double-quoted, single-quoted, and bare single-word payloads are all
+ * removed. This excision is blanket over any leading command
+ * (node/sed/grep alike) — the flag's argument is never treated as a path
+ * operand. Accepted consequence: a command whose only path-like strings
+ * live inside an -e/--eval payload has zero path tokens and is therefore
+ * classified as milestone-only by downstream consumers.
+ *
+ * After excision, each whitespace-token is cleaned of shell-syntax
+ * punctuation on both ends (see _TOKEN_EDGE_PUNCTUATION); the path test
+ * runs on the CLEANED token and the cleaned token is what's returned.
+ * Tokens that strip to empty are dropped. A cleaned token qualifies if it
+ * contains '/' (a path separator) or ends with a recognized code/test
+ * file extension (.js, .ts, .py, .md, etc.).
  *
  * URL tokens (containing `://`) are always excluded.
  *
@@ -1923,7 +1968,7 @@ function _stripTokenEdges(token) {
 function extractPathTokens(commandStr, projectRoot) {
   if (!commandStr || typeof commandStr !== 'string') return [];
   const hasProjectRoot = typeof projectRoot === 'string' && projectRoot.length > 0;
-  return commandStr.split(/\s+/)
+  return _exciseEvalPayloads(commandStr).split(/\s+/)
     .map((token) => _stripTokenEdges(token))
     .filter((token) => {
       if (!token) return false;
