@@ -35,7 +35,7 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { isMilestoneOnlyCheck } from '../agents/planner.js';
+import { isMilestoneOnlyCheck, isMultiOwnerCheck } from '../agents/planner.js';
 import { withRunMarkerEnv } from '../core/run-marker.js';
 
 export const HARD_CHECK_DEFAULT_TIMEOUT_MS = 30_000;
@@ -177,22 +177,30 @@ export async function runHardChecks(harnessDir, taskId, projectRoot) {
  * Pure execution helper for the pipeline's last-milestone spec-criteria
  * drain: filters `checks` through isMilestoneOnlyCheck (forwarding
  * `specTargetFiles` so the defensive re-filter classifies exactly like the
- * caller and cannot drop a path-bearing milestone-only check), runs each via
+ * caller and cannot drop a path-bearing milestone-only check) OR — when
+ * `activeTasks` is supplied — isMultiOwnerCheck (a check whose token file
+ * is shared by ≥2 tasks is unattached at plan time by design and this
+ * drain is its ONLY execution channel; dropping it here would be a silent
+ * false-green), runs each via
  * execSync (cwd = projectRoot, 600 000 ms per-check timeout — same ceiling
  * class as the archive full-suite gate), captures output, and never throws.
  * A per-check progress line is emitted via onLog BEFORE each execution
  * (long-op visibility). Non-zero exit / timeout → a recorded failure; the
  * caller decides whether failures are fatal.
  *
- * @param {{name: string, command: string}[]} checks - Parsed spec hard checks (any mix; non-milestone-only entries are filtered out)
+ * @param {{name: string, command: string}[]} checks - Parsed spec hard checks (any mix; entries neither milestone-only nor multi-owner are filtered out)
  * @param {string} projectRoot - cwd for each command
- * @param {{onLog?: (msg: string) => void, specTargetFiles?: string[]}} [opts] -
+ * @param {{onLog?: (msg: string) => void, specTargetFiles?: string[], activeTasks?: {id: string, targetFiles: string[]}[]}} [opts] -
  *   `specTargetFiles`: the spec's declared target_files, forwarded to
- *   isMilestoneOnlyCheck; omit for legacy zero-token-only classification
+ *   isMilestoneOnlyCheck; omit for legacy zero-token-only classification.
+ *   `activeTasks`: every non-invalidated planned task, forwarded to
+ *   isMultiOwnerCheck; omit to accept milestone-only checks alone
  * @returns {{passed: boolean, failures: {name: string, command: string, exitCode: number, outputTail: string}[]}}
  */
-export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetFiles } = {}) {
-  const milestoneOnly = (Array.isArray(checks) ? checks : []).filter((c) => isMilestoneOnlyCheck(c, specTargetFiles, projectRoot));
+export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetFiles, activeTasks } = {}) {
+  const milestoneOnly = (Array.isArray(checks) ? checks : []).filter((c) =>
+    isMilestoneOnlyCheck(c, specTargetFiles, projectRoot)
+    || (Array.isArray(activeTasks) && isMultiOwnerCheck(c, activeTasks, projectRoot)));
   const failures = [];
 
   for (const check of milestoneOnly) {

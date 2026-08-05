@@ -60,6 +60,7 @@ import {
   isCheckableCriterion,
   scopeSpecHardChecks,
   isMilestoneOnlyCheck,
+  isMultiOwnerCheck,
   _exciseEvalPayloads,
 } from '../agents/planner.js';
 import { PlanLintError } from './plan-structure-lint.js';
@@ -313,11 +314,27 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
       const coverageViolations = [];
       let firstCoverageMessage = null;
       const scopedMap = scopeSpecHardChecks(checkableChecks, flatTasks, specTargetFiles, projectRoot);
+      // Audit set = per-task assigned checks PLUS multi-owner checks:
+      // the ownership rule leaves multi-owner checks unattached (drain-
+      // executed), but their tokens must still be plan-covered — without
+      // this arm a multi-owner command's second, uncovered token would
+      // surface only as a drain failure after all execution (the 2d-iii
+      // early catch, degraded).
+      const auditEntries = [];
       for (const task of flatTasks) {
         const assigned = scopedMap.get(task.id);
         if (!Array.isArray(assigned) || assigned.length === 0) continue;
         const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : null;
-        for (const check of assigned) {
+        for (const check of assigned) auditEntries.push({ taskId, check });
+      }
+      for (const check of checkableChecks) {
+        if (isMilestoneOnlyCheck(check, specTargetFiles, projectRoot)) continue;
+        if (isMultiOwnerCheck(check, flatTasks, projectRoot)) {
+          auditEntries.push({ taskId: null, check });
+        }
+      }
+      {
+        for (const { taskId, check } of auditEntries) {
           const excisedCommand = typeof check.command === 'string'
             ? _exciseEvalPayloads(check.command)
             : check.command;

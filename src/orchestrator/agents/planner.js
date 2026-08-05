@@ -2229,6 +2229,38 @@ function isMilestoneOnlyCheck(check, specTargetFiles, projectRoot) {
 }
 
 /**
+ * True when TWO OR MORE of the given tasks' targetFiles overlap the
+ * check's path tokens — i.e. the check asserts something about a file
+ * that several tasks share, so no single task owns satisfying it. Such a
+ * check must run once at the spec-criteria drain (after every sharer has
+ * landed), never at an individual sharer's verification: gating each
+ * sharer on the file's END state fails whichever sharer verifies before
+ * the sibling whose edit satisfies the check (the failed-075/failed-217
+ * trap — a task can even be explicitly forbidden from the symbol its own
+ * gate counts).
+ *
+ * Tasks with status 'invalidated' should be excluded by the CALLER when
+ * counting owners from persisted state (replaced tasks never run).
+ *
+ * @param {{name: string, command: string}} check
+ * @param {{id: string, targetFiles: string[]}[]} tasks
+ * @returns {boolean}
+ */
+function isMultiOwnerCheck(check, tasks, projectRoot) {
+  const pathTokens = extractPathTokens(check.command, projectRoot);
+  if (pathTokens.length === 0) return false;
+  let owners = 0;
+  for (const task of tasks) {
+    const targetFiles = Array.isArray(task.targetFiles) ? task.targetFiles : [];
+    const hasOverlap = pathTokens.some((token) =>
+      targetFiles.some((tf) => pathTokenMatchesFile(token, tf)),
+    );
+    if (hasOverlap && ++owners >= 2) return true;
+  }
+  return false;
+}
+
+/**
  * Scopes a list of hard checks to specific tasks by matching path tokens
  * extracted from each check's command against each task's targetFiles.
  *
@@ -2237,6 +2269,19 @@ function isMilestoneOnlyCheck(check, specTargetFiles, projectRoot) {
  * is provided) are excluded — they are milestone-level checks with no
  * deliverable-scoped meaning.
  *
+ * Ownership rule: a check attaches to a task ONLY when that task is the
+ * check's sole owner — exactly one task's targetFiles overlap the
+ * command's path tokens among `tasks`, AND no entry of
+ * `externalOwnerSources` overlaps them. A multi-owner check (see
+ * `isMultiOwnerCheck`) attaches to NO task — the pipeline's spec-criteria
+ * drain executes it after all sharers have landed. Attaching it to every
+ * sharer gates tasks on an end state a sibling produces (the
+ * failed-075/failed-217 trap). `externalOwnerSources` lets the caller
+ * count owners OUTSIDE the current planning scope (persisted tasks of
+ * earlier-planned missions, declared targetFiles of not-yet-planned
+ * missions) so lazy per-mission planning cannot split ownership across
+ * planning calls and re-open the trap.
+ *
  * Matching rules: see `pathTokenMatchesFile` (shared with classification).
  *
  * @param {{name: string, command: string}[]} hardChecks
@@ -2244,13 +2289,16 @@ function isMilestoneOnlyCheck(check, specTargetFiles, projectRoot) {
  * @param {string[]} [specTargetFiles] - The spec's declared target_files,
  *   forwarded to `isMilestoneOnlyCheck`; omit for legacy zero-token-only
  *   classification
+ * @param {{targetFiles: string[]}[]} [externalOwnerSources] - Owner
+ *   candidates outside `tasks` (never attached to; only counted)
  * @returns {Map<string, {name: string, command: string}[]>} Map of taskId → scoped checks
  */
-function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot) {
+function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot, externalOwnerSources) {
   const result = new Map();
   for (const task of tasks) {
     result.set(task.id, []);
   }
+  const externals = Array.isArray(externalOwnerSources) ? externalOwnerSources : [];
 
   for (const check of hardChecks) {
     // Milestone-only check → exclude from all tasks; the pipeline's
@@ -2258,14 +2306,17 @@ function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot) {
     if (isMilestoneOnlyCheck(check, specTargetFiles, projectRoot)) continue;
     const pathTokens = extractPathTokens(check.command, projectRoot);
 
-    for (const task of tasks) {
-      const targetFiles = Array.isArray(task.targetFiles) ? task.targetFiles : [];
-      const hasOverlap = pathTokens.some((token) =>
-        targetFiles.some((tf) => pathTokenMatchesFile(token, tf)),
-      );
-      if (hasOverlap) {
-        result.get(task.id).push(check);
-      }
+    const overlaps = (targetFiles) => pathTokens.some((token) =>
+      (Array.isArray(targetFiles) ? targetFiles : []).some((tf) => pathTokenMatchesFile(token, tf)),
+    );
+    const owners = tasks.filter((task) => overlaps(task.targetFiles));
+    const hasExternalOwner = externals.some((src) => overlaps(src && src.targetFiles));
+    // Sole owner (in-scope AND no external sharer) → per-task gate.
+    // Multi-owner → no attachment; the spec-criteria drain is its
+    // execution channel (isMultiOwnerCheck re-derives the same verdict
+    // drain-side from persisted tasks).
+    if (owners.length === 1 && !hasExternalOwner) {
+      result.get(owners[0].id).push(check);
     }
   }
 
@@ -2280,7 +2331,10 @@ function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot) {
  * (a) is NOT milestone-only (`!isMilestoneOnlyCheck(check, specTargetFiles)`,
  * i.e. has ≥1 path token AND — when `specTargetFiles` is provided — at
  * least one token matches a declared spec target_file) AND
- * (b) its `.command` is not in `assignedCommands`. Milestone-only checks
+ * (b) is NOT multi-owner among `allTasks` when that list is provided
+ * (`isMultiOwnerCheck` — such checks are deliberately unattached; the
+ * spec-criteria drain executes them) AND
+ * (c) its `.command` is not in `assignedCommands`. Milestone-only checks
  * are NEVER returned — they are excluded via the same shared
  * `isMilestoneOnlyCheck` predicate `scopeSpecHardChecks` uses; the
  * pipeline's last-milestone spec-criteria drain executes them instead.
@@ -2290,11 +2344,15 @@ function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot) {
  * @param {string[]} [specTargetFiles] - The spec's declared target_files,
  *   forwarded to `isMilestoneOnlyCheck`; omit for legacy zero-token-only
  *   classification
+ * @param {{id: string, targetFiles: string[]}[]} [allTasks] - Every
+ *   non-invalidated planned task; when provided, multi-owner checks are
+ *   never orphans (drain-executed by design)
  * @returns {{name: string, command: string}[]} The subset of parsedChecks that are unassigned
  */
-function findUnassignedSpecHardChecks(parsedChecks, assignedCommands, specTargetFiles, projectRoot) {
+function findUnassignedSpecHardChecks(parsedChecks, assignedCommands, specTargetFiles, projectRoot, allTasks) {
   return parsedChecks.filter((check) => {
     if (isMilestoneOnlyCheck(check, specTargetFiles, projectRoot)) return false;
+    if (Array.isArray(allTasks) && isMultiOwnerCheck(check, allTasks, projectRoot)) return false;
     return !assignedCommands.has(check.command);
   });
 }
@@ -2415,4 +2473,4 @@ function enrichTestTaskTargetFiles(missionDecomp, projectRoot) {
   }
 }
 
-export { Planner, extractPathTokens, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, pathTokenMatchesFile, isMilestoneOnlyCheck, isWholeSuiteCommand, scopeSpecHardChecks, findOrphanedSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, _validatePathAnchorPreservation, resolveSpecPathAnchor, _exciseEvalPayloads, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS, isCheckableCriterion };
+export { Planner, extractPathTokens, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, pathTokenMatchesFile, isMilestoneOnlyCheck, isMultiOwnerCheck, isWholeSuiteCommand, scopeSpecHardChecks, findOrphanedSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, _validatePathAnchorPreservation, resolveSpecPathAnchor, _exciseEvalPayloads, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS, isCheckableCriterion };

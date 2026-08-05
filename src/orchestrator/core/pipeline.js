@@ -21,7 +21,7 @@ import config from '../infra/config.js';
 import { SessionManager, InfrastructureError, WallClockExceededError } from '../infra/session-manager.js';
 import { Logger } from '../infra/logger.js';
 import { TokenTracker } from '../infra/token-tracker.js';
-import { Planner, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, isMilestoneOnlyCheck, scopeSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, isCheckableCriterion } from '../agents/planner.js';
+import { Planner, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, isMilestoneOnlyCheck, isMultiOwnerCheck, scopeSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, isCheckableCriterion } from '../agents/planner.js';
 import { Executor } from '../agents/executor.js';
 import { Verifier } from '../agents/verifier.js';
 import { Analyzer, isRepeatVerdict, readAnalysisHistory, recordHistoryOutcome } from '../agents/analyzer.js';
@@ -130,7 +130,7 @@ const REVIEW_GATE_HALT_SITES = Object.freeze(['review-gate', 'review-gate-file-d
  * @param {string} projectRoot - absolute path to project root
  * @param {string} harnessDir - absolute path to .harness directory
  */
-function applySpecHardChecks(missionDecomp, projectRoot, harnessDir) {
+function applySpecHardChecks(missionDecomp, projectRoot, harnessDir, currentMissionId) {
   const state = readState(harnessDir);
   const prdPath = state.projectMeta?.prdPath;
   const specJsonPath = deriveSpecJsonPath(prdPath, projectRoot);
@@ -147,6 +147,14 @@ function applySpecHardChecks(missionDecomp, projectRoot, harnessDir) {
   // does not falsely kill a plan referencing them (W1-F7). Same fail-soft walk
   // shape as _assertSpecHardCheckCoverage.
   const knownExternalTaskIds = new Set();
+  // Owner candidates OUTSIDE this planning call, fed to scopeSpecHardChecks
+  // so lazy per-mission planning cannot split a check's ownership across
+  // planning calls (the cross-mission face of the failed-217 trap):
+  // (a) persisted non-invalidated tasks of earlier-planned missions;
+  // (b) declared targetFiles of missions not yet planned (planGlobal
+  //     mission-schema targetFiles) — closes the first-planned-sharer case.
+  const externalOwnerSources = [];
+  const plannedMissionIds = new Set();
   const stateDir = path.join(harnessDir, 'state');
   let missionFiles = [];
   try {
@@ -155,21 +163,40 @@ function applySpecHardChecks(missionDecomp, projectRoot, harnessDir) {
     missionFiles = [];
   }
   for (const file of missionFiles) {
+    const fileMissionId = file.slice('mission-'.length, -'.json'.length);
     let msj;
     try {
       msj = JSON.parse(fs.readFileSync(path.join(stateDir, file), 'utf8'));
     } catch {
       continue; // skip corrupt state files
     }
+    plannedMissionIds.add(fileMissionId);
+    const isCurrentMission = typeof currentMissionId === 'string' && fileMissionId === currentMissionId;
     for (const sm of Object.values(msj.subMissions || {})) {
-      for (const tid of Object.keys(sm.tasks || {})) {
+      for (const [tid, t] of Object.entries(sm.tasks || {})) {
         knownExternalTaskIds.add(tid);
+        // A re-planned current mission's own prior tasks are being
+        // superseded by this decomposition — never count them as
+        // external owners against their own successors.
+        if (!isCurrentMission && t && t.status !== 'invalidated') {
+          externalOwnerSources.push({ targetFiles: t.targetFiles });
+        }
+      }
+    }
+  }
+  for (const ms of Object.values(state.milestones || {})) {
+    for (const [miId, mi] of Object.entries(ms.missions || {})) {
+      if (plannedMissionIds.has(miId)) continue; // its tasks are counted above
+      if (typeof currentMissionId === 'string' && miId === currentMissionId) continue;
+      if (!mi || mi.status === 'invalidated' || mi.status === 'declined') continue;
+      if (Array.isArray(mi.targetFiles) && mi.targetFiles.length > 0) {
+        externalOwnerSources.push({ targetFiles: mi.targetFiles });
       }
     }
   }
   validateTaskDependencies(missionDecomp, knownExternalTaskIds);
   const allTasks = missionDecomp.subMissions.flatMap((sm) => sm.tasks);
-  const scopedChecks = scopeSpecHardChecks(parsedChecks, allTasks, specTargetFiles, projectRoot);
+  const scopedChecks = scopeSpecHardChecks(parsedChecks, allTasks, specTargetFiles, projectRoot, externalOwnerSources);
   for (const task of allTasks) {
     if ((task.hardChecks || []).length > 0) continue; // defensive: don't overwrite hardChecks a task already carries (nothing pre-populates them now that same-file splitting is retired)
     const checks = scopedChecks.get(task.id) || [];
@@ -3993,6 +4020,9 @@ class Pipeline {
     // replaceTask) — their surviving verify sidecars must not count as
     // assigned (see the sidecar walk below).
     const invalidationReasons = new Map();
+    // Non-invalidated planned tasks ({id, targetFiles}) — feeds the
+    // multi-owner exclusion in findUnassignedSpecHardChecks.
+    const activeTasks = [];
 
     const stateDir = path.join(this.harnessDir, 'state');
     let missionFiles = [];
@@ -4010,7 +4040,14 @@ class Pipeline {
       }
       for (const sm of Object.values(msj.subMissions || {})) {
         for (const [tid, t] of Object.entries(sm.tasks || {})) {
-          if (t && t.status === 'invalidated') invalidationReasons.set(tid, t.invalidationReason);
+          if (t && t.status === 'invalidated') {
+            invalidationReasons.set(tid, t.invalidationReason);
+          } else if (t) {
+            // Non-invalidated tasks feed multi-owner detection below:
+            // a check whose token file is shared by ≥2 of them is
+            // drain-executed by design, never an orphan.
+            activeTasks.push({ id: tid, targetFiles: t.targetFiles });
+          }
           for (const h of ((t && t.hardChecks) || [])) {
             if (h && typeof h.command === 'string') assigned.add(h.command);
           }
@@ -4056,7 +4093,7 @@ class Pipeline {
       }
     }
 
-    const orphans = findUnassignedSpecHardChecks(parsedChecks, assigned, specTargetFiles, this.projectRoot);
+    const orphans = findUnassignedSpecHardChecks(parsedChecks, assigned, specTargetFiles, this.projectRoot, activeTasks);
     if (orphans.length > 0) {
       const orphanCommands = orphans.map((c) => c.command);
       if (this._allowIncompleteScope) {
@@ -4132,10 +4169,40 @@ class Pipeline {
       this.onLog('Spec-criteria drain skipped: spec.json at ' + specJsonPath + ' became unreadable post-planning (' + err.message + '); milestone-only checks and file-check criteria will not run.');
       return;
     }
+    // Non-invalidated planned tasks across the whole run — multi-owner
+    // checks (token file shared by ≥2 tasks) are unattached at plan time
+    // (scopeSpecHardChecks ownership rule) and execute HERE instead. Same
+    // fail-soft walk shape as _assertSpecHardCheckCoverage.
+    const activeTasks = [];
+    const stateDir = path.join(this.harnessDir, 'state');
+    let missionFiles = [];
+    try {
+      missionFiles = fs.readdirSync(stateDir).filter((f) => /^mission-.*\.json$/.test(f));
+    } catch {
+      missionFiles = [];
+    }
+    for (const file of missionFiles) {
+      let msj;
+      try {
+        msj = JSON.parse(fs.readFileSync(path.join(stateDir, file), 'utf8'));
+      } catch {
+        continue; // skip corrupt state files
+      }
+      for (const sm of Object.values(msj.subMissions || {})) {
+        for (const [tid, t] of Object.entries(sm.tasks || {})) {
+          if (t && t.status !== 'invalidated') {
+            activeTasks.push({ id: tid, targetFiles: t.targetFiles });
+          }
+        }
+      }
+    }
+
     // De-duplicate by command string: each distinct command runs once.
     const seenCommands = new Set();
     const milestoneOnly = parsedChecks.filter((check) => {
-      if (!isMilestoneOnlyCheck(check, specTargetFiles, this.projectRoot)) return false;
+      const drainRouted = isMilestoneOnlyCheck(check, specTargetFiles, this.projectRoot)
+        || isMultiOwnerCheck(check, activeTasks, this.projectRoot);
+      if (!drainRouted) return false;
       if (seenCommands.has(check.command)) return false;
       seenCommands.add(check.command);
       return true;
@@ -4144,7 +4211,7 @@ class Pipeline {
 
     this.onLog(`\n  Spec-criteria drain: ${milestoneOnly.length} milestone-only check(s), ${fileChecks.length} file-check criterion(s)...`);
 
-    const commandResult = runMilestoneOnlyChecks(milestoneOnly, this.projectRoot, { onLog: this.onLog, specTargetFiles });
+    const commandResult = runMilestoneOnlyChecks(milestoneOnly, this.projectRoot, { onLog: this.onLog, specTargetFiles, activeTasks });
     const fileResult = runFileCheckCriteria(fileChecks, this.projectRoot);
     const failures = [...commandResult.failures, ...fileResult.failures];
     if (failures.length > 0) {
@@ -4478,7 +4545,7 @@ class Pipeline {
         this.onLog(`  planMission completed in ${this._formatElapsed(Date.now() - _planMissionStart1)}`);
 
         // Validate task dependencies and merge spec.json hard checks before persisting state.
-        applySpecHardChecks(missionDecomp, this.projectRoot, this.harnessDir);
+        applySpecHardChecks(missionDecomp, this.projectRoot, this.harnessDir, miId);
       } catch (planPhaseErr) {
         planPhaseErr.planPhase = true;
         throw planPhaseErr;

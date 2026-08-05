@@ -136,6 +136,7 @@ export const TEST_FILES = [
   'test/test-brainstorm-no-tty.js',
   'test/test-spec-hardcheck-scoping.js',
   'test/test-spec-criteria-drain.js',
+  'test/test-multi-owner-check-routing.js',
   'test/test-warnings-ledger.js',
   'test/test-candidates-ledger.js',
   'test/test-cli-failure-ledger-emit.js',
