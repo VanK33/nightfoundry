@@ -423,21 +423,39 @@ export const TEST_FILES = [
 
 /**
  * Run a single entry and return { label, passed }.
+ *
+ * Children get PIPED stdio, never the parent's terminal. With
+ * `stdio: 'inherit'` from an interactive terminal, every test child saw a
+ * real TTY, so TTY-gated code paths (interactive prompts, the status bar's
+ * ANSI renderer, readline terminal mode) activated inside tests written for
+ * scripted stdio — ~30 files failed when the suite ran on a TTY yet passed
+ * when piped (`npm run test:all 2>&1 | ...`). The suite's verdict must not
+ * depend on how it was invoked: pipe always, then forward the captured
+ * output so the transcript looks the same.
+ *
  * @param {string | { npm: boolean, args: string[] }} entry
  */
 function runEntry(entry) {
   let label, result;
+  const stdioOpts = {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  };
 
   if (typeof entry === 'string') {
     label = entry;
     console.log(`[RUN] ${label}`);
-    result = spawnSync('node', [entry], { stdio: 'inherit' });
+    result = spawnSync('node', [entry], stdioOpts);
   } else {
     // npm special case
     label = `npm ${entry.args.join(' ')}`;
     console.log(`[RUN] ${label}`);
-    result = spawnSync('npm', entry.args, { stdio: 'inherit', shell: true });
+    result = spawnSync('npm', entry.args, { ...stdioOpts, shell: true });
   }
+
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
 
   const passed = result.status === 0;
   return { label, passed };
