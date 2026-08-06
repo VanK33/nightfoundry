@@ -3351,6 +3351,76 @@ class Pipeline {
     };
   }
 
+  /**
+   * Turns stripped tree-purity checks (see the regression-purity-strip
+   * shape-matching logic that produces them elsewhere) into operator-visible
+   * records: one onLog line and one warnings-ledger row per stripped check.
+   * This method does NOT decide what gets stripped or how checks are
+   * shape-matched — it only consumes the already-stripped list.
+   *
+   * Attribution: when a finding file's path is contained in the stripped
+   * check's text, the ledger row's file is set to that path and the
+   * description names the owning mission (via buildFileToMissionMap, built
+   * once and reused). Otherwise file is null and no owner is named.
+   *
+   * Fail-soft: any error (map build, ledger append, logging) is swallowed so
+   * this never propagates to the regression gate.
+   *
+   * @param {{ scopeId: string, strippedChecks: Array<{array: string, check: object}>, structured: object }} opts
+   */
+  _consumeStrippedChecks({ scopeId, strippedChecks, structured }) {
+    try {
+      const checks = Array.isArray(strippedChecks) ? strippedChecks : [];
+      if (checks.length === 0) return;
+
+      let fileToMissionMap;
+      try {
+        fileToMissionMap = buildFileToMissionMap(this.harnessDir);
+      } catch {
+        fileToMissionMap = new Map();
+      }
+
+      const findings = Array.isArray(structured?.findings) ? structured.findings : [];
+
+      const warningsEntries = [];
+      for (const entry of checks) {
+        const check = entry?.check || {};
+        const text = entry?.array === 'hardChecks'
+          ? [check.name, check.evidence].filter(Boolean).join(' — ')
+          : [check.description, check.evidence].filter(Boolean).join(' — ');
+
+        this.onLog(`  [regression-purity-strip] Scope ${scopeId} stripped check: ${text}`);
+
+        let attributedFile = null;
+        let ownerMissionId = null;
+        for (const finding of findings) {
+          if (finding?.file && text.includes(finding.file)) {
+            attributedFile = finding.file;
+            ownerMissionId = fileToMissionMap.get(finding.file) ?? null;
+            break;
+          }
+        }
+
+        const description = ownerMissionId
+          ? `Scope ${scopeId} stripped check (regression-purity-strip, owned by ${ownerMissionId}): ${text}`
+          : `Scope ${scopeId} stripped check (regression-purity-strip): ${text}`;
+
+        warningsEntries.push({
+          milestone: scopeId,
+          severity: 'warning',
+          category: 'regression-purity-strip',
+          file: attributedFile,
+          description,
+        });
+      }
+
+      appendWarnings(this.projectRoot, warningsEntries);
+    } catch {
+      // Fail-soft: never let attribution/logging failures propagate to the
+      // regression gate.
+    }
+  }
+
   async _executeAllMilestones(globalPlan) {
     for (const ms of globalPlan.milestones) {
       const state = readState(this.harnessDir);
@@ -3695,6 +3765,12 @@ class Pipeline {
       projectRoot: this.projectRoot,
       harnessDir: this.harnessDir,
       onLog: this.onLog,
+    });
+
+    this._consumeStrippedChecks({
+      scopeId: msId,
+      strippedChecks: regression.strippedChecks ?? [],
+      structured: regression.structured,
     });
 
     if (!regression.passed) {
@@ -4677,6 +4753,12 @@ class Pipeline {
       projectRoot: this.projectRoot,
       harnessDir: this.harnessDir,
       onLog: this.onLog,
+    });
+
+    this._consumeStrippedChecks({
+      scopeId: missionId,
+      strippedChecks: result.strippedChecks ?? [],
+      structured: result.structured,
     });
 
     if (result.isStub) throw new Error('Mission ' + missionId + ' regression: verifier returned no structured_output');

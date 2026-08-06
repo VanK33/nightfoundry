@@ -20,10 +20,13 @@
  * Public API:
  *   shouldDowngradeRegressionFail({ structured, pendingTargetFiles, projectRoot, completedAffectedFiles })
  *     → { downgrade: boolean, reason: string, downgradedFindings: object[] }
+ *   stripTreePurityChecks(structured)
+ *     → { structured: object, strippedChecks: object[] }
  */
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { isTreePurityShapeText } from './plan-structure-lint.js';
 
 /** Run git with argv (no shell — paths never reach a shell). */
 function git(args, cwd) {
@@ -71,6 +74,43 @@ function isDirtyVsHead(file, cwd) {
     return false;
   } catch {
     return true;
+  }
+}
+
+/**
+ * Whether `check` is a FAIL-status check whose joined text matches a
+ * tree-purity shape (via `isTreePurityShapeText`). The joined text is
+ * `name` + `evidence` for `arrayName === 'hardChecks'`, and `description` +
+ * `evidence` for `arrayName === 'taskScopeChecks'` / `'standardsChecks'`.
+ * Missing or non-string fields contribute an empty string rather than
+ * throwing. Deliberate difference from the plan lint: the
+ * behavioral-marker blanket exemption is NOT applied here, so a shape
+ * match after backtick stripping is sufficient. Returns false for any
+ * other input (null/non-object check, non-FAIL status, no shape match, or
+ * any unexpected error). Never throws. No fs access, no process spawn, no
+ * session/LLM call.
+ *
+ * @param {object|null|undefined} check
+ * @param {string} arrayName - 'hardChecks' | 'taskScopeChecks' | 'standardsChecks'
+ * @returns {boolean}
+ */
+function _isPurityFailCheck(check, arrayName) {
+  try {
+    if (!check || typeof check !== 'object') return false;
+    if (check.status !== 'FAIL') return false;
+
+    const first = arrayName === 'hardChecks'
+      ? check.name
+      : check.description;
+    const evidence = check.evidence;
+
+    const firstText = typeof first === 'string' ? first : '';
+    const evidenceText = typeof evidence === 'string' ? evidence : '';
+    const joined = `${firstText} ${evidenceText}`;
+
+    return isTreePurityShapeText(joined);
+  } catch {
+    return false;
   }
 }
 
@@ -208,5 +248,72 @@ export function shouldDowngradeRegressionFail({
   } catch {
     // Never throw — any unexpected error fails closed.
     return { downgrade: false, reason: 'Unexpected error evaluating regression verdict downgrade.', downgradedFindings: [] };
+  }
+}
+
+/**
+ * Strip tree-purity-shaped FAIL checks out of a regression verdict, and
+ * flip a FAILED verdict to PASSED when doing so removes every remaining
+ * FAIL-status check.
+ *
+ * Walks `hardChecks`, `taskScopeChecks` and `standardsChecks` (in that
+ * order) and removes every entry for which `_isPurityFailCheck` returns
+ * true, recording each removal — in encounter order — as
+ * `{ array: 'hardChecks' | 'taskScopeChecks' | 'standardsChecks', check }`
+ * where `check` is the original check object as it appeared in the
+ * verdict. `structured.result` becomes `'PASSED'` only when ALL of the
+ * following hold: the input `result` was `'FAILED'`, at least one check
+ * was stripped, and no `status === 'FAIL'` entry remains across the three
+ * arrays afterward; otherwise `result` is carried through unchanged (in
+ * particular, a FAILED verdict from which nothing was stripped comes back
+ * unchanged with an empty `strippedChecks`). `findings` and every other
+ * top-level property are carried through as-is. The input object (and its
+ * check arrays) are never mutated.
+ *
+ * A `null`/`undefined`/non-object input (including arrays and primitives)
+ * is returned unchanged, paired with an empty `strippedChecks`. This
+ * function is pure and deterministic: no fs access, no process spawn, no
+ * session/LLM call, and it never throws.
+ *
+ * @param {object|null|undefined} structured - a regression verifier's
+ *   structured_output (regressionVerifierSchema shape).
+ * @returns {{ structured: object, strippedChecks: Array<{ array: string, check: object }> }}
+ */
+export function stripTreePurityChecks(structured) {
+  try {
+    if (!structured || typeof structured !== 'object' || Array.isArray(structured)) {
+      return { structured, strippedChecks: [] };
+    }
+
+    const strippedChecks = [];
+    const next = { ...structured };
+    const arrayNames = ['hardChecks', 'taskScopeChecks', 'standardsChecks'];
+
+    for (const arrayName of arrayNames) {
+      const original = structured[arrayName];
+      if (!Array.isArray(original)) continue;
+
+      const kept = [];
+      for (const check of original) {
+        if (_isPurityFailCheck(check, arrayName)) {
+          strippedChecks.push({ array: arrayName, check });
+        } else {
+          kept.push(check);
+        }
+      }
+      next[arrayName] = kept;
+    }
+
+    const anyFailRemains = arrayNames.some(
+      (arrayName) => Array.isArray(next[arrayName]) && next[arrayName].some((c) => c && c.status === 'FAIL'),
+    );
+
+    if (structured.result === 'FAILED' && strippedChecks.length > 0 && !anyFailRemains) {
+      next.result = 'PASSED';
+    }
+
+    return { structured: next, strippedChecks };
+  } catch {
+    return { structured, strippedChecks: [] };
   }
 }

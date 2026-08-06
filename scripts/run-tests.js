@@ -325,6 +325,7 @@ export const TEST_FILES = [
   'test/test-queue-spec-json.js',
   'test/test-regression-verdict-signal.js',
   'test/test-regression-verdict-filter.js',
+  'test/test-regression-purity-strip.js',
   'test/test-milestone-gate-rejudge.js',
   'test/test-cycle-rollback-pending.js',
   'test/test-batch-failure-crash-safety.js',

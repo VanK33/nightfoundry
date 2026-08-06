@@ -17,6 +17,7 @@ import { execSync } from 'child_process';
 import config from '../infra/config.js';
 import { writeVerifyJson, readState } from '../core/state.js';
 import { withRunMarkerEnv } from '../core/run-marker.js';
+import { stripTreePurityChecks } from './regression-verdict-filter.js';
 
 const RUN_NPM_TEST_TIMEOUT_MS = 120_000;
 
@@ -218,6 +219,52 @@ ${lines.join('\n')}`;
 }
 
 /**
+ * Builds a text block naming the mission's own target files — the
+ * deduplicated union of missionState.subMissions[].tasks[].targetFiles,
+ * preserving first-seen order — together with one sentence stating that
+ * sibling missions legitimately modify other files in the shared working
+ * tree. Intended to reduce noise in mission-regression verifier context by
+ * scoping the mission's "own" files explicitly.
+ *
+ * Fail-soft like buildPendingDeliverablesBlock: a null, malformed, or
+ * empty-union missionState yields '' (so callers can append it to a purpose
+ * string with no observable effect). Never throws.
+ *
+ * @param {object} missionState
+ * @returns {string}
+ */
+export function buildOwnTargetFilesBlock(missionState) {
+  try {
+    if (!missionState || typeof missionState.subMissions !== 'object' || missionState.subMissions === null) return '';
+
+    const seen = new Set();
+    const files = [];
+    for (const sm of Object.values(missionState.subMissions)) {
+      if (!sm || typeof sm.tasks !== 'object' || sm.tasks === null) continue;
+      for (const task of Object.values(sm.tasks)) {
+        if (!task || !Array.isArray(task.targetFiles)) continue;
+        for (const f of task.targetFiles) {
+          if (typeof f !== 'string' || f.length === 0) continue;
+          if (seen.has(f)) continue;
+          seen.add(f);
+          files.push(f);
+        }
+      }
+    }
+
+    if (files.length === 0) return '';
+
+    const lines = files.map((f) => `- ${f}`);
+
+    return `\n\nThis mission's own target files:
+${lines.join('\n')}
+Sibling missions legitimately modify other files in the shared working tree; changes outside this list are not necessarily this mission's responsibility.`;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Mission-level regression: does the codebase satisfy what the mission described?
  * Spawns a verifier session with broad scope (mission plan + all task summaries).
  */
@@ -227,7 +274,7 @@ export async function verifyMission({ missionId, missionPlan, verifier, projectR
   const missionStateFile = path.join(harnessDir, 'state', `mission-${missionId}.json`);
   if (!fs.existsSync(missionStateFile)) {
     onLog(`  No mission state file — skipping regression.`);
-    return { passed: true, report: '' };
+    return { passed: true, report: '', strippedChecks: [] };
   }
 
   const missionState = JSON.parse(fs.readFileSync(missionStateFile, 'utf8'));
@@ -287,6 +334,13 @@ export async function verifyMission({ missionId, missionPlan, verifier, projectR
     pendingDeliverablesBlock = '';
   }
 
+  let ownTargetFilesBlock;
+  try {
+    ownTargetFilesBlock = buildOwnTargetFilesBlock(missionState);
+  } catch {
+    ownTargetFilesBlock = '';
+  }
+
   const context = {
     specPath,
     purpose: `Verify that mission ${missionId} is fully implemented as described.
@@ -301,22 +355,51 @@ Check:
 1. Run any existing tests (npm test, pytest, etc.) to confirm nothing is broken
 2. Verify the mission's described functionality actually works end-to-end
 3. Check for integration issues between tasks (shared files, API contracts, imports)
-4. Report PASS if the mission goal is met, FAIL with specifics if not${pendingDeliverablesBlock}`,
+4. Report PASS if the mission goal is met, FAIL with specifics if not${pendingDeliverablesBlock}${ownTargetFilesBlock}`,
   };
 
   const start = Date.now();
   const result = await verifier.verifyRegression(task, projectRoot, context);
   onLog(`  Mission regression completed in ${((Date.now() - start) / 1000).toFixed(1)}s`);
 
+  // Strip tree-purity-shaped FAIL checks (e.g. "git status shows modified
+  // test files") out of the structured verdict before any pass/fail
+  // arbitration runs. When the strip removes every remaining FAIL check off
+  // a FAILED verdict, stripTreePurityChecks flips result to 'PASSED' and
+  // the smoke-test/soft-pass arbitration below is skipped entirely.
+  const originalVerdictResult = result.structured?.result;
+  const { structured: cleanedStructured, strippedChecks } = stripTreePurityChecks(result.structured ?? null);
+
+  for (const stripped of strippedChecks) {
+    const label = stripped?.check?.name || stripped?.check?.description || '(unnamed check)';
+    onLog(`  [regression] Stripped tree-purity check from ${stripped.array}: ${label}`);
+  }
+
+  let report = result.report;
+  if (strippedChecks.length > 0) {
+    // Re-serialize so the returned report reflects the cleaned verdict, and
+    // rewrite the persisted sidecar so an archive reader of that file also
+    // sees the cleaned verdict plus a record of what was stripped.
+    report = JSON.stringify(cleanedStructured, null, 2);
+    _rewriteVerdictSidecar({ reportPath: result.reportPath, structured: cleanedStructured, strippedChecks, onLog });
+  }
+
+  const flippedToPassed =
+    strippedChecks.length > 0 && originalVerdictResult === 'FAILED' && cleanedStructured?.result === 'PASSED';
+
   let passed = false;
   let softPass = false;
 
-  if (result.verified) {
+  if (flippedToPassed) {
+    passed = true;
+    softPass = false;
+    onLog(`  Mission ${missionId} regression: PASSED (tree-purity checks stripped)`);
+  } else if (result.verified) {
     passed = true;
     onLog(`  Mission ${missionId} regression: PASSED`);
   } else {
     const smokeResult = runTestCommand(projectRoot);
-    const textSignal = structuredVerdictPassed(result);
+    const textSignal = structuredVerdictPassed({ structured: cleanedStructured });
 
     if (smokeResult.exitCode === 0 && textSignal) {
       // Soft-pass: smoke test passes and text signal says PASS, but verifier disagreed
@@ -335,7 +418,7 @@ Check:
     }
   }
 
-  return { passed, softPass, report: result.report, isStub: result.isStub ?? false, structured: result.structured ?? null };
+  return { passed, softPass, report, isStub: result.isStub ?? false, structured: cleanedStructured ?? null, strippedChecks };
 }
 
 /**
@@ -350,7 +433,7 @@ export async function verifyMilestone({ milestoneId, milestoneDesc, specPath, ve
   const milestone = state.milestones[milestoneId];
   if (!milestone) {
     onLog(`  Milestone ${milestoneId} not found — skipping.`);
-    return { passed: true, report: '' };
+    return { passed: true, report: '', strippedChecks: [] };
   }
 
   const missionSummaries = [];
@@ -404,14 +487,45 @@ This is the final gate before delivery. Check:
   const result = await verifier.verifyRegression(task, projectRoot, context);
   onLog(`  Milestone regression completed in ${((Date.now() - start) / 1000).toFixed(1)}s`);
 
+  // Strip tree-purity-shaped FAIL checks (e.g. "git status shows modified
+  // test files") out of the structured verdict before any pass/fail
+  // arbitration runs. When the strip removes every remaining FAIL check off
+  // a FAILED verdict, stripTreePurityChecks flips result to 'PASSED' and
+  // the smoke-test/soft-pass arbitration below is skipped entirely.
+  const originalVerdictResult = result.structured?.result;
+  const { structured: cleanedStructured, strippedChecks } = stripTreePurityChecks(result.structured ?? null);
+
+  for (const stripped of strippedChecks) {
+    const label = stripped?.check?.name || stripped?.check?.description || '(unnamed check)';
+    onLog(`  [regression] Stripped tree-purity check from ${stripped.array}: ${label}`);
+  }
+
+  let cleanedReport = result.report;
+  if (strippedChecks.length > 0) {
+    // Re-serialize so the returned report reflects the cleaned verdict, and
+    // rewrite the persisted sidecar so an archive reader of that file also
+    // sees the cleaned verdict plus a record of what was stripped. Note:
+    // result.reportPath is the verifier session's own sidecar path
+    // (verification/task-<taskId>.json), distinct from the milestone .md
+    // reportPath computed below.
+    cleanedReport = JSON.stringify(cleanedStructured, null, 2);
+    _rewriteVerdictSidecar({ reportPath: result.reportPath, structured: cleanedStructured, strippedChecks, onLog });
+  }
+
+  const flippedToPassed =
+    strippedChecks.length > 0 && originalVerdictResult === 'FAILED' && cleanedStructured?.result === 'PASSED';
+
   let passed = false;
   let softPass = false;
 
-  if (result.verified) {
+  if (flippedToPassed) {
+    passed = true;
+    softPass = false;
+  } else if (result.verified) {
     passed = true;
   } else {
     const smokeResult = runTestCommand(projectRoot);
-    const textSignal = structuredVerdictPassed(result);
+    const textSignal = structuredVerdictPassed({ structured: cleanedStructured });
 
     if (smokeResult.exitCode === 0 && textSignal) {
       passed = true;
@@ -446,7 +560,7 @@ ${milestoneDesc}
 ${missionSummaries.join('\n')}
 
 ## Verifier Report
-${result.report}
+${cleanedReport}
 
 ## Timestamp
 ${new Date().toISOString()}
@@ -460,7 +574,7 @@ ${new Date().toISOString()}
   // attributed findings so pipeline remediation does not have to parse
   // prose (its JSON.parse of the .md always failed, synthesizing a
   // file:'unknown' finding).
-  const findings = Array.isArray(result.structured?.findings) ? result.structured.findings : [];
+  const findings = Array.isArray(cleanedStructured?.findings) ? cleanedStructured.findings : [];
   const findingsPath = path.join(harnessDir, 'verification', `regression-milestone-${milestoneId}.json`);
   fs.writeFileSync(findingsPath, JSON.stringify({
     milestoneId,
@@ -481,5 +595,41 @@ ${new Date().toISOString()}
     onLog(`  Report: ${reportPath}`);
   }
 
-  return { passed, softPass, report: reportContent, reportPath, findingsPath, isStub: result.isStub ?? false, structured: result.structured ?? null };
+  return { passed, softPass, report: reportContent, reportPath, findingsPath, isStub: result.isStub ?? false, structured: cleanedStructured ?? null, strippedChecks };
+}
+
+/**
+ * Overwrites the verdict sidecar the verifier session already persisted
+ * (verifier.js's `_runVerificationSession`, task ids `regression-<missionId>`
+ * / `regression-milestone-<milestoneId>`, sidecar path
+ * `verification/task-<taskId>.json`) so it carries the cleaned verdict plus
+ * a record of the checks the gate stripped. Without this, an archive reader
+ * of that sidecar sees the raw FAILED verdict the gate treated as PASS.
+ *
+ * No-ops (writes nothing) when reportPath is not a non-empty string, or
+ * when strippedChecks is not a non-empty array — an empty strip means the
+ * gate changed nothing, so the persisted sidecar needs no rewrite.
+ *
+ * Fail-soft: any fs error is caught, reported through onLog (when callable),
+ * and swallowed — this helper never throws and never propagates an error to
+ * the gate. It rewrites the file after the fact; it does not touch
+ * verifier.js's own write path.
+ *
+ * @param {{ reportPath: string, structured: object, strippedChecks: Array, onLog?: Function }} args
+ * @returns {boolean} whether a write happened
+ */
+export function _rewriteVerdictSidecar({ reportPath, structured, strippedChecks, onLog }) {
+  if (typeof reportPath !== 'string' || reportPath.length === 0) return false;
+  if (!Array.isArray(strippedChecks) || strippedChecks.length === 0) return false;
+
+  try {
+    const cleaned = { ...structured, strippedChecks };
+    fs.writeFileSync(reportPath, JSON.stringify(cleaned, null, 2));
+    return true;
+  } catch (err) {
+    if (typeof onLog === 'function') {
+      onLog(`  [regression] Failed to rewrite verdict sidecar at ${reportPath}: ${err.message}`);
+    }
+    return false;
+  }
 }

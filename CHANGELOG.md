@@ -1,3 +1,12 @@
+## [0.2.12] - 2026-08-06 — Add deterministic tree-purity filter for regression verdicts
+
+### New features
+- Regression verdicts now automatically strip tree-purity FAIL checks and flip to PASSED when no other FAIL checks remain, solving false negatives in multi-mission shared working trees
+- Stripped tree-purity checks recorded in warnings ledger under category `regression-purity-strip` with file attribution and mission ownership for operator diagnosis
+- Verifier prompt updated with rule forbidding tree-purity assertions in checks, directing verification scope to mission-owned files only
+- Regression gate includes mission's own target files in verification context to reduce false positives from changes in shared working tree
+- Operator manual updated with diagnostic guide for tree-purity verdict strips, explaining stripped shapes and where to find cleaned verdicts with strippedChecks records
+
 ## [0.2.11] - 2026-08-04 — Skip -e/--eval payloads in path-token extraction
 
 ### New features

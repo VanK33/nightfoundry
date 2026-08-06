@@ -10,6 +10,7 @@ Symptom-driven diagnostic paths for a run that looks stopped, stuck, or otherwis
 - [Flow d: a queued spec never seems to advance](#flow-d-a-queued-spec-never-seems-to-advance)
 - [Flow e: reported cost or usage looks wrong](#flow-e-reported-cost-or-usage-looks-wrong)
 - [Flow f: a command exits cleanly but nothing changed](#flow-f-a-command-exits-cleanly-but-nothing-changed)
+- [Flow g: regression verdict looks weaker than expected after a purity strip](#flow-g-regression-verdict-looks-weaker-than-expected-after-a-purity-strip)
 
 ## How to use this chapter
 
@@ -50,3 +51,9 @@ Start from what you actually observe (a stalled terminal, a strange status, a co
 - **Symptom:** a command ran without any error, but the expected effect (a filter applied, a gate skipped, a state change) doesn't show up afterward.
 - **Read:** the state file the command is supposed to affect (for example `.harness/state.json`, `archives/<id>/manifest.json`, or `archives/warnings.jsonl`) to confirm whether the effect actually happened.
 - **Act:** re-check the exact flags used against [gotchas.md](gotchas.md), which catalogs the known silent no-ops and footguns per command, then re-run with the corrected flags.
+
+## Flow g: regression verdict looks weaker than expected after a purity strip
+
+- **Symptom:** a regression verdict reads differently than the verifier seemed to intend — certain checks the verifier wrote are simply absent from the verdict, and it looks like it was quietly downgraded.
+- **Read:** `archives/warnings.jsonl` for an entry under the literal category `regression-purity-strip` describing which check(s) were removed and why; then the matching regression verdict sidecar under `.harness/verification/`, which carries the cleaned verdict alongside its `strippedChecks` record of what was taken out.
+- **Act:** the strip removes only verifier-authored assertions about modification status or working-tree cleanliness — an only-X-modified assertion, a no-other-files-changed assertion, or git-status/git-diff cleanliness or modified/untracked wording — because those are not meaningful regression checks. Confirm the stripped check(s) match one of those shapes in the warnings ledger entry, then evaluate the verdict on its remaining, legitimate checks.

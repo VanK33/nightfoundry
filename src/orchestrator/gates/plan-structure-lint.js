@@ -38,6 +38,26 @@
  *     description }) for every emitted task targetFile (excluding
  *     `scripts/run-tests.js`) that is path-equivalent to a same-milestone
  *     sibling mission's already-planned task targetFile.
+ *   stripBacktickSpans(text) → string
+ *     Returns `text` with every maximal backtick-delimited literal span
+ *     (`` /`[^`]*`/g ``) replaced by a single space; a stray (unpaired)
+ *     backtick opens no span and is left in place. A non-string, null, or
+ *     undefined `text` returns `''`. NEVER throws. This is the exact
+ *     stripping behavior the module's own T1/T2 path (`lintTaskCheckShapes`)
+ *     uses internally.
+ *   isTreePurityShapeText(text) → boolean
+ *     Pure text-only predicate: strips backtick spans from `text` (via
+ *     `stripBacktickSpans`) and returns true iff the result matches any of
+ *     this module's literal tree-state shapes (the same shape set T2 /
+ *     `_hasT2Violation` reports — only-X-modified/edited/changed/touched;
+ *     "no test file(s)"; "no other/new/additional file(s)" / "no file(s)
+ *     other than|besides|except"; bare git-status/git-diff/working-tree +
+ *     clean|dirty|empty; and git-status/git-diff + modified|untracked|
+ *     changed). Returns false for a non-string, empty-string, null, or
+ *     undefined `text`. NEVER throws, never consults `targetFiles`, never
+ *     runs the T1 path-token rule (no `extractPathTokens` call), and does
+ *     NOT apply the behavioral-marker exemption (Exemption 1) — it is a
+ *     pure shape match with no fs access and no session/LLM call.
  *
  * Traversal (normative, mirrors planner.js's `_warnIfRejectedBehavior`
  * ~:1378-1392): the task-level functions (`lintTaskCheckShapes`,
@@ -76,7 +96,8 @@
  *     targetFile membership ("even in-target"): only-X-
  *     modified|edited|changed|touched; "no test file(s)"; "no other/new/
  *     additional file(s)" or "no file(s) other than|besides|except"; bare
- *     git-status/git-diff/working-tree + clean|dirty|empty assertions.
+ *     git-status/git-diff/working-tree + clean|dirty|empty assertions; and
+ *     git-status/git-diff + modified|untracked|changed assertions.
  */
 import path from 'path';
 import { extractPathTokens, resolveSpecPathAnchor } from '../agents/planner.js';
@@ -334,13 +355,35 @@ const _BACKTICK_SPAN_RE = /`[^`]*`/g;
 /**
  * Exemption 2 — strips maximal backtick-paired literal spans, replacing
  * each with a single space so surrounding tokens don't concatenate. A
- * stray (unpaired) backtick opens no span and is left in place.
+ * stray (unpaired) backtick opens no span and is left in place. A
+ * non-string, null, or undefined `text` returns `''`. Never throws.
  *
- * @param {string} testCase
+ * Exported for reuse (see module docblock's Public API): this is the same
+ * stripping behavior the T1/T2 path below uses internally.
+ *
+ * @param {string} text
  * @returns {string}
  */
-function _stripBacktickSpans(testCase) {
-  return testCase.replace(_BACKTICK_SPAN_RE, ' ');
+export function stripBacktickSpans(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(_BACKTICK_SPAN_RE, ' ');
+}
+
+/**
+ * Pure text-only predicate: strips backtick spans from `text` and returns
+ * true iff the result matches any of this module's literal tree-state
+ * shapes (the same shape set `_hasT2Violation` reports). Returns false for
+ * a non-string, empty-string, null, or undefined `text`. Never throws,
+ * never consults `targetFiles`, never runs the T1 path-token rule, and
+ * performs no filesystem access and no session/LLM call.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isTreePurityShapeText(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  const stripped = stripBacktickSpans(text);
+  return _hasT2Violation(stripped);
 }
 
 const _T1_PREDICATE_RE = /\b(unchanged|unmodified|untouched|not\s+(?:be\s+)?(?:modified|changed|edited|touched))\b/gi;
@@ -388,6 +431,7 @@ const _T2_NO_TEST_FILES_RE = /\bno\s+test\s+files?\b/i;
 const _T2_NO_OTHER_FILES_RE = /\bno\s+(other|new|additional)\s+files?\b/i;
 const _T2_NO_FILES_EXCEPT_RE = /\bno\s+files?\s+(other than|besides|except)\b/i;
 const _T2_GIT_CLEAN_RE = /\b(git\s+status|git\s+diff|working\s+tree)\b[\s\S]{0,60}?\b(clean|dirty|empty)\b/i;
+const _T2_GIT_MODIFIED_RE = /\b(git\s+status|git\s+diff)\b[\s\S]{0,60}?\b(modified|untracked|changed)\b/i;
 
 /**
  * T2 — literal tree-state shapes, checked regardless of targetFile
@@ -402,7 +446,8 @@ function _hasT2Violation(strippedText) {
     _T2_NO_TEST_FILES_RE.test(strippedText) ||
     _T2_NO_OTHER_FILES_RE.test(strippedText) ||
     _T2_NO_FILES_EXCEPT_RE.test(strippedText) ||
-    _T2_GIT_CLEAN_RE.test(strippedText)
+    _T2_GIT_CLEAN_RE.test(strippedText) ||
+    _T2_GIT_MODIFIED_RE.test(strippedText)
   );
 }
 
@@ -448,7 +493,7 @@ export function lintTaskCheckShapes(plan, opts = {}) {
 
         // Exemption 2: backtick-delimited literal spans are stripped
         // before shape checks run.
-        const strippedText = _stripBacktickSpans(testCase);
+        const strippedText = stripBacktickSpans(testCase);
 
         if ((throwRuleId === null || throwRuleId === 'T2') && _hasT2Violation(strippedText)) {
           if (throwRuleId === null) {
