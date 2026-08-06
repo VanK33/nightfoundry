@@ -27,6 +27,7 @@ import { queueList, queueRemove, queueRetry } from './commands/queue.js';
 import { parkList, parkShow, parkResolve } from './commands/park.js';
 import { warningsList, warningsShow, warningsResolve, warningsBrainstorm } from './commands/warnings.js';
 import { clean } from './commands/clean.js';
+import { reset } from './commands/reset.js';
 import { dispersion } from './commands/dispersion.js';
 import { suggest, mapFlagToCommand, KNOWN_COMMANDS } from './suggest.js';
 import { gitGuard } from './git-guard.js';
@@ -85,6 +86,7 @@ const USAGE = `
 
   Maintenance:
     cc-orch clean [--force]              Clean up harness artifacts
+    cc-orch reset <task-id>              Reset a task's state for re-execution
     cc-orch init [spec.md]               Bootstrap .harness/
     cc-orch version | help               Show version | this help
 
@@ -331,6 +333,15 @@ async function main() {
 
     case 'clean': {
       return clean(projectRoot, flags);
+    }
+
+    case 'reset': {
+      const taskId = positional[1];
+      if (!taskId) {
+        console.error('Usage: cc-orch reset <task-id>');
+        process.exit(1);
+      }
+      return reset(projectRoot, taskId);
     }
 
     case 'dry-run': {

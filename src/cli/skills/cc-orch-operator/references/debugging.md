@@ -34,6 +34,8 @@ Start from what you actually observe (a stalled terminal, a strange status, a co
 - **Read:** `.harness/state.json` `globalStatus` (look for `halted-analyzer`); the parked scene at `refs/park/<slug>/scene.json` and `refs/park/<slug>/park.json` for why it escalated and any operator notes.
 - **Act:** run `cc-orch park show <slug>` to see the full context, then `cc-orch park resolve <slug>` with `--requeue`, `--waive`, or `--reject` to move it forward.
 
+When it is a single task that keeps repeatedly failing verification and tripping the circuit breaker, `cc-orch reset <taskId>` gives that task a fresh chance: it clears the task's `retryCount` (returning its status to `pending`), the canonical `replanAttempts` entry for the task, the analyzer history file for that task, and the task's snapshot directory. Run it ONLY when no run process is live — it mutates on-disk state that a live run also reads and writes, so running it concurrently with an active run can corrupt state. This is distinct from the entry-level `cc-orch queue retry <slug>`, which resets a whole queue ENTRY's status so `cc-orch resume --batch` picks it up again; `cc-orch reset <taskId>` operates one level down, on a single task within a run, and the two are complementary rather than interchangeable.
+
 ## Flow d: a queued spec never seems to advance
 
 - **Symptom:** a spec was queued for batch processing but its status doesn't seem to change over time.

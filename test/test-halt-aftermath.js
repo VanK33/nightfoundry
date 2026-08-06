@@ -527,7 +527,8 @@ await test('TC6(f): task-analyzer-escalation and task-analyzer-repeat-verdict si
     assert.ok(err1, 'round 1 human verdict must throw');
     assert.ok(err1 instanceof CircuitBreakerError);
     const expected1 = `Circuit breaker: task ${TASK.id} failed verification after 4 attempts. ` +
-      `Recommendation: human. 0 task(s) marked for revalidation. See .harness/analysis/${err1.eventId}.json`;
+      `Recommendation: human. 0 task(s) marked for revalidation. See .harness/analysis/${err1.eventId}.json. ` +
+      `Run \`cc-orch reset ${TASK.id}\` to give this task a fresh chance.`;
     assert.strictEqual(err1.message, expected1, 'the escalation throw must be byte-identical to its pre-helper template');
 
     let stateAfter = readGlobalState(harnessDir);
@@ -543,7 +544,8 @@ await test('TC6(f): task-analyzer-escalation and task-analyzer-repeat-verdict si
     assert.ok(err2, 'round 2 identical verdict must throw');
     assert.strictEqual(err2.escalatedByRepeat, true);
     const expected2 = `Circuit breaker: task ${TASK.id} failed verification after 4 attempts. ` +
-      `Analyzer repeated its previous verdict (rec=human) — escalated to human. See .harness/analysis/${err2.eventId}.json`;
+      `Analyzer repeated its previous verdict (rec=human) — escalated to human. See .harness/analysis/${err2.eventId}.json. ` +
+      `Run \`cc-orch reset ${TASK.id}\` to give this task a fresh chance.`;
     assert.strictEqual(err2.message, expected2, 'the repeat-escalation throw must be byte-identical to its pre-helper template');
 
     stateAfter = readGlobalState(harnessDir);
@@ -832,7 +834,8 @@ await test('TC9(i): a poisoned queue entry dir swallows the helper failure and t
     const err = await dispatchCatch(pipeline, TASK);
     assert.ok(err, 'the human verdict must still throw despite the poisoned queue dir');
     const expected = `Circuit breaker: task ${TASK.id} failed verification after 4 attempts. ` +
-      `Recommendation: human. 0 task(s) marked for revalidation. See .harness/analysis/${err.eventId}.json`;
+      `Recommendation: human. 0 task(s) marked for revalidation. See .harness/analysis/${err.eventId}.json. ` +
+      `Run \`cc-orch reset ${TASK.id}\` to give this task a fresh chance.`;
     assert.strictEqual(err.message, expected, 'the original error message must propagate byte-identical despite the poisoned queue dir');
 
     assert.ok(logs.some((l) => l.includes('[halt-aftermath]') && l.includes('failed to persist halt evidence')),

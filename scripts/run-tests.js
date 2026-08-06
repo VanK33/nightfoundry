@@ -122,6 +122,7 @@ export const TEST_FILES = [
   'test/test-hard-checks-integration.js',
   'test/test-hard-checks-pipeline-wiring.js',
   'test/test-snapshots-integration.js',
+  'test/test-task-reset.js',
   'test/test-restore-sibling-supersede.js',
   'test/test-assert-changes-landed-all-files.js',
   'test/test-coverage-remediation.js',

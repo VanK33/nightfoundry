@@ -7,7 +7,11 @@
  * Pure fs.copyFileSync — no AI, no git.
  *
  * Public API:
- *   snapshotFiles(harnessDir, projectRoot, taskId, phase, files)
+ *   snapshotFiles(harnessDir, projectRoot, taskId, phase, files) — fresh capture:
+ *     wipes (rm -rf) and recreates the phase dir before copying, so the result
+ *     contains exactly the listed files that currently exist on disk (stale
+ *     entries from a prior capture are gone); if `files` is empty or none
+ *     exist, the phase dir is left present but empty rather than absent.
  *   restoreSnapshot(harnessDir, projectRoot, taskId, phase, overrides?) → number of files restored
  *   cleanupSnapshots(harnessDir, milestoneId) → number of snapshots removed
  *   readAffectedFiles(harnessDir, taskId) → string[]
@@ -18,10 +22,14 @@ import path from 'path';
 import crypto from 'node:crypto';
 
 export function snapshotFiles(harnessDir, projectRoot, taskId, phase, files) {
+  const phaseDir = path.join(harnessDir, 'snapshots', taskId, phase);
+  fs.rmSync(phaseDir, { recursive: true, force: true });
+  fs.mkdirSync(phaseDir, { recursive: true });
+
   for (const file of files) {
     const src = path.join(projectRoot, file);
     if (!fs.existsSync(src)) continue;
-    const dest = path.join(harnessDir, 'snapshots', taskId, phase, file);
+    const dest = path.join(phaseDir, file);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(src, dest);
   }

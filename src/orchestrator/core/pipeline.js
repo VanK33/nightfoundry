@@ -5486,7 +5486,8 @@ class Pipeline {
         throw new CircuitBreakerError(
           `Circuit breaker: task ${task.id} failed ${failureType} after ${retryCount + 1} attempts. ` +
           `Analyzer repeated its previous verdict (rec=${analysis.recommendation}) — escalated to human. ` +
-          `See .harness/analysis/${analysis.eventId}.json`,
+          `See .harness/analysis/${analysis.eventId}.json. ` +
+          `Run \`cc-orch reset ${task.id}\` to give this task a fresh chance.`,
           { taskId: task.id, recommendation: analysis.recommendation, eventId: analysis.eventId, escalatedByRepeat: true }
         );
       }
@@ -5547,7 +5548,8 @@ class Pipeline {
         `Circuit breaker: task ${task.id} failed ${failureType} after ${retryCount + 1} attempts. ` +
         `Recommendation: ${analysis.recommendation}. ` +
         `${analysis.affectedTasks?.length || 0} task(s) marked for revalidation. ` +
-        `See .harness/analysis/${analysis.eventId}.json`,
+        `See .harness/analysis/${analysis.eventId}.json. ` +
+        `Run \`cc-orch reset ${task.id}\` to give this task a fresh chance.`,
         { taskId: task.id, recommendation: analysis.recommendation, eventId: analysis.eventId }
       );
     } catch (err) {
@@ -5556,7 +5558,8 @@ class Pipeline {
       this.onLog(`    Analyzer failed: ${err.message}`);
       throw new CircuitBreakerError(
         `Circuit breaker: task ${task.id} failed ${failureType} after ${retryCount + 1} attempts. ` +
-        `Analyzer could not complete: ${err.message}`,
+        `Analyzer could not complete: ${err.message}. ` +
+        `Run \`cc-orch reset ${task.id}\` to give this task a fresh chance.`,
         { taskId: task.id }
       );
     }
