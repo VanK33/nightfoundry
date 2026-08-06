@@ -1,0 +1,6 @@
+{
+  "execution": {
+    "testCommand": "<fast/smoke test command — e.g. npm test, pytest tests/smoke -q, go test ./internal/...>",
+    "testAllCommand": "<full test-suite command — e.g. npm run test:all, pytest -q, go test ./...>"
+  }
+}

@@ -65,3 +65,16 @@ CLAUDE.local.md
 
 # machine-appended run history; kept out of version control
 RUNS.md
+
+# >>> cc-orch >>>
+/.harness/
+/queue/
+/spec-*.md
+/*.spec.md
+/*.spec.json
+/*.uspec.json
+/archives/candidates.jsonl
+/archives/warnings.jsonl
+/CLAUDE.local.md
+/cc-orch-guidance.md
+# <<< cc-orch <<<

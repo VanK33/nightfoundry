@@ -81,6 +81,8 @@ Some files are not the "main" edit but are changed as a necessary side effect of
 
 Ripple files are real scope, not accidental scope. Declare them the same way as any other target file (see (c)) — list them in `target_files`, or in the relevant `## Scope — in` entry's file bullets — so the declared-set contract doesn't reject the task that has to touch them.
 
+If the same ripple pair recurs across specs, declare it once via `scope.coupledFiles` (see (g)) instead of re-listing the coupled file in every spec.
+
 ## (e) The `plan_structure` field
 
 `plan_structure` is an optional object in `<slug>.spec.json`:
@@ -100,6 +102,8 @@ Ripple files are real scope, not accidental scope. Declare them the same way as 
 | `max_missions` | Upper bound on the total number of missions across the whole plan. |
 
 When present with integer values, the plan-structure lint throws if the emitted plan exceeds either cap — e.g. use `{ "max_milestones": 1, "max_missions": 1 }` to pin a small, single-mission change and get an early, clear failure instead of an unexpectedly large decomposition. When `plan_structure` is absent, or present but malformed (not an object, or non-integer fields), the lint is skipped entirely — no cap is enforced.
+
+**Set caps as a runaway fuse, not a prescription: leave roughly 2x headroom over the decomposition you expect.** The planner's grouping instincts legitimately differ from a spec author's guess — it may split by src-vs-test, or emit one mission per scope item — and a cap written to the exact expected shape turns that ordinary variance into a hard failed-plan, with every retry re-paying the full baseline gate. Reserve the tight `{ "max_milestones": 1, "max_missions": 1 }` pin for changes that genuinely touch a single file in a single mission.
 
 ## (f) Check-shape
 
@@ -125,6 +129,10 @@ Keep every check scoped to its own task's declared files: a check should assert 
 | `testAllCommand` | The full test suite | Once, as the final gate before a run is archived |
 
 Both are configurable per project — create an optional `.cc-orch.json` file at the project root with an `execution.testCommand` / `execution.testAllCommand` override if your project's test entry points aren't the defaults. The loader is fail-loud: an unrecognized key, or a non-string/empty command value, raises an error naming the file and the offending key rather than silently ignoring a typo. When writing acceptance criteria, prefer the smoke command for fast per-change evidence and reserve the full command for a criterion that genuinely needs the whole suite green.
+
+**Run-wide spend ceiling:** the same `.cc-orch.json` file also supports a `budgets.runCeilingUsd` override. This caps *cumulative* USD spend across all agent sessions within a single run — distinct from the existing per-session budgets, which cap each individual session's spend on its own. The shipped default is `50`. Setting it to the literal `null` is the off-switch: it disables the ceiling entirely, so the run is never stopped for cumulative spend. Validation is fail-loud exactly like the existing `execution` keys: an unrecognized key inside `budgets`, or a value that is not a positive finite number and not `null`, raises an error naming the file and the offending key rather than silently ignoring a typo. A breach of the ceiling is not surfaced as a code error or bug — it stops the run RESUMABLY: state is saved, the queue entry stays resumable, and no work is lost.
+
+**Coupled-file ripple rules:** the same `.cc-orch.json` file also supports a `scope.coupledFiles` override, for declaring a recurring ripple pair (see (d)) once instead of re-listing it by hand in every spec that touches one side of the pair — the engine folds the paired file into the spec's declared set (see (c)) for you. Its shape is an array of rule objects, each `{ when, alsoTarget }`, where `when` is a glob string matched against a changed path and `alsoTarget` is an array of path strings to add to the declared set whenever `when` matches — for example, `{ "when": "src/foo/*.js", "alsoTarget": ["src/foo/index.js"] }` couples any direct `.js` file under `src/foo/` to that directory's barrel file. Only two glob metacharacters are recognized in `when`: `*` matches within a single path segment (it does not cross a `/`), and `**` matches across segments; every other character, including `.`, is taken literally — there are no other metacharacters. The pattern is anchored to the full project-root-relative path, written with forward slashes. Expansion happens engine-side and lands only in the spec's declared set — it does NOT expand any mission's `target_files`, which continue to list only what that mission itself is responsible for. Validation is fail-loud exactly like the existing `execution` and `budgets` keys: an unrecognized key inside `scope`, or a malformed rule (missing/wrong-typed `when` or `alsoTarget`), raises an error naming the file and the offending key rather than silently ignoring a typo.
 
 **Assumption-safe wording** — a spec is read by a planner and implementer that treat its claims literally, so:
 

@@ -85,6 +85,8 @@ Long flags that always consume the next arg as a value: `--role`, `--task`, `--p
 |---|---|---|---|
 | `cc-orch queue list` | — | `-j` | List queue entries and their status. |
 | `cc-orch queue remove <slug>` | slug | — | Remove a queue entry. |
+| `cc-orch queue retry <slug>` | slug | — | Reset a non-pending entry's status to pending so `cc-orch resume --batch` picks it up again. |
+| `cc-orch reset <taskId>` | task id | — | Reset a single failed **task** so it gets a fresh chance: clears its retryCount (status back to pending), the canonical `replanAttempts` entry, the analyzer history file, and the task's snapshot directory. Task-level and complementary to the entry-level `cc-orch queue retry <slug>` (which resets a whole queue entry, not one task). Only run this when no run process is live. |
 
 ## Park
 
@@ -136,6 +138,6 @@ Reviewer-warning ledger (`archives/warnings.jsonl`).
 
 | Need | Commands |
 |---|---|
-| **Requires `.harness/state.json`** | `status`, `usage` (without `--all`/`--include-failed`), `review`, `archive` (the verb, not `list`/`show`/`diff`), `clean`, `resume` (without `--batch`) |
+| **Requires `.harness/state.json`** | `status`, `usage` (without `--all`/`--include-failed`), `review`, `archive` (the verb, not `list`/`show`/`diff`), `clean`, `resume` (without `--batch`), `reset` (operates on the active run harness) |
 | **Does NOT require it** | `init`, `brainstorm`, `dry-run`, `task`, `run` (creates it), `resume --batch`, `queue *`, `park *`, `warnings *`, `health`, `ui`, `version`, `help`, `dispersion`, `archive list/show/diff`, `usage --all` |
 | **Requires a git repo + clean tree** | `run`, `dry-run` (override with `--no-git-required` / `--allow-dirty`) |
