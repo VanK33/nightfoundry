@@ -88,6 +88,7 @@ export const TEST_FILES = [
   'test/test-pipeline-formatting.js',
   'test/test-pipeline-reviewer-gate.js',
   'test/test-planner-reuse.js',
+  'test/test-planner-rotation.js',
   'test/test-read-then-write.js',
   'test/test-write-boundary.js',
   'test/test-review-gate.js',

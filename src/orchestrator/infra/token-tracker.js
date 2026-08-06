@@ -7,7 +7,7 @@
  *   recordSession(name, type, resultEvent, meta?)   → Promise<void>
  *   getTotalUsage() → { sessionCount, inputTokens, outputTokens, totalCostUsd, ... }
  *   getUsageByType(type) / getUsageByTask(taskId) / getUsageSince(sessionIndex)
- *   shouldWarn(tokens) / shouldForceNewSession(tokens)
+ *   shouldWarn(tokens) / shouldForceNewSession(tokens) / shouldAlarm(tokens)
  *   summary() → full breakdown with byType
  *
  * Concurrency (Phase I items 4+5): `recordSession` is now async and
@@ -163,6 +163,10 @@ class TokenTracker {
 
   shouldForceNewSession(inputTokens) {
     return inputTokens >= config.tokens.forceNew;
+  }
+
+  shouldAlarm(inputTokens) {
+    return inputTokens >= config.tokens.alarm;
   }
 
   save() {

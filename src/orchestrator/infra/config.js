@@ -91,8 +91,10 @@ const config = {
 
   // --- Token thresholds ---
   tokens: {
-    warn: 150_000,
-    forceNew: 180_000,
+    warn: 80_000,
+    forceNew: 100_000,
+    alarm: 120_000,
+    rotationMissionCount: 3,
   },
 
   // --- Cost summary alert thresholds ---

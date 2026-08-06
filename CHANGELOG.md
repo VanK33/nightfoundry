@@ -1,3 +1,10 @@
+## [0.2.13] - 2026-08-06 — Add planner session rotation with K-mission and token-tier limits
+
+### New features
+- Planner sessions now rotate at mission boundaries based on mission count (default K=3) or token consumption (100k force-new threshold), with 80k warn and 120k alarm tiers for observability.
+- Fresh planner sessions after rotation are reseeded with a deterministic digest of all prior missions to preserve cross-mission awareness for duplicate detection and dependency analysis.
+- Planner rotation, warn, and alarm events are recorded to the warnings ledger (category: planner-rotation) for operator auditing and debugging.
+
 ## [0.2.12] - 2026-08-06 — Add deterministic tree-purity filter for regression verdicts
 
 ### New features

@@ -4613,9 +4613,23 @@ class Pipeline {
             scopeMapping: readState(this.harnessDir).projectMeta?.scopeMapping || [],
             scopeItems: readState(this.harnessDir).projectMeta?.scopeItems || [],
             siblingMissionTaskTargets,
+            priorMissionDigest: this._renderPriorMissionDigest(this._buildPriorMissionDigest(miId)),
           });
         } finally {
           this.statusBar.updateAgent('planner', null);
+          try {
+            const rotationEvents = this.planner.drainRotationEvents?.() || [];
+            if (rotationEvents.length > 0) {
+              appendWarnings(this.projectRoot, rotationEvents.map((ev) => ({
+                milestone: miId,
+                severity: 'warning',
+                category: 'planner-rotation',
+                description: `Planner rotation event (${ev.type}) for mission ${ev.missionId}: contextTokens=${ev.contextTokens}, missionCount=${ev.missionCount}`,
+              })));
+            }
+          } catch {
+            // fail-soft: drain/append failures must not mask the planMission outcome
+          }
         }
         this._recordScopeMappingWarnings(miId, missionDecomp.scopeWarnings);
         this.onLog(`  planMission completed in ${this._formatElapsed(Date.now() - _planMissionStart1)}`);
@@ -6205,6 +6219,111 @@ class Pipeline {
       );
     } catch (err) {
       this.onLog(`  [WARN] warnings-ledger write failed (run continues): ${err.message}`);
+    }
+  }
+
+  /**
+   * Build a deterministic, plain-object digest of every OTHER mission's
+   * persisted state (across all milestones), for use as planMission context.
+   *
+   * No planner/LLM call and no prose summarization — this purely walks
+   * readState(this.harnessDir).milestones and, for each declared mission
+   * (skipping currentMissionId), reads state/mission-<id>.json (when it
+   * exists) to collect its tasks. Fail-soft: any read/parse error anywhere
+   * in the walk yields {} rather than throwing.
+   *
+   * NOTE: the plain object returned here is NOT directly consumable by
+   * planner.planMission's `context.priorMissionDigest` — that consumer
+   * requires a plain-text string. Pass this method's return value through
+   * _renderPriorMissionDigest() before handing it to planMission.
+   *
+   * @param {string} currentMissionId
+   * @returns {Object<string, { targetFiles: string[], tasks?: Array<{ id: string, targetFiles: string[], dependencies: string[] }> }>}
+   */
+  _buildPriorMissionDigest(currentMissionId) {
+    try {
+      const digest = {};
+      const milestones = readState(this.harnessDir).milestones || {};
+      for (const ms of Object.values(milestones)) {
+        const missions = ms.missions || {};
+        for (const [missionId, missionEntry] of Object.entries(missions)) {
+          if (missionId === currentMissionId) continue;
+          const declaredTargetFiles = Array.isArray(missionEntry.targetFiles)
+            ? missionEntry.targetFiles
+            : [];
+          const missionStateFile = path.join(this.harnessDir, 'state', `mission-${missionId}.json`);
+          if (!fs.existsSync(missionStateFile)) {
+            digest[missionId] = { targetFiles: declaredTargetFiles };
+            continue;
+          }
+          const missionState = JSON.parse(fs.readFileSync(missionStateFile, 'utf8'));
+          const subMissions = missionState.subMissions || {};
+          if (Object.keys(subMissions).length === 0) {
+            digest[missionId] = { targetFiles: declaredTargetFiles };
+            continue;
+          }
+          const tasks = [];
+          for (const sm of Object.values(subMissions)) {
+            for (const task of Object.values(sm.tasks || {})) {
+              tasks.push({
+                id: task.id,
+                targetFiles: task.targetFiles || [],
+                dependencies: task.dependencies || [],
+              });
+            }
+          }
+          digest[missionId] = { targetFiles: declaredTargetFiles, tasks };
+        }
+      }
+      return digest;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Render the plain-object digest produced by _buildPriorMissionDigest()
+   * into the deterministic plain-text string expected by
+   * planner.planMission's `context.priorMissionDigest`. Pure formatting —
+   * no LLM call, no summarization.
+   *
+   * Mission ids are iterated in lexicographically sorted order
+   * (Object.keys(digest).sort()) so identical state always yields a
+   * byte-identical string. Fail-soft: any error, or a missing/malformed
+   * input, yields '' (matching today's no-prepend behavior).
+   *
+   * @param {Object<string, { targetFiles?: string[], tasks?: Array<{ id: string, targetFiles?: string[], dependencies?: string[] }> }>} digest
+   *   The object returned by _buildPriorMissionDigest().
+   * @returns {string} Plain-text digest, one mission line (optionally
+   *   followed by indented task lines) per mission, joined with '\n'.
+   *   Returns '' when digest is empty, absent, or malformed.
+   */
+  _renderPriorMissionDigest(digest) {
+    try {
+      if (!digest || typeof digest !== 'object') return '';
+      const missionIds = Object.keys(digest).sort();
+      const lines = [];
+      for (const missionId of missionIds) {
+        const entry = digest[missionId];
+        if (!entry || typeof entry !== 'object') continue;
+        const targetFiles = Array.isArray(entry.targetFiles) ? entry.targetFiles : [];
+        const targetsSuffix = targetFiles.length > 0 ? ` [targets: ${targetFiles.join(', ')}]` : '';
+        lines.push(`Mission ${missionId}${targetsSuffix}`);
+
+        const tasks = Array.isArray(entry.tasks) ? entry.tasks : [];
+        for (const task of tasks) {
+          if (!task || typeof task !== 'object') continue;
+          const taskTargetFiles = Array.isArray(task.targetFiles) ? task.targetFiles : [];
+          const taskTargetsSuffix =
+            taskTargetFiles.length > 0 ? ` [target: ${taskTargetFiles.join(', ')}]` : '';
+          const dependencies = Array.isArray(task.dependencies) ? task.dependencies : [];
+          const depsSuffix = dependencies.length > 0 ? ` (deps: ${dependencies.join(', ')})` : '';
+          lines.push(`  Task ${task.id}${taskTargetsSuffix}${depsSuffix}`);
+        }
+      }
+      return lines.join('\n');
+    } catch {
+      return '';
     }
   }
 

@@ -144,6 +144,39 @@ class Planner {
     // new inputs match — otherwise we'd silently operate with stale
     // cwd or a stale system prompt. See _ensureReusableSession.
     this._reusableSessionInputs = null;
+    // Rotation state for the reusable planner session. _sessionContextTokens
+    // and _sessionMissionCount track the current session's accumulated
+    // context usage; they are reset elsewhere (not by closeReusableSession
+    // and not by _recordRotationEvent). _reusableSessionSeq is monotonic
+    // for the lifetime of this Planner instance — it is never reset.
+    // _rotationEvents is an internal ledger drained via
+    // drainRotationEvents().
+    this._sessionContextTokens = 0;
+    this._sessionMissionCount = 0;
+    this._reusableSessionSeq = 1;
+    this._rotationEvents = [];
+  }
+
+  /**
+   * Record a session-rotation event onto the internal ledger and emit a
+   * human-readable line via logger.warn so it's visible in the terminal.
+   * Does not mutate rotation counters — callers are responsible for that.
+   */
+  _recordRotationEvent(type, fields = {}) {
+    const { sessionName, missionId, contextTokens, missionCount } = fields;
+    this._rotationEvents.push({ type, sessionName, missionId, contextTokens, missionCount });
+    this.logger.warn(
+      `[planner] rotation event: ${type} missionId=${missionId} contextTokens=${contextTokens} missionCount=${missionCount}`
+    );
+  }
+
+  /**
+   * Return the accumulated rotation events and clear the internal ledger.
+   */
+  drainRotationEvents() {
+    const events = this._rotationEvents;
+    this._rotationEvents = [];
+    return events;
   }
 
   /**
@@ -222,12 +255,22 @@ class Planner {
       return this._reusableSession;
     }
 
+    // Derive the session name from the monotonic sequence counter so
+    // rotated sessions get distinct, identifiable names. Use the SAME
+    // derived name for both the session log and spawnReusable's name
+    // option, and expose it on the instance so rotation-event rows can
+    // reference it.
+    const sessionName = this._reusableSessionSeq === 1
+      ? 'planner-reusable'
+      : `planner-reusable-${this._reusableSessionSeq}`;
+    this._reusableSessionName = sessionName;
+
     // Open the log file first so that if spawnReusable succeeds, the
     // logger is ready to attach immediately. BUT if spawnReusable
     // throws synchronously, we must close the log file and reset
     // state, otherwise the log handle leaks until process exit.
     // (Bug caught in Copilot review, 2026-04-09.)
-    this._reusableSessionLog = this.logger.createSessionLog('planner-reusable');
+    this._reusableSessionLog = this.logger.createSessionLog(sessionName);
 
     const systemPrompt = buildMissionSystemPrompt(maxTasks);
 
@@ -239,7 +282,7 @@ class Planner {
 
     try {
       this._reusableSession = this.sessionManager.spawnReusable({
-        name: 'planner-reusable',
+        name: sessionName,
         systemPrompt,
         model: config.execution.plannerModel,
         tools: config.tools.planner,
@@ -768,7 +811,61 @@ Return structured JSON with your findings.`;
    * across a multi-mission run. Validation requires a live dogfood.
    */
   async _planMissionReusable(missionId, projectRoot, context, maxTasks) {
+    // Mission-boundary rotation check: this MUST run before
+    // _ensureReusableSession() so a rotation decision (and the resulting
+    // close/reopen) can only ever happen at a mission boundary, never
+    // mid-decomposition (e.g. mid-turn or mid-retry). If a reusable
+    // session is currently open and either the mission-count threshold or
+    // the token-based force-new threshold has been crossed, close the
+    // existing session and bump the sequence counter so the subsequent
+    // _ensureReusableSession() call below lazily reopens a fresh one.
+    // On a first-ever call (no open session, zero counters) this is a
+    // guaranteed no-op: no rotation, no warn/alarm events.
+    if (this._reusableSession) {
+      const sessionName = this._reusableSessionName;
+      const contextTokens = this._sessionContextTokens;
+      const missionCount = this._sessionMissionCount;
+
+      const forceNew = Boolean(this.tokenTracker?.shouldForceNewSession?.(contextTokens));
+      const missionCountExceeded = missionCount >= config.tokens.rotationMissionCount;
+
+      // warn and alarm are evaluated independently of the rotation
+      // decision (alarm can co-occur with a rotation), except that warn
+      // is explicitly suppressed once shouldForceNewSession is true — a
+      // warn-alone must never rotate, but once we're already in
+      // force-new territory the warn signal is superseded by the
+      // rotation/alarm signal.
+      if (this.tokenTracker?.shouldWarn?.(contextTokens) && !forceNew) {
+        this._recordRotationEvent('warn', { sessionName, missionId, contextTokens, missionCount });
+      }
+      if (this.tokenTracker?.shouldAlarm?.(contextTokens)) {
+        this._recordRotationEvent('alarm', { sessionName, missionId, contextTokens, missionCount });
+      }
+
+      if (missionCountExceeded || forceNew) {
+        await this.closeReusableSession();
+        this._reusableSessionSeq += 1;
+        this._sessionContextTokens = 0;
+        this._sessionMissionCount = 0;
+
+        this._recordRotationEvent('rotated', { sessionName, missionId, contextTokens, missionCount });
+      }
+    }
+
     const session = this._ensureReusableSession(projectRoot, maxTasks);
+
+    // Prior-mission digest injection: only the FIRST turn of a freshly
+    // opened reusable session may carry the digest block. Freshness is
+    // captured HERE, before this call's first sendPrompt, so that later
+    // missions reusing the same open session (turnCount > 0 by then) never
+    // see it, and the corrective lint-retry prompt built further below
+    // (which replaces userPrompt wholesale) never sees it either. The
+    // digest is expected to arrive pre-rendered by the caller (mission
+    // ids, task ids, targetFiles) — this is a pure string prepend, no
+    // model call, no reformatting.
+    const isFreshSession = session.turnCount === 0;
+    const priorMissionDigest = context.priorMissionDigest;
+    const hasDigest = typeof priorMissionDigest === 'string' && priorMissionDigest.trim().length > 0;
 
     // Bounded plan-lint feedback retry: at most ONE corrective turn per
     // invocation, tracked in this LOCAL counter (no persisted state).
@@ -777,7 +874,10 @@ Return structured JSON with your findings.`;
     // and membership — never instanceof.
     const retryableLintRuleIds = new Set(['T1', 'T2', 'scope-excursion']);
     let lintRetriesUsed = 0;
-    let userPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints);
+    const missionUserPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints);
+    let userPrompt = (isFreshSession && hasDigest)
+      ? `Previously planned missions (binding context):\n${priorMissionDigest}\n\n${missionUserPrompt}`
+      : missionUserPrompt;
     let plan;
 
     for (;;) {
@@ -797,6 +897,17 @@ Return structured JSON with your findings.`;
 
       const turnFinishedAt = new Date().toISOString();
       const turnDurationMs = Date.now() - turnStartMs;
+
+      // Rotation accounting: _sessionContextTokens tracks the conversation-
+      // prefix size of the MOST RECENT turn only. It is REPLACED (not
+      // accumulated) on every turn so repeated turns with identical usage
+      // don't inflate the figure across the loop.
+      {
+        const rotationUsage = result?.usage || {};
+        this._sessionContextTokens = (rotationUsage.input_tokens || 0)
+          + (rotationUsage.cache_read_input_tokens || 0)
+          + (rotationUsage.cache_creation_input_tokens || 0);
+      }
 
       // Account the turn BEFORE any parsing/validation that could throw. The
       // session-manager discards the reusable handle-name in-flight estimate at
@@ -918,6 +1029,12 @@ Return structured JSON with your findings.`;
     const rejectedPhrases = extractRejectedPhrases(context?.specConstraints || []);
     this._warnIfRejectedBehavior(plan, rejectedPhrases, 'planMission');
     this._enforceSequentialOrdering(plan);
+
+    // Increment exactly once per successful planMission turn: the plan has
+    // passed the full validation chain (including any corrective lint-retry
+    // turn) and we are about to return it. An invocation that throws out of
+    // the validation chain above never reaches this line.
+    this._sessionMissionCount += 1;
 
     return plan;
   }
