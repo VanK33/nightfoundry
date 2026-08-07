@@ -218,9 +218,9 @@ await test('Criterion 2: archive() hermeticity guard rejects without deps.summar
 });
 
 // ── Criterion 5 ──────────────────────────────────────────────────────
-// (i) scripts/run-tests.js's source emits a `[RUN] ` marker ahead of each
-//     spawnSync invocation inside runEntry, covering both the plain-node
-//     and npm special-case branches.
+// (i) scripts/run-tests.js's source emits a `[RUN] ` marker ahead of the
+//     spawn invocation inside runEntry — a child's launch must be visible
+//     before it runs, under serial and pooled execution alike.
 // (ii) Dynamically importing scripts/run-tests.js exposes a TEST_FILES
 //     export that includes this file's own path — the file registers
 //     itself in the suite manifest. The import is side-effect-free: the
@@ -242,37 +242,20 @@ await test('Criterion 5: run-tests.js emits [RUN] markers and self-registers thi
 
   // Isolate the runEntry function body so the ordering assertions below
   // are scoped to it (not merely present somewhere else in the file).
-  const fnStart = src.indexOf('function runEntry(entry)');
+  const fnStart = src.indexOf('function runEntry(entry');
   assert.ok(fnStart !== -1, 'expected to find a runEntry function declaration');
-  const nextMarkerIdx = src.indexOf('// Only run when executed directly', fnStart);
-  assert.ok(nextMarkerIdx !== -1, 'expected to find the isMain guard comment after runEntry');
+  const nextMarkerIdx = src.indexOf('export async function runAll', fnStart);
+  assert.ok(nextMarkerIdx !== -1, 'expected to find the runAll pool after runEntry');
   const runEntrySrc = src.slice(fnStart, nextMarkerIdx);
 
-  // Split the function body into the plain-node branch and the npm
-  // special-case branch.
-  const branchSplitIdx = runEntrySrc.indexOf('} else {');
-  assert.ok(branchSplitIdx !== -1, 'expected runEntry to have an if/else branch structure');
-  const nodeBranch = runEntrySrc.slice(0, branchSplitIdx);
-  const npmBranch = runEntrySrc.slice(branchSplitIdx);
-
-  // Plain-node branch: `[RUN] ` log must precede the spawnSync('node', ...) call.
-  const nodeLogIdx = nodeBranch.indexOf('[RUN] ');
-  const nodeSpawnIdx = nodeBranch.indexOf("spawnSync('node'");
-  assert.ok(nodeLogIdx !== -1, 'plain-node branch must contain a `[RUN] ` log emission');
-  assert.ok(nodeSpawnIdx !== -1, "plain-node branch must contain a spawnSync('node', ...) call");
+  // `[RUN] ` log must precede the spawn('node', ...) call.
+  const logIdx = runEntrySrc.indexOf('[RUN] ');
+  const spawnIdx = runEntrySrc.indexOf("spawn('node'");
+  assert.ok(logIdx !== -1, 'runEntry must contain a `[RUN] ` log emission');
+  assert.ok(spawnIdx !== -1, "runEntry must contain a spawn('node', ...) call");
   assert.ok(
-    nodeLogIdx < nodeSpawnIdx,
-    'the `[RUN] ` marker must be logged before the plain-node spawnSync invocation'
-  );
-
-  // npm special-case branch: `[RUN] ` log must precede the spawnSync('npm', ...) call.
-  const npmLogIdx = npmBranch.indexOf('[RUN] ');
-  const npmSpawnIdx = npmBranch.indexOf("spawnSync('npm'");
-  assert.ok(npmLogIdx !== -1, 'npm branch must contain a `[RUN] ` log emission');
-  assert.ok(npmSpawnIdx !== -1, "npm branch must contain a spawnSync('npm', ...) call");
-  assert.ok(
-    npmLogIdx < npmSpawnIdx,
-    'the `[RUN] ` marker must be logged before the npm-branch spawnSync invocation'
+    logIdx < spawnIdx,
+    'the `[RUN] ` marker must be logged before the spawn invocation'
   );
 
   // (ii) Dynamically import run-tests.js purely for its TEST_FILES export.
