@@ -7,6 +7,7 @@
 
 Trust the delivery, not the demo — hand it a spec, get back a verified diff.
 
+English · [简体中文](./README.zh-CN.md)
 
 **[About](#about) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Recovery & batch](#recovery-batch-and-forensics) · [Why it exists](#why-it-exists) · [Scope](#scope) · [Reference](#reference) · [License](#license)**
 
