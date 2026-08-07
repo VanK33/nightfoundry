@@ -12,6 +12,7 @@ import { askYesNo } from '../prompt.js';
 import { generateRunReport, updateRunHistory } from '../../orchestrator/infra/run-report.js';
 import { writeFingerprint } from '../../orchestrator/core/dispersion-fingerprint.js';
 import { runFullTestSuite } from '../../orchestrator/gates/regression.js';
+import { computeTreeHash, readGreenMemo, recordGreenMemo } from '../../orchestrator/gates/test-memo.js';
 import config from '../../orchestrator/infra/config.js';
 import { deriveSpecJsonPath } from '../../orchestrator/core/spec-paths.js';
 import { activeHarnessDir, clearActiveRunPointer, harnessRoot } from '../../orchestrator/core/run-context.js';
@@ -54,6 +55,9 @@ export class TestGateError extends Error {
  */
 export function runFinalTestGate(projectRoot, flags = {}, deps = {}) {
   const _runFullTestSuite = deps.runFullTestSuite ?? runFullTestSuite;
+  const _computeTreeHash = deps.computeTreeHash ?? computeTreeHash;
+  const _readGreenMemo = deps.readGreenMemo ?? readGreenMemo;
+  const _recordGreenMemo = deps.recordGreenMemo ?? recordGreenMemo;
   if (flags['include-failed'] || flags['skip-test-gate']) return;
   const isDefaultCommand = config.execution.testAllCommand === DEFAULT_TEST_ALL_COMMAND;
   let hasTestAll = false;
@@ -62,6 +66,25 @@ export function runFinalTestGate(projectRoot, flags = {}, deps = {}) {
     hasTestAll = !!(pkg.scripts && pkg.scripts['test:all']);
   } catch { /* no readable package.json — nothing to gate on */ }
   if (!isDefaultCommand || hasTestAll) {
+    const command = config.execution.testAllCommand;
+    let preHash = null;
+    if (config.execution.testAllMemo) {
+      preHash = _computeTreeHash(projectRoot);
+      if (preHash) {
+        const memo = _readGreenMemo(projectRoot, {
+          treeHash: preHash,
+          command,
+          maxAgeMs: config.execution.testAllMemoMaxAgeMs,
+        });
+        if (memo) {
+          console.log(
+            `[archive] Final test gate: [test-memo] reusing green \`${command}\` result from ` +
+            `${memo.recordedAtIso ?? new Date(memo.timestamp).toISOString()} (tree hash unchanged).`
+          );
+          return;
+        }
+      }
+    }
     console.log(`[archive] Final test gate: running \`${config.execution.testAllCommand}\`...`);
     const testResult = _runFullTestSuite(projectRoot);
     if (testResult.exitCode === -1) {
@@ -80,6 +103,11 @@ export function runFinalTestGate(projectRoot, flags = {}, deps = {}) {
         `Fix the tests and re-run, or pass --skip-test-gate to override.\n` +
         `--- tail of test output ---\n${(testResult.output || '').slice(-2000)}`
       );
+    }
+    if (preHash && _computeTreeHash(projectRoot) === preHash) {
+      // Record only when the tree is byte-identical to what the suite ran
+      // against; a suite that dirtied the repo must not seed the memo.
+      try { _recordGreenMemo(projectRoot, { treeHash: preHash, command }); } catch { /* memo is an optimization — never fail a green gate on bookkeeping */ }
     }
     console.log('[archive] Final test gate passed.');
   } else {

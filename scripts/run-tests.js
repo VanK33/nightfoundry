@@ -422,6 +422,8 @@ export const TEST_FILES = [
   'test/test-suite-hermeticity.js',
   'test/test-cost-ceiling.js',
   'test/test-active-run-pointer-recovery.js',
+  'test/test-tree-hash-memo.js',
+  'test/test-final-gate-memo.js',
 ];
 
 /**

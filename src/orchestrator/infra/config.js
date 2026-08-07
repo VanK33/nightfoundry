@@ -207,6 +207,20 @@ const config = {
      */
     testCommand: 'npm test',
     testAllCommand: 'npm run test:all',
+
+    /**
+     * testAllMemo (true): reuse a GREEN full-suite result across the two
+     * tail runners (spec-criteria drain + archive/run final gate) when the
+     * working-tree content hash is unchanged (gates/test-memo.js). Any tree
+     * change forces a real re-run; red/timed-out results are never reused.
+     * Set false to always run the suite.
+     *
+     * testAllMemoMaxAgeMs (60 min): freshness ceiling on a memo hit —
+     * bounds staleness from changes the tree hash cannot see (node upgrade,
+     * npm install). The two tail runs are normally minutes apart.
+     */
+    testAllMemo: true,
+    testAllMemoMaxAgeMs: 3_600_000,
   },
 
   // --- Small-task mode limits ---

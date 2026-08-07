@@ -37,6 +37,8 @@ import fs from 'fs';
 import path from 'path';
 import { isMilestoneOnlyCheck, isMultiOwnerCheck } from '../agents/planner.js';
 import { withRunMarkerEnv } from '../core/run-marker.js';
+import { computeTreeHash, readGreenMemo, recordGreenMemo } from './test-memo.js';
+import config from '../infra/config.js';
 
 export const HARD_CHECK_DEFAULT_TIMEOUT_MS = 30_000;
 // 30 min: the drain typically runs right after a batch while the machine is
@@ -204,6 +206,29 @@ export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetF
   const failures = [];
 
   for (const check of milestoneOnly) {
+    // Tree-hash memo (gates/test-memo.js): when this check IS the full
+    // suite, a fresh green result for a byte-identical tree can be reused —
+    // and a green run here seeds the memo for the archive/run final gate.
+    const isFullSuite = config.execution.testAllMemo
+      && check.command.trim() === config.execution.testAllCommand;
+    let preHash = null;
+    if (isFullSuite) {
+      preHash = computeTreeHash(projectRoot);
+      if (preHash) {
+        const memo = readGreenMemo(projectRoot, {
+          treeHash: preHash,
+          command: config.execution.testAllCommand,
+          maxAgeMs: config.execution.testAllMemoMaxAgeMs,
+        });
+        if (memo) {
+          if (onLog) {
+            onLog(`  [spec-criteria drain] [test-memo] ${check.name}: reusing green \`${check.command}\` result from ${memo.recordedAtIso ?? new Date(memo.timestamp).toISOString()} (tree hash unchanged)`);
+          }
+          continue;
+        }
+      }
+    }
+
     if (onLog) onLog(`  [spec-criteria drain] running milestone-only check: ${check.name} — \`${check.command}\``);
 
     let exitCode = 0;
@@ -229,6 +254,12 @@ export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetF
       } else if (err.signal === 'SIGTERM' || err.code === 'ETIMEDOUT') {
         timedOut = true;
       }
+    }
+
+    if (exitCode === 0 && preHash && computeTreeHash(projectRoot) === preHash) {
+      // Seed the memo only when the tree is byte-identical to what the
+      // suite ran against; a suite that dirtied the repo must not seed it.
+      try { recordGreenMemo(projectRoot, { treeHash: preHash, command: config.execution.testAllCommand }); } catch { /* memo is an optimization — never fail a green check on bookkeeping */ }
     }
 
     if (exitCode !== 0) {
