@@ -124,6 +124,13 @@ a:hover {
   margin: 8px 16px 32px;
 }
 
+/* The author `display` above would otherwise defeat the `hidden` attribute
+   (UA display:none loses to any author display) — re-hide explicitly so an
+   archive without a report never shows a dead link. */
+.detail-page > #report-button[hidden] {
+  display: none;
+}
+
 /* (2f) Page main — vertical stack for the archives listing */
 .page-main {
   display: flex;

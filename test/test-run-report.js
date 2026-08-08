@@ -908,6 +908,40 @@ await test('T23: extractGoalFromSpec — terminates at the next ## heading', () 
   );
 });
 
+await test('T24: renderReportHtml — dark theme mirrors tokens.css, no legacy light background', () => {
+  const data = {
+    seq: '004',
+    headline: 'Dark theme test',
+    archivedAt: '2026-04-15T10:00:00.000Z',
+    totalCost: 1.0,
+    totalSessions: 4,
+    milestones: [],
+    goal: 'Test goal',
+    costByType: {},
+    findings: [],
+    taskStatuses: [],
+    diffSummary: '',
+    changelog: [],
+  };
+  const html = renderReportHtml(data);
+
+  // Tokens-sync comment marker must be present so the palette stays traceable.
+  assert.ok(
+    html.includes('palette mirrors src/ui/public/tokens.css'),
+    'Expected tokens-sync comment marker in report CSS',
+  );
+  // Dark ground token copied from tokens.css --bg.
+  assert.ok(
+    html.includes('#0E1116'),
+    'Expected dark --bg value #0E1116 in report CSS',
+  );
+  // Legacy light-theme body background must be gone.
+  assert.ok(
+    !html.includes('#f5f5f5'),
+    'Expected legacy light background #f5f5f5 to be removed',
+  );
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount} passed, ${failCount} failed`);
