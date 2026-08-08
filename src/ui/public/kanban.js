@@ -129,7 +129,7 @@ function renderState(state) {
 function renderInactive() {
   const container = document.getElementById('milestone-columns');
   container.innerHTML =
-    '<div class="inactive-placeholder">No active run. Start cc-orch to see live progress.</div>';
+    '<div class="inactive-placeholder submission-header">No active run — start a run and this page fills in live.</div>';
 }
 
 // ─── Render: cost ─────────────────────────────────────────────────────────────
@@ -148,15 +148,21 @@ function renderCost(cost) {
 // ─── Render: progress ─────────────────────────────────────────────────────────
 
 function renderProgress(state) {
-  let verified = 0;
+  // Terminal parity: count the terminal 'complete' status. 'verified' is a
+  // transient in-flight state (awaiting_verification → verified → complete)
+  // that persisted snapshots never show, so counting it reads as zero.
+  // 'invalidated' tasks are replan husks that never run — count neither in
+  // the denominator.
+  let complete = 0;
   let total = 0;
 
   for (const milestone of (state.milestones || [])) {
     for (const mission of (milestone.missions || [])) {
       for (const subMission of (mission.subMissions || [])) {
         for (const task of (subMission.tasks || [])) {
+          if (task.status === 'invalidated') continue;
           total++;
-          if (task.status === 'verified') verified++;
+          if (task.status === 'complete') complete++;
         }
       }
     }
@@ -164,8 +170,8 @@ function renderProgress(state) {
 
   const fill = document.getElementById('progress-fill');
   const text = document.getElementById('progress-text');
-  fill.style.width = total ? (verified / total * 100) + '%' : '0%';
-  text.textContent = `${verified} / ${total} tasks verified`;
+  fill.style.width = total ? (complete / total * 100) + '%' : '0%';
+  text.textContent = `${complete} / ${total} tasks complete`;
 }
 
 // ─── Verify panel ─────────────────────────────────────────────────────────────

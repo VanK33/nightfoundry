@@ -11,6 +11,19 @@
  *   TC5 — GET /api/archive/does-not-exist → 404
  *   TC6 — GET /api/archive/missing-spec-archive → specMd === null, other fields populated
  *   TC7 — GET /api/archive/missing-reviewer-archive → reviewerFindings === null
+ *   TC8 — manifest-less dir → degraded entry with id===dirname, degradedReason non-empty string
+ *   TC9 — unparseable manifest.json (invalid JSON) → same degraded-entry assertions
+ *   TC10 — non-object manifest.json (value 42) → same degraded-entry assertions, plus
+ *          degraded + healthy entries in the same archivesDir come back sorted ascending by id
+ *   TC11 — healthy entry shape unchanged: own-property key set is exactly the 7 original
+ *          fields (no 'degraded'/'degradedReason'), and id/slug/date/totalCostUsd/status
+ *          match the values derived from manifest.json
+ *   TC12 — no console.warn for degraded entries: a counting stub replaces console.warn for
+ *          the duration of a request over an all-degraded archivesDir, records 0 calls, and
+ *          the original console.warn is restored in a finally block
+ *   TC13 — task counters use the real state-machine statuses: verifiedTasks counts
+ *          'complete' (there is no 'verified' status), and 'invalidated' replan husks are
+ *          excluded from BOTH totalTasks and verifiedTasks
  */
 import { createServer } from '../src/ui/server.js';
 import assert from 'assert';
@@ -220,6 +233,407 @@ await test('TC7: GET /api/archive/missing-reviewer-archive → reviewerFindings=
       `Expected reviewerFindings===null, got ${JSON.stringify(json.reviewerFindings)}`
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// TC8: manifest-less dir → degraded entry
+// ---------------------------------------------------------------------------
+await test('TC8: manifest-less dir → degraded entry with id===dirname and non-empty degradedReason', async () => {
+  const archivesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-archives-degraded-'));
+  try {
+    const dirname = 'no-manifest-archive';
+    const archiveDir = path.join(archivesDir, dirname);
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.writeFileSync(path.join(archiveDir, 'state.json'), JSON.stringify({ milestones: {} }));
+
+    await withServer(archivesDir, async (base) => {
+      const { status, json } = await httpGet(`${base}/api/archives`);
+      assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+      assert.strictEqual(
+        json.archives.length,
+        1,
+        `Expected archives.length === 1, got ${json.archives.length}`
+      );
+      const entry = json.archives[0];
+      assert.strictEqual(
+        entry.id,
+        dirname,
+        `Expected entry.id === '${dirname}', got ${JSON.stringify(entry.id)}`
+      );
+      assert.strictEqual(
+        entry.degraded,
+        true,
+        `Expected entry.degraded === true, got ${JSON.stringify(entry.degraded)}`
+      );
+      assert.strictEqual(
+        typeof entry.degradedReason,
+        'string',
+        `Expected entry.degradedReason to be a string, got ${typeof entry.degradedReason}`
+      );
+      assert.ok(
+        entry.degradedReason.length > 0,
+        `Expected entry.degradedReason to be non-empty, got ${JSON.stringify(entry.degradedReason)}`
+      );
+    });
+  } finally {
+    fs.rmSync(archivesDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC9: unparseable manifest.json (invalid JSON) → degraded entry
+// ---------------------------------------------------------------------------
+await test('TC9: unparseable manifest.json → degraded entry with id===dirname and non-empty degradedReason', async () => {
+  const archivesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-archives-degraded-'));
+  try {
+    const dirname = 'bad-json-archive';
+    const archiveDir = path.join(archivesDir, dirname);
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.writeFileSync(path.join(archiveDir, 'manifest.json'), '{ this is not valid JSON');
+
+    await withServer(archivesDir, async (base) => {
+      const { status, json } = await httpGet(`${base}/api/archives`);
+      assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+      assert.strictEqual(
+        json.archives.length,
+        1,
+        `Expected archives.length === 1, got ${json.archives.length}`
+      );
+      const entry = json.archives[0];
+      assert.strictEqual(
+        entry.id,
+        dirname,
+        `Expected entry.id === '${dirname}', got ${JSON.stringify(entry.id)}`
+      );
+      assert.strictEqual(
+        entry.degraded,
+        true,
+        `Expected entry.degraded === true, got ${JSON.stringify(entry.degraded)}`
+      );
+      assert.strictEqual(
+        typeof entry.degradedReason,
+        'string',
+        `Expected entry.degradedReason to be a string, got ${typeof entry.degradedReason}`
+      );
+      assert.ok(
+        entry.degradedReason.length > 0,
+        `Expected entry.degradedReason to be non-empty, got ${JSON.stringify(entry.degradedReason)}`
+      );
+    });
+  } finally {
+    fs.rmSync(archivesDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC10: non-object manifest.json (value 42) → degraded entry; degraded +
+// healthy entries in the same archivesDir come back sorted ascending by id
+// ---------------------------------------------------------------------------
+await test('TC10: non-object manifest.json (42) → degraded entry; sorted ascending by id alongside a healthy entry', async () => {
+  const archivesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-archives-degraded-'));
+  try {
+    const degradedDirname = 'zzz-non-object-manifest-archive';
+    const degradedArchiveDir = path.join(archivesDir, degradedDirname);
+    fs.mkdirSync(degradedArchiveDir, { recursive: true });
+    fs.writeFileSync(path.join(degradedArchiveDir, 'manifest.json'), JSON.stringify(42));
+
+    const healthyDirname = 'aaa-healthy-archive';
+    const healthyArchiveDir = path.join(archivesDir, healthyDirname);
+    fs.mkdirSync(healthyArchiveDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(healthyArchiveDir, 'manifest.json'),
+      JSON.stringify({
+        id: 'healthy-archive',
+        name: 'healthy-archive',
+        seq: '001',
+        archivedAt: '2026-05-10T12:00:00.000Z',
+        milestones: [{ id: '001', status: 'complete' }],
+        totalCost: 1.23,
+      })
+    );
+
+    await withServer(archivesDir, async (base) => {
+      const { status, json } = await httpGet(`${base}/api/archives`);
+      assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+      assert.strictEqual(
+        json.archives.length,
+        2,
+        `Expected archives.length === 2, got ${json.archives.length}`
+      );
+
+      const degradedEntry = json.archives.find((e) => e.id === degradedDirname);
+      assert.ok(
+        degradedEntry,
+        `Expected an entry with id === '${degradedDirname}', got ${JSON.stringify(json.archives)}`
+      );
+      assert.strictEqual(
+        degradedEntry.degraded,
+        true,
+        `Expected degradedEntry.degraded === true, got ${JSON.stringify(degradedEntry.degraded)}`
+      );
+      assert.strictEqual(
+        typeof degradedEntry.degradedReason,
+        'string',
+        `Expected degradedEntry.degradedReason to be a string, got ${typeof degradedEntry.degradedReason}`
+      );
+      assert.ok(
+        degradedEntry.degradedReason.length > 0,
+        `Expected degradedEntry.degradedReason to be non-empty, got ${JSON.stringify(degradedEntry.degradedReason)}`
+      );
+
+      const ids = json.archives.map((e) => e.id);
+      const sortedIds = [...ids].sort((a, b) => String(a).localeCompare(String(b)));
+      assert.deepStrictEqual(
+        ids,
+        sortedIds,
+        `Expected archives to be sorted ascending by id, got ${JSON.stringify(ids)}`
+      );
+    });
+  } finally {
+    fs.rmSync(archivesDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC11: healthy entry shape unchanged — own keys are exactly the 7 original
+// fields (no 'degraded'/'degradedReason'), values match the manifest
+// ---------------------------------------------------------------------------
+await test('TC11: healthy entry shape unchanged — exact 7-key set, no degraded fields, values match manifest', async () => {
+  const archivesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-archives-shape-'));
+  try {
+    const healthyDirname = 'healthy-entry-archive';
+    const healthyArchiveDir = path.join(archivesDir, healthyDirname);
+    fs.mkdirSync(healthyArchiveDir, { recursive: true });
+    const manifest = {
+      id: 'healthy-entry-archive-id',
+      name: 'healthy-entry-archive',
+      archivedAt: '2026-01-01T00:00:00.000Z',
+      milestones: [{ id: '001', status: 'complete' }],
+      totalCost: 4.56,
+    };
+    fs.writeFileSync(path.join(healthyArchiveDir, 'manifest.json'), JSON.stringify(manifest));
+    fs.writeFileSync(path.join(healthyArchiveDir, 'state.json'), JSON.stringify({ milestones: {} }));
+
+    const degradedDirname = 'no-manifest-archive-shape';
+    const degradedArchiveDir = path.join(archivesDir, degradedDirname);
+    fs.mkdirSync(degradedArchiveDir, { recursive: true });
+    fs.writeFileSync(path.join(degradedArchiveDir, 'state.json'), JSON.stringify({ milestones: {} }));
+
+    await withServer(archivesDir, async (base) => {
+      const { status, json } = await httpGet(`${base}/api/archives`);
+      assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+      assert.strictEqual(
+        json.archives.length,
+        2,
+        `Expected archives.length === 2, got ${json.archives.length}`
+      );
+
+      const healthyEntry = json.archives.find((e) => e.id === manifest.id);
+      assert.ok(
+        healthyEntry,
+        `Expected an entry with id === '${manifest.id}', got ${JSON.stringify(json.archives)}`
+      );
+
+      const EXPECTED_KEYS = ['id', 'slug', 'date', 'totalCostUsd', 'totalTasks', 'verifiedTasks', 'status'];
+      const actualKeys = Object.keys(healthyEntry).sort();
+      const expectedSorted = [...EXPECTED_KEYS].sort();
+      assert.deepStrictEqual(
+        actualKeys,
+        expectedSorted,
+        `Expected healthy entry own-keys to be exactly ${JSON.stringify(expectedSorted)}, got ${JSON.stringify(actualKeys)}`
+      );
+      assert.ok(
+        !Object.prototype.hasOwnProperty.call(healthyEntry, 'degraded'),
+        `Expected healthy entry to NOT have key 'degraded', got keys: ${JSON.stringify(Object.keys(healthyEntry))}`
+      );
+      assert.ok(
+        !Object.prototype.hasOwnProperty.call(healthyEntry, 'degradedReason'),
+        `Expected healthy entry to NOT have key 'degradedReason', got keys: ${JSON.stringify(Object.keys(healthyEntry))}`
+      );
+
+      assert.strictEqual(
+        healthyEntry.id,
+        manifest.id,
+        `Expected healthyEntry.id === '${manifest.id}', got ${JSON.stringify(healthyEntry.id)}`
+      );
+      assert.strictEqual(
+        healthyEntry.slug,
+        manifest.name,
+        `Expected healthyEntry.slug === '${manifest.name}', got ${JSON.stringify(healthyEntry.slug)}`
+      );
+      assert.strictEqual(
+        healthyEntry.date,
+        manifest.archivedAt,
+        `Expected healthyEntry.date === '${manifest.archivedAt}', got ${JSON.stringify(healthyEntry.date)}`
+      );
+      assert.strictEqual(
+        healthyEntry.totalCostUsd,
+        manifest.totalCost,
+        `Expected healthyEntry.totalCostUsd === ${manifest.totalCost}, got ${JSON.stringify(healthyEntry.totalCostUsd)}`
+      );
+      assert.strictEqual(
+        healthyEntry.status,
+        'complete',
+        `Expected healthyEntry.status === 'complete', got ${JSON.stringify(healthyEntry.status)}`
+      );
+    });
+  } finally {
+    fs.rmSync(archivesDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC12: no console.warn for degraded entries — a counting stub replaces
+// console.warn for the duration of the request, records 0 calls, and the
+// original console.warn is restored in a finally block
+// ---------------------------------------------------------------------------
+await test('TC12: no console.warn for degraded entries', async () => {
+  const archivesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-archives-nowarn-'));
+  const originalWarn = console.warn;
+  let warnCallCount = 0;
+  try {
+    const noManifestDirname = 'no-manifest-archive-warn';
+    fs.mkdirSync(path.join(archivesDir, noManifestDirname), { recursive: true });
+    fs.writeFileSync(
+      path.join(archivesDir, noManifestDirname, 'state.json'),
+      JSON.stringify({ milestones: {} })
+    );
+
+    const badJsonDirname = 'bad-json-archive-warn';
+    fs.mkdirSync(path.join(archivesDir, badJsonDirname), { recursive: true });
+    fs.writeFileSync(
+      path.join(archivesDir, badJsonDirname, 'manifest.json'),
+      '{ this is not valid JSON'
+    );
+
+    const nonObjectDirname = 'non-object-manifest-archive-warn';
+    fs.mkdirSync(path.join(archivesDir, nonObjectDirname), { recursive: true });
+    fs.writeFileSync(
+      path.join(archivesDir, nonObjectDirname, 'manifest.json'),
+      JSON.stringify(42)
+    );
+
+    console.warn = (...args) => {
+      warnCallCount++;
+    };
+
+    await withServer(archivesDir, async (base) => {
+      const { status, json } = await httpGet(`${base}/api/archives`);
+      assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+      assert.strictEqual(
+        json.archives.length,
+        3,
+        `Expected archives.length === 3, got ${json.archives.length}`
+      );
+      for (const entry of json.archives) {
+        assert.strictEqual(
+          entry.degraded,
+          true,
+          `Expected entry.degraded === true, got ${JSON.stringify(entry.degraded)}`
+        );
+      }
+      assert.strictEqual(
+        warnCallCount,
+        0,
+        `Expected console.warn to be called 0 times, got ${warnCallCount}`
+      );
+    });
+  } finally {
+    console.warn = originalWarn;
+    fs.rmSync(archivesDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC13: verifiedTasks counts status 'complete'; 'invalidated' replan husks are
+// excluded from both totalTasks and verifiedTasks
+// ---------------------------------------------------------------------------
+await test("TC13: verifiedTasks counts 'complete'; 'invalidated' husks excluded from both counts", async () => {
+  // The shared fixture's complete-archive mission carries 2 complete + 1 pending
+  // + 1 invalidated husk → totalTasks 3 (husk excluded), verifiedTasks 2.
+  await withServer(ARCHIVES_MOCK_DETAIL, async (base) => {
+    const { status, json } = await httpGet(`${base}/api/archives`);
+    assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+
+    const entry = json.archives.find((e) => e.slug === 'complete-archive' || e.id === 'complete-archive');
+    assert.ok(
+      entry,
+      `Expected an entry for complete-archive, got ${JSON.stringify(json.archives)}`
+    );
+    assert.strictEqual(
+      entry.totalTasks,
+      3,
+      `Expected totalTasks === 3 (invalidated husk excluded), got ${JSON.stringify(entry.totalTasks)}`
+    );
+    assert.strictEqual(
+      entry.verifiedTasks,
+      2,
+      `Expected verifiedTasks === 2 (the two 'complete' tasks), got ${JSON.stringify(entry.verifiedTasks)}`
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TC14: a synthetic archive whose tasks are ALL 'invalidated' reports 0/0 —
+// pins that husks never reach the denominator
+// ---------------------------------------------------------------------------
+await test('TC14: all-invalidated tasks → totalTasks 0 and verifiedTasks 0', async () => {
+  const archivesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-archives-husk-'));
+  try {
+    const dirname = 'husk-archive';
+    const archiveDir = path.join(archivesDir, dirname);
+    fs.mkdirSync(path.join(archiveDir, 'state'), { recursive: true });
+    fs.writeFileSync(
+      path.join(archiveDir, 'manifest.json'),
+      JSON.stringify({
+        id: 'husk-archive',
+        name: 'husk-archive',
+        archivedAt: '2026-05-10T12:00:00.000Z',
+        milestones: [{ id: '001', status: 'complete' }],
+        totalCost: 0,
+      })
+    );
+    fs.writeFileSync(
+      path.join(archiveDir, 'state.json'),
+      JSON.stringify({
+        milestones: { '001': { id: '001', missions: { '001-001': { id: '001-001' } } } },
+      })
+    );
+    fs.writeFileSync(
+      path.join(archiveDir, 'state', 'mission-001-001.json'),
+      JSON.stringify({
+        id: '001-001',
+        subMissions: {
+          '001-001-001': {
+            id: '001-001-001',
+            tasks: {
+              '001-001-001-001': { id: '001-001-001-001', status: 'invalidated' },
+              '001-001-001-002': { id: '001-001-001-002', status: 'invalidated' },
+            },
+          },
+        },
+      })
+    );
+
+    await withServer(archivesDir, async (base) => {
+      const { status, json } = await httpGet(`${base}/api/archives`);
+      assert.strictEqual(status, 200, `Expected status 200, got ${status}`);
+      const entry = json.archives[0];
+      assert.ok(entry, `Expected one entry, got ${JSON.stringify(json.archives)}`);
+      assert.strictEqual(
+        entry.totalTasks,
+        0,
+        `Expected totalTasks === 0, got ${JSON.stringify(entry.totalTasks)}`
+      );
+      assert.strictEqual(
+        entry.verifiedTasks,
+        0,
+        `Expected verifiedTasks === 0, got ${JSON.stringify(entry.verifiedTasks)}`
+      );
+    });
+  } finally {
+    fs.rmSync(archivesDir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------

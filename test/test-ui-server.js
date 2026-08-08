@@ -26,8 +26,10 @@ async function test(name, fn) {
 
 async function run() {
 
-// TC1: GET / returns 200 with v0 marker
-await test('GET / returns 200 with v0 marker', async () => {
+// TC1: GET / returns 200 serving the dashboard page. The marker is the full
+// dashboard title — 'Night Foundry' alone appears on all three pages, so it
+// would not prove that / served index.html rather than any other page.
+await test('GET / returns 200 with the dashboard-specific title marker', async () => {
   const server = createServer().listen(0);
   try {
     const port = server.address().port;
@@ -45,8 +47,8 @@ await test('GET / returns 200 with v0 marker', async () => {
     });
     assert.strictEqual(res.statusCode, 200, `Expected status 200, got ${res.statusCode}`);
     assert.ok(
-      body.includes('cc-orch ui v0'),
-      `Expected body to include 'cc-orch ui v0', body was: ${body.slice(0, 500)}`
+      body.includes('Night Foundry — dashboard'),
+      `Expected body to include the dashboard-specific title 'Night Foundry — dashboard', body was: ${body.slice(0, 500)}`
     );
   } finally {
     server.close(() => {});

@@ -92,9 +92,11 @@ const populatedState = {
         id: '001-001-001',
         description: 'SM1',
         tasks: [
-          { id: '001-001-001-001', description: 'A short task', status: 'verified',    retryCount: 0, targetFiles: [] },
+          { id: '001-001-001-001', description: 'A short task', status: 'complete',    retryCount: 0, targetFiles: [] },
           { id: '001-001-001-002', description: 'B',            status: 'in_progress', retryCount: 0, targetFiles: [] },
           { id: '001-001-001-003', description: 'C',            status: 'pending',     retryCount: 0, targetFiles: [] },
+          // invalidated = replan husk; must be excluded from the progress denominator
+          { id: '001-001-001-004', description: 'D (husk)',     status: 'invalidated', retryCount: 0, targetFiles: [] },
         ],
       }],
     }],
@@ -135,8 +137,8 @@ await test('TC1: rendered DOM has correct counts of milestone-column/mission-car
       'Expected 1 .submission-header'
     );
     assert.strictEqual(
-      document.querySelectorAll('.task-card').length, 3,
-      'Expected 3 .task-card'
+      document.querySelectorAll('.task-card').length, 4,
+      'Expected 4 .task-card (invalidated husks still render as cards; they are only excluded from the progress denominator)'
     );
   } finally {
     dom.window.close();
@@ -144,18 +146,18 @@ await test('TC1: rendered DOM has correct counts of milestone-column/mission-car
 });
 
 // TC2: status classes — underscore→dash transform
-await test('TC2: task cards carry correct status classes (task-verified / task-in-progress / task-pending)', async () => {
+await test('TC2: task cards carry correct status classes (task-complete / task-in-progress / task-pending)', async () => {
   const { dom, document } = await bootDom({ stateResp: populatedState, costResp: populatedCost });
   try {
-    const verifiedCard    = document.querySelector('[data-task-id="001-001-001-001"]');
+    const completeCard    = document.querySelector('[data-task-id="001-001-001-001"]');
     const inProgressCard  = document.querySelector('[data-task-id="001-001-001-002"]');
     const pendingCard     = document.querySelector('[data-task-id="001-001-001-003"]');
-    assert.ok(verifiedCard,   'Expected card for 001-001-001-001');
+    assert.ok(completeCard,   'Expected card for 001-001-001-001');
     assert.ok(inProgressCard, 'Expected card for 001-001-001-002');
     assert.ok(pendingCard,    'Expected card for 001-001-001-003');
     assert.ok(
-      verifiedCard.classList.contains('task-verified'),
-      `verified card classes: ${verifiedCard.className}`
+      completeCard.classList.contains('task-complete'),
+      `complete card classes: ${completeCard.className}`
     );
     assert.ok(
       inProgressCard.classList.contains('task-in-progress'),
@@ -189,8 +191,9 @@ await test('TC3: #cost-display text === \'$1.23\' and title contains planner and
   }
 });
 
-// TC4: progress bar width ~33.33% and progress text
-await test('TC4: #progress-fill width ≈ 33.33% and #progress-text matches "1 / 3 tasks verified"', async () => {
+// TC4: progress bar width ~33.33% and progress text — the invalidated
+// fixture task must be excluded from the denominator (3 countable, 1 complete)
+await test('TC4: #progress-fill width ≈ 33.33% and #progress-text matches "1 / 3 tasks complete"', async () => {
   const { dom, document } = await bootDom({ stateResp: populatedState, costResp: populatedCost });
   try {
     const fill = document.getElementById('progress-fill');
@@ -202,8 +205,8 @@ await test('TC4: #progress-fill width ≈ 33.33% and #progress-text matches "1 /
     );
     assert.match(
       text.textContent,
-      /^1 \/ 3 tasks verified$/,
-      `Expected '1 / 3 tasks verified', got '${text.textContent}'`
+      /^1 \/ 3 tasks complete$/,
+      `Expected '1 / 3 tasks complete', got '${text.textContent}'`
     );
   } finally {
     dom.window.close();

@@ -331,6 +331,8 @@ export const TEST_FILES = [
   'test/test-plan-structure-lint.js',
   'test/test-plan-lint-retry.js',
   'test/test-archive-final-test-gate.js',
+  'test/test-archive-view-url.js',
+  'test/test-ui-theme-tokens.js',
   'test/test-test-registration-gate.js',
   'test/test-test-registration-pipeline.js',
   'test/test-gate-external-project.js',

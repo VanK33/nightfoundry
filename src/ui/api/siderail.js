@@ -82,7 +82,10 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
     const active = state.globalStatus === 'active';
 
     // ── Tree-walk: milestones → missions → state/mission-<id>.json →
-    // subMissions → tasks. Mirrors api/state.js and api/archives.js. ─────────
+    // subMissions → tasks. Mirrors api/state.js and api/archives.js.
+    // Counters key off the terminal 'complete' status; 'verified' is a
+    // transient in-flight state that persisted snapshots never show.
+    // 'invalidated' tasks are replan husks — excluded from the total. ────────
     let tasksTotal = 0;
     let tasksComplete = 0;
     let milestonesTotal = 0;
@@ -111,8 +114,9 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
         for (const sm of Object.values(subMissionsMap)) {
           const tasksMap = sm.tasks ?? {};
           for (const task of Object.values(tasksMap)) {
+            if (task.status === 'invalidated') continue;
             tasksTotal++;
-            if (task.status === 'verified') tasksComplete++;
+            if (task.status === 'complete') tasksComplete++;
             if (task.status === 'in_progress' && current === null) {
               current = {
                 taskId: task.id,
@@ -124,7 +128,7 @@ export function createSiderailHandler({ projectRoot, archivesDir }) {
               };
             }
 
-            if (task.status === 'verified' && task.startedAt && task.completedAt) {
+            if (task.status === 'complete' && task.startedAt && task.completedAt) {
               const spanStartMs = Date.parse(task.startedAt);
               const spanEndMs = Date.parse(task.completedAt);
               if (Number.isFinite(spanStartMs) && Number.isFinite(spanEndMs)) {

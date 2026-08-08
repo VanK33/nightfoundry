@@ -3,14 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>cc-orch ui v0 — kanban dashboard</title>
+    <title>Night Foundry — dashboard</title>
+    <link rel="stylesheet" href="tokens.css">
     <link rel="stylesheet" href="kanban.css">
   </head>
   <body>
-    <header id="app-header">
-      <h1>cc-orch dashboard</h1>
-      <nav id="top-nav"><a href="/archives.html">Archives</a></nav>
-      <div id="cost-display"></div>
+    <header id="app-header" class="app-bar">
+      <div class="brand">
+        <h1 class="brand-title"><span class="brand-word">Night</span> <span class="brand-word-strong">Foundry</span></h1>
+        <span class="brand-qualifier">dashboard</span>
+      </div>
+      <div class="header-actions">
+        <div id="cost-display"></div>
+        <nav id="top-nav"><a class="nav-link nav-link-floating" href="/archives.html">Archives</a></nav>
+      </div>
     </header>
     <main id="milestone-columns"></main>
     <aside id="verify-panel" hidden></aside>

@@ -45,11 +45,42 @@ function compareValues(a, b, key) {
   }
 }
 
+// ─── Timestamp formatting ─────────────────────────────────────────────────────
+
+/**
+ * formatTimestamp — renders an ISO timestamp as `YYYY-MM-DD HH:mm`.
+ *
+ * Purely string-based so the output is deterministic (no locale- or
+ * timezone-dependent APIs). Date-only values render as `YYYY-MM-DD`;
+ * empty/missing values render as ''; anything unrecognised passes through.
+ * Sorting always compares the RAW value, never this formatted string.
+ */
+function formatTimestamp(value) {
+  if (!value) return '';
+  const s = String(value);
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/.exec(s);
+  if (!m) return s;
+  return m[2] ? m[1] + ' ' + m[2] : m[1];
+}
+
+// ─── Badge state ───────────────────────────────────────────────────────────────
+
+/**
+ * archiveBadgeState — derives the status badge state token for an archive row.
+ * Returns 'degraded' when archive.degraded === true, 'failed' when
+ * archive.status === 'failed', and 'clean' otherwise.
+ */
+function archiveBadgeState(archive) {
+  if (archive && archive.degraded === true) return 'degraded';
+  if (archive && archive.status === 'failed') return 'failed';
+  return 'clean';
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 function render() {
-  const tbody = document.getElementById('archives-tbody');
-  tbody.innerHTML = '';
+  const list = document.getElementById('archives-list');
+  list.innerHTML = '';
 
   const sorted = archives.slice().sort((a, b) => {
     const cmp = compareValues(a, b, sortState.key);
@@ -57,25 +88,60 @@ function render() {
   });
 
   for (const archive of sorted) {
-    const tr = document.createElement('tr');
-    tr.dataset.id = archive.id;
+    const isDegraded = archive && archive.degraded === true;
 
-    const cells = [
-      archive.id,
-      archive.slug,
-      archive.date || '',
-      '$' + Number(archive.totalCostUsd || 0).toFixed(2),
-      archive.verifiedTasks + '/' + archive.totalTasks,
-      archive.status,
-    ];
-
-    for (const text of cells) {
-      const td = document.createElement('td');
-      td.textContent = text;
-      tr.appendChild(td);
+    // Presentational styling comes from the shared kanban.css classes
+    // (.archive-row-card, .status-badge, .numeric) — no inline styles here.
+    const row = document.createElement('div');
+    row.className = 'archive-row archive-row-card';
+    row.dataset.id = archive.id;
+    if (isDegraded) {
+      row.classList.add('archive-row-degraded');
     }
 
-    tbody.appendChild(tr);
+    // (1) status badge — state derived from archiveBadgeState()
+    const state = archiveBadgeState(archive);
+    const badge = document.createElement('span');
+    badge.className = 'status-badge ' + state;
+    badge.textContent = state;
+    row.appendChild(badge);
+
+    // (2) spec name
+    const nameEl = document.createElement('span');
+    nameEl.className = 'archive-name';
+    nameEl.textContent = archive.slug || archive.id || '';
+    row.appendChild(nameEl);
+
+    // (3) date, complete/total task count, and cost — grouped, right-aligned, monospace
+    const metrics = document.createElement('span');
+    metrics.className = 'archive-metrics numeric';
+
+    const dateEl = document.createElement('span');
+    dateEl.className = 'archive-date';
+    dateEl.textContent = formatTimestamp(archive.date);
+    metrics.appendChild(dateEl);
+
+    const countEl = document.createElement('span');
+    countEl.className = 'archive-count';
+    countEl.textContent = (Number(archive.verifiedTasks) || 0) + '/' + (Number(archive.totalTasks) || 0);
+    metrics.appendChild(countEl);
+
+    const costEl = document.createElement('span');
+    costEl.className = 'archive-cost';
+    costEl.textContent = '$' + Number(archive.totalCostUsd || 0).toFixed(2);
+    metrics.appendChild(costEl);
+
+    row.appendChild(metrics);
+
+    // (4) degraded label — only rendered when archive.degraded === true
+    if (isDegraded) {
+      const degradedLabel = document.createElement('span');
+      degradedLabel.className = 'archive-degraded-label';
+      degradedLabel.textContent = 'legacy archive (no manifest)';
+      row.appendChild(degradedLabel);
+    }
+
+    list.appendChild(row);
   }
 }
 
@@ -84,7 +150,7 @@ function render() {
 const DEFAULT_DIR_DESC = new Set(['date', 'totalCostUsd']);
 
 function installSortHandlers() {
-  const ths = document.querySelectorAll('#archives-table thead th[data-sort-key]');
+  const ths = document.querySelectorAll('#archives-sort [data-sort-key]');
   for (const th of ths) {
     th.addEventListener('click', () => {
       const key = th.dataset.sortKey;
@@ -103,11 +169,11 @@ function installSortHandlers() {
 // ─── Row click → navigation ───────────────────────────────────────────────────
 
 function installRowClickHandler() {
-  const tbody = document.getElementById('archives-tbody');
-  tbody.addEventListener('click', (e) => {
-    const tr = e.target.closest('tr');
-    if (!tr) return;
-    const id = tr.dataset.id;
+  const list = document.getElementById('archives-list');
+  list.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-id]');
+    if (!row || !list.contains(row)) return;
+    const id = row.dataset.id;
     if (!id) return;
     window.location.href = '/archive-detail.html?id=' + encodeURIComponent(id);
   });
@@ -122,7 +188,13 @@ document.addEventListener('DOMContentLoaded', () => {
   fetch('/api/archives')
     .then(r => r.json())
     .then(data => {
-      archives = Array.isArray(data) ? data : [];
+      if (data && Array.isArray(data.archives)) {
+        archives = data.archives;
+      } else if (Array.isArray(data)) {
+        archives = data;
+      } else {
+        archives = [];
+      }
       render();
     })
     .catch(err => {

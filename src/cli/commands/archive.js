@@ -116,6 +116,36 @@ export function runFinalTestGate(projectRoot, flags = {}, deps = {}) {
 }
 
 /**
+ * Probe whether the local UI server is reachable at http://localhost:<port>/.
+ * Issues a HEAD request aborted after at most 500ms. Never throws or rejects —
+ * resolves `true` only when the request completes without error, and `false`
+ * on any non-response, abort/timeout, or thrown error. Does not start, stop,
+ * or otherwise manage the UI server process.
+ *
+ * @param {number} [port=3939] - Port the UI server would be listening on
+ * @returns {Promise<boolean>}
+ */
+export async function probeUiReachable(port = 3939) {
+  let timer;
+  try {
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), 500);
+    try {
+      const res = await fetch(`http://localhost:${port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      return !!res;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    if (timer) clearTimeout(timer);
+    return false;
+  }
+}
+
+/**
  * Capture git metadata for the project.
  * Runs 'git rev-parse HEAD' and 'git status --porcelain' in projectRoot.
  *
@@ -866,6 +896,11 @@ export function validateChangelogSources(changelog, diffSummary) {
  * @param {function} [deps.promptYesNo] - Override for promptYesNo(message) -> Promise<boolean>
  * @param {function} [deps.getGitInfo] - Override for getGitInfo(projectRoot) -> { gitHead, gitStatus }
  * @param {function} [deps.getDiffSummary] - Override for getDiffSummary(projectRoot, archivesDir, deps) -> string
+ * @param {function} [deps.probeUiReachable] - Override for probeUiReachable(port) -> Promise<boolean>.
+ *   Used at the end of a successful archive to decide whether to print a direct
+ *   "View this run:" link (UI server already reachable) or a "Run 'cc-orch ui' then
+ *   open:" hint (server not reachable). A rejecting/throwing probe is caught and
+ *   treated the same as a falsy result.
  */
 
 export async function archive(projectRoot, name, flags = {}, deps = {}) {
@@ -880,6 +915,7 @@ export async function archive(projectRoot, name, flags = {}, deps = {}) {
   const TokenTrackerImpl = deps.TokenTracker ?? TokenTracker;
   const SessionManagerImpl = deps.SessionManager ?? SessionManager;
   const _runFullTestSuite = deps.runFullTestSuite ?? runFullTestSuite;
+  const _probeUiReachable = deps.probeUiReachable ?? probeUiReachable;
 
   // ── Final test gate ──────────────────────────────────────────────────────
   // A SUCCESSFUL archive must not persist a spec whose full test suite does not
@@ -1306,6 +1342,24 @@ export async function archive(projectRoot, name, flags = {}, deps = {}) {
       }
     } catch (err) {
       console.warn(`[archive] ccusage export failed (continuing): ${err.message}`);
+    }
+
+    // Step 12: Print a link to view this run in the UI. Probe whether the UI
+    // server is already reachable; when it is, print a direct link, otherwise
+    // print a hint for how to start the UI and open the same link. The probe
+    // is best-effort — a rejecting/throwing injected probe must not prevent
+    // archive() from completing and returning archiveDir.
+    const viewUrl = `http://localhost:3939/archive-detail.html?id=${archiveDirName}`;
+    let uiReachable = false;
+    try {
+      uiReachable = await _probeUiReachable(3939);
+    } catch {
+      uiReachable = false;
+    }
+    if (uiReachable) {
+      console.log(`[archive] View this run: ${viewUrl}`);
+    } else {
+      console.log(`[archive] Run 'cc-orch ui' then open: ${viewUrl}`);
     }
 
     return archiveDir;

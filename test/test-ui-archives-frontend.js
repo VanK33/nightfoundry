@@ -148,9 +148,9 @@ async function bootArchiveDetail({ archiveId = 'test-1', responseData }) {
 
 // Plain array — matches what /api/archives returns and what archives.js expects
 const archivesFixture = [
-  { id: 'test-1', slug: 'a', date: '2026-05-10', totalCostUsd: 1.5, totalTasks: 5, verifiedTasks: 3, status: 'complete' },
-  { id: 'test-2', slug: 'b', date: '2026-05-09', totalCostUsd: 0.5, totalTasks: 3, verifiedTasks: 1, status: 'in_progress' },
-  { id: 'test-3', slug: 'c', date: '2026-05-08', totalCostUsd: 2.0, totalTasks: 7, verifiedTasks: 7, status: 'complete' },
+  { id: 'test-1', slug: 'a', date: '2026-05-10T09:07:00.000Z', totalCostUsd: 1.5, totalTasks: 5, verifiedTasks: 3, status: 'complete' },
+  { id: 'test-2', slug: 'b', date: '2026-05-09T23:45:12.000Z', totalCostUsd: 0.5, totalTasks: 3, verifiedTasks: 1, status: 'in_progress' },
+  { id: 'test-3', slug: 'c', date: '2026-05-08T00:00:00.000Z', totalCostUsd: 2.0, totalTasks: 7, verifiedTasks: 7, status: 'complete' },
 ];
 
 // State fixture with one milestone→mission→subMission→task for archive-detail rendering
@@ -169,7 +169,7 @@ const detailState = {
         id: '001-001-001',
         description: 'SubMission 1',
         tasks: [
-          { id: '001-001-001-001', description: 'Task 1', status: 'verified', retryCount: 0, targetFiles: [] },
+          { id: '001-001-001-001', description: 'Task 1', status: 'complete', retryCount: 0, targetFiles: [] },
         ],
       }],
     }],
@@ -194,34 +194,37 @@ async function run() {
 
 // ── SCEN_A ────────────────────────────────────────────────────────────────────
 
-// TC1: 3 fetched archives render 3 <tr> rows in #archives-tbody
-await test('TC1 SCEN_A: 3 fetched archives render 3 <tr> rows in #archives-tbody', async () => {
+// TC1: 3 fetched archives render 3 .archive-row rows in #archives-list
+// (selectors track the card-row DOM introduced by the demo-grade-ui pass:
+//  rows are div.archive-row inside #archives-list; sort headers are
+//  [data-sort-key] spans inside #archives-sort.)
+await test('TC1 SCEN_A: 3 fetched archives render 3 .archive-row rows in #archives-list', async () => {
   const { dom, document } = await bootArchives(archivesFixture);
   try {
-    const rows = document.querySelectorAll('#archives-tbody tr');
+    const rows = document.querySelectorAll('#archives-list .archive-row');
     assert.strictEqual(rows.length, 3, `Expected 3 rows, got ${rows.length}`);
   } finally {
     dom.window.close();
   }
 });
 
-// TC2: clicking <th data-sort-key="totalCostUsd"> reorders rows; fetch invoked exactly once
-await test('TC2 SCEN_A: clicking <th data-sort-key="totalCostUsd"> reorders rows; fetch invoked exactly once', async () => {
+// TC2: clicking the [data-sort-key="totalCostUsd"] header reorders rows; fetch invoked exactly once
+await test('TC2 SCEN_A: clicking [data-sort-key="totalCostUsd"] reorders rows; fetch invoked exactly once', async () => {
   const { dom, document, getFetchCount } = await bootArchives(archivesFixture);
   try {
     // Capture initial DOM order (initial sort: date desc → test-1, test-2, test-3)
-    const rowsBefore = [...document.querySelectorAll('#archives-tbody tr')].map(r => r.dataset.id);
+    const rowsBefore = [...document.querySelectorAll('#archives-list .archive-row')].map(r => r.dataset.id);
     assert.strictEqual(rowsBefore.length, 3, 'Expected 3 rows before sort');
 
     // Click the totalCostUsd sort header
-    const th = document.querySelector('th[data-sort-key="totalCostUsd"]');
-    assert.ok(th, 'Expected <th data-sort-key="totalCostUsd"> to exist');
+    const th = document.querySelector('#archives-sort [data-sort-key="totalCostUsd"]');
+    assert.ok(th, 'Expected an #archives-sort [data-sort-key="totalCostUsd"] header to exist');
     th.click();
 
     // Sort is synchronous (no re-fetch); flush any remaining microtasks
     await new Promise(r => setTimeout(r, 0));
 
-    const rowsAfter = [...document.querySelectorAll('#archives-tbody tr')].map(r => r.dataset.id);
+    const rowsAfter = [...document.querySelectorAll('#archives-list .archive-row')].map(r => r.dataset.id);
     assert.strictEqual(rowsAfter.length, 3, 'Expected 3 rows after sort');
 
     // totalCostUsd desc (first click): 2.0→test-3, 1.5→test-1, 0.5→test-2
@@ -235,6 +238,82 @@ await test('TC2 SCEN_A: clicking <th data-sort-key="totalCostUsd"> reorders rows
     assert.strictEqual(
       getFetchCount(), 1,
       `Expected fetch to be invoked exactly once, got ${getFetchCount()}`
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+// Same-minute fixture — the discriminating input for TC2b.
+//
+// 'older-same-minute' and 'newer-same-minute' collapse to the SAME rendered
+// 'YYYY-MM-DD HH:mm' text and differ only in seconds, and the older of the two
+// is listed FIRST in fetch order. A comparator that sorted the formatted string
+// would see them as equal, and the stable sort would leave the older one ahead;
+// only a RAW-ISO comparison puts the newer one first under date-desc. That is
+// the mutation TC2b is built to catch.
+const sameMinuteFixture = [
+  { id: 'older-same-minute', slug: 'd', date: '2026-05-10T09:07:05.000Z', totalCostUsd: 3.0, totalTasks: 2, verifiedTasks: 2, status: 'complete' },
+  { id: 'newer-same-minute', slug: 'a', date: '2026-05-10T09:07:30.000Z', totalCostUsd: 1.5, totalTasks: 5, verifiedTasks: 3, status: 'complete' },
+  { id: 'previous-day',      slug: 'b', date: '2026-05-09T23:45:12.000Z', totalCostUsd: 0.5, totalTasks: 3, verifiedTasks: 1, status: 'in_progress' },
+];
+
+// TC2b: .archive-date renders the ISO timestamp as `YYYY-MM-DD HH:mm`, and the
+//       date sort compares the RAW ISO value — pinned by two rows whose rendered
+//       text is identical and whose raw values differ only in seconds
+await test('TC2b SCEN_A: dates render as "YYYY-MM-DD HH:mm"; date sort compares the raw ISO seconds', async () => {
+  const { dom, document } = await bootArchives(sameMinuteFixture);
+  try {
+    const rows = [...document.querySelectorAll('#archives-list .archive-row')];
+    const dates = rows.map(r => r.querySelector('.archive-date').textContent);
+
+    // Formatting: seconds are dropped, so the first two rows render identically.
+    assert.deepStrictEqual(
+      dates,
+      ['2026-05-10 09:07', '2026-05-10 09:07', '2026-05-09 23:45'],
+      `Expected YYYY-MM-DD HH:mm formatted dates, got ${JSON.stringify(dates)}`
+    );
+
+    // Raw-ISO sort: initial state is date desc. The two same-minute rows are
+    // indistinguishable once formatted, so this ordering is only reachable by
+    // comparing the raw values — a formatted-string comparator ties them and the
+    // stable sort would emit 'older-same-minute' first (its fetch-order position).
+    assert.deepStrictEqual(
+      rows.map(r => r.dataset.id),
+      ['newer-same-minute', 'older-same-minute', 'previous-day'],
+      `Expected date-desc to rank the raw ISO seconds (newer first), got ${JSON.stringify(rows.map(r => r.dataset.id))}`
+    );
+
+    // Toggling to asc still reads the raw value; the same-minute pair flips back.
+    const th = document.querySelector('#archives-sort [data-sort-key="date"]');
+    assert.ok(th, 'Expected an #archives-sort [data-sort-key="date"] header to exist');
+    th.click();
+    await new Promise(r => setTimeout(r, 0));
+
+    const asc = [...document.querySelectorAll('#archives-list .archive-row')].map(r => r.dataset.id);
+    assert.deepStrictEqual(
+      asc,
+      ['previous-day', 'older-same-minute', 'newer-same-minute'],
+      `Expected date-asc order previous-day, older-same-minute, newer-same-minute, got ${JSON.stringify(asc)}`
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+// TC2c: a missing/empty date renders as the empty string (unchanged behaviour)
+await test('TC2c SCEN_A: missing date renders as empty string', async () => {
+  const withMissingDate = [
+    { id: 'test-1', slug: 'a', date: null, totalCostUsd: 1.5, totalTasks: 5, verifiedTasks: 3, status: 'complete' },
+  ];
+  const { dom, document } = await bootArchives(withMissingDate);
+  try {
+    const dateEl = document.querySelector('#archives-list .archive-row .archive-date');
+    assert.ok(dateEl, 'Expected an .archive-date element');
+    assert.strictEqual(
+      dateEl.textContent,
+      '',
+      `Expected empty string for a null date, got: "${dateEl.textContent}"`
     );
   } finally {
     dom.window.close();

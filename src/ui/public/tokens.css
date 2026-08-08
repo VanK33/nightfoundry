@@ -1,0 +1,28 @@
+/* tokens.css — theme custom properties for the nightfoundry UI (dark-only) */
+
+:root {
+  /* ground & surfaces (blue-biased near-black; deliberate dark-only) */
+  --bg: #0E1116;
+  --surface: #151B23;
+  --surface-2: #1C242E;
+  --border: #27303C;
+  /* text */
+  --text: #E6EDF3;
+  --text-2: #98A5B3;
+  --text-3: #5E6A76;
+  /* brand accent: foundry ember (links, active states, brand marks) */
+  --accent: #E8853D;
+  --accent-hover: #F09A55;
+  /* semantic status (separate from accent; never used as decoration) */
+  --ok: #3FB950;      /* clean / passed */
+  --fail: #F85149;    /* failed */
+  --warn: #D29922;    /* parked / degraded / warning */
+  --info: #58A6FF;    /* running / info */
+  /* shadow (the ONLY rgba literal outside the color tokens lives here) */
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  /* type */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* scale (px): labels 12 (uppercase, letter-spacing .06em), ui 13, body 15, section 20, page title 26 */
+  /* spacing scale (px): 4, 8, 16, 24; radius: 6px; borders: 1px solid var(--border) */
+}

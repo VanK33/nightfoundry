@@ -96,13 +96,19 @@ process.on('exit', () => {
 
 // ---------------------------------------------------------------------------
 // mkPopulatedHarness — creates a temp dir with a `.harness` tree whose
-// milestones/missions/tasks span verified/in_progress/pending statuses, plus
-// an `archives/*/manifest.json` fixture supplying timing data.
+// milestones/missions/tasks span complete/in_progress/pending/invalidated
+// statuses, plus an `archives/*/manifest.json` fixture supplying timing data.
 //
-//   milestone 001 (complete)   → mission 001-001 → 2 verified tasks
-//   milestone 002 (in_progress) → mission 002-001 → verified + in_progress + pending
+// Statuses are the ones persisted state actually carries: the terminal
+// 'complete' (never the transient 'verified', which snapshots never show) and
+// the 'invalidated' replan husk, which must be excluded from tasksTotal.
 //
-// tasksTotal = 5, tasksComplete = 3 (2 + 1 verified), remainingTasks = 2
+//   milestone 001 (complete)   → mission 001-001 → 2 complete tasks
+//   milestone 002 (in_progress) → mission 002-001 → complete + in_progress +
+//                                 pending + 1 invalidated husk
+//
+// tasksTotal = 5 (the husk is excluded), tasksComplete = 3 (2 + 1 complete),
+// remainingTasks = 2
 // milestonesTotal = 2, milestonesComplete = 1
 //
 // archives/archive-001/manifest.json: startedAt..archivedAt spans 600000ms
@@ -173,7 +179,7 @@ function mkPopulatedHarness(signal) {
             '001-001-001-001': {
               id: '001-001-001-001',
               description: 'Task A (done)',
-              status: 'verified',
+              status: 'complete',
               createdAt: '2026-01-01T00:00:00.000Z',
               retryCount: 0,
               targetFiles: ['src/a.js'],
@@ -181,7 +187,7 @@ function mkPopulatedHarness(signal) {
             '001-001-001-002': {
               id: '001-001-001-002',
               description: 'Task B (done)',
-              status: 'verified',
+              status: 'complete',
               createdAt: '2026-01-01T00:00:00.000Z',
               retryCount: 0,
               targetFiles: ['src/b.js'],
@@ -208,7 +214,7 @@ function mkPopulatedHarness(signal) {
             '002-001-001-001': {
               id: '002-001-001-001',
               description: 'Task C (done)',
-              status: 'verified',
+              status: 'complete',
               createdAt: '2026-01-01T00:01:00.000Z',
               retryCount: 0,
               targetFiles: ['src/c.js'],
@@ -226,6 +232,19 @@ function mkPopulatedHarness(signal) {
               description: 'Task E (pending)',
               status: 'pending',
               createdAt: '2026-01-01T00:03:00.000Z',
+              retryCount: 0,
+              targetFiles: [],
+            },
+            // Replan husk — must land in NEITHER tasksTotal nor tasksComplete.
+            // It carries startedAt/completedAt so it would also corrupt the
+            // duration average if the timing branch ever counted it.
+            '002-001-001-004': {
+              id: '002-001-001-004',
+              description: 'Task F (invalidated husk)',
+              status: 'invalidated',
+              createdAt: '2026-01-01T00:04:00.000Z',
+              startedAt: '2026-01-01T00:04:00.000Z',
+              completedAt: '2026-01-01T02:04:00.000Z',
               retryCount: 0,
               targetFiles: [],
             },
@@ -311,9 +330,11 @@ await test('TC1: GET /api/siderail on populated fixture → 200 JSON', async () 
 });
 
 // ---------------------------------------------------------------------------
-// TC2: progress counts match the fixture
+// TC2: progress counts match the fixture — tasksComplete counts the terminal
+// 'complete' status, and the fixture's 'invalidated' husk is in neither the
+// numerator nor the denominator (6 tasks exist; tasksTotal is 5)
 // ---------------------------------------------------------------------------
-await test('TC2: progress counts (tasksComplete/tasksTotal, milestonesComplete/milestonesTotal) match fixture', async () => {
+await test('TC2: progress counts count \'complete\' and exclude the \'invalidated\' husk', async () => {
   const { tmp, harnessDir, archivesDir } = mkPopulatedHarness();
   dirsToCleanup.push(tmp);
   try {
@@ -433,7 +454,10 @@ await test('TC4d: seeded gate:true → pendingDecision:true', async () => {
 // ---------------------------------------------------------------------------
 // TC5: timing has elapsedMs, remainingTasks; avgTaskDurationMs is derived
 // in-run from completed tasks' own startedAt/completedAt spans and is
-// omitted when the fixture's verified tasks expose no such spans
+// omitted when the fixture's complete tasks expose no such spans. The
+// fixture's invalidated husk carries a span for realism; note the husk is
+// excluded by the counter's `continue` BEFORE the timing branch, so this
+// test pins the count exclusion, not the timing gate itself.
 // ---------------------------------------------------------------------------
 await test('TC5: timing has elapsedMs, remainingTasks; avgTaskDurationMs omitted (no in-run task spans in fixture)', async () => {
   const { tmp, harnessDir, archivesDir } = mkPopulatedHarness();
@@ -452,7 +476,7 @@ await test('TC5: timing has elapsedMs, remainingTasks; avgTaskDurationMs omitted
       );
       assert.strictEqual(
         json.timing.avgTaskDurationMs, undefined,
-        `Expected timing.avgTaskDurationMs to be omitted (fixture's verified tasks have no startedAt/completedAt), got ${json.timing.avgTaskDurationMs}`
+        `Expected timing.avgTaskDurationMs to be omitted (fixture's complete tasks have no startedAt/completedAt, and the invalidated husk's span must not count), got ${json.timing.avgTaskDurationMs}`
       );
     });
   } finally {

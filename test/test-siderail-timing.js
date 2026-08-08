@@ -8,7 +8,7 @@
  * Run: node test/test-siderail-timing.js
  *
  * Covers:
- *   TC1 — two completed (verified) tasks with startedAt/completedAt spans of
+ *   TC1 — two completed tasks with startedAt/completedAt spans of
  *         100000ms and 200000ms → timing.avgTaskDurationMs === 150000 (the
  *         arithmetic mean of the per-completed-task spans)
  *   TC2 — no completed task exposes both startedAt/completedAt (or none are
@@ -139,7 +139,7 @@ test('TC1: two completed tasks spanning 100000ms and 200000ms → avgTaskDuratio
     '001-001-001-001': {
       id: '001-001-001-001',
       description: 'Task A (done)',
-      status: 'verified',
+      status: 'complete',
       createdAt: '2026-01-01T00:00:00.000Z',
       retryCount: 0,
       targetFiles: ['src/a.js'],
@@ -149,7 +149,7 @@ test('TC1: two completed tasks spanning 100000ms and 200000ms → avgTaskDuratio
     '001-001-001-002': {
       id: '001-001-001-002',
       description: 'Task B (done)',
-      status: 'verified',
+      status: 'complete',
       createdAt: '2026-01-01T00:02:00.000Z',
       retryCount: 0,
       targetFiles: ['src/b.js'],
@@ -218,7 +218,7 @@ test('TC2+TC3: no completed task with both timestamps → avgTaskDurationMs key 
 });
 
 // ---------------------------------------------------------------------------
-// TC2b: a verified task WITHOUT startedAt/completedAt also does not
+// TC2b: a complete task WITHOUT startedAt/completedAt also does not
 // contribute to avgTaskDurationMs — the key must still be absent even when
 // tasks are complete, as long as none carry usable spans.
 // ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ test('TC2b: completed task lacking startedAt/completedAt → avgTaskDurationMs k
     '001-001-001-001': {
       id: '001-001-001-001',
       description: 'Task A (done, no timestamps)',
-      status: 'verified',
+      status: 'complete',
       createdAt: '2026-01-01T00:00:00.000Z',
       retryCount: 0,
       targetFiles: ['src/a.js'],

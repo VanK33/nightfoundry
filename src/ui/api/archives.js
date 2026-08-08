@@ -31,13 +31,19 @@ export function createArchivesListHandler({ archivesDir }) {
       try {
         manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
       } catch (err) {
-        console.warn(
-          `[archives] malformed or missing manifest.json in ${dirname}: ${err.message}`
-        );
+        archives.push({
+          id: dirname,
+          degraded: true,
+          degradedReason: `malformed or missing manifest.json in ${dirname}: ${err.message}`,
+        });
         continue;
       }
       if (!manifest || typeof manifest !== 'object') {
-        console.warn(`[archives] manifest.json in ${dirname} is not an object — skipping`);
+        archives.push({
+          id: dirname,
+          degraded: true,
+          degradedReason: `manifest.json in ${dirname} is not an object`,
+        });
         continue;
       }
 
@@ -87,8 +93,12 @@ export function createArchivesListHandler({ archivesDir }) {
               for (const sm of Object.values(subMissionsMap)) {
                 const tasksMap = sm.tasks ?? {};
                 for (const task of Object.values(tasksMap)) {
+                  // 'invalidated' tasks are replan husks — excluded from both counts
+                  if (task.status === 'invalidated') continue;
                   totalTasks++;
-                  if (task.status === 'verified') {
+                  // verifiedTasks counts the terminal status 'complete'; 'verified' is a
+                  // transient in-flight state that persisted snapshots never show
+                  if (task.status === 'complete') {
                     verifiedTasks++;
                   }
                 }

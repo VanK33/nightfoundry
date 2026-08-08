@@ -3,28 +3,28 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>cc-orch — archives</title>
+    <title>Night Foundry — archives</title>
+    <link rel="stylesheet" href="tokens.css">
     <link rel="stylesheet" href="kanban.css">
   </head>
   <body>
-    <nav>
-      <a href="/">Home</a>
-    </nav>
-    <main>
-      <table id="archives-table">
-        <thead>
-          <tr>
-            <th data-sort-key="id">ID</th>
-            <th data-sort-key="slug">Slug</th>
-            <th data-sort-key="date">Date</th>
-            <th data-sort-key="totalCostUsd">Total Cost (USD)</th>
-            <th data-sort-key="verifiedTasks">Tasks (verified/total)</th>
-            <th data-sort-key="totalTasks">Total Tasks</th>
-            <th data-sort-key="status">Status</th>
-          </tr>
-        </thead>
-        <tbody id="archives-tbody"></tbody>
-      </table>
+    <header class="app-bar">
+      <nav class="page-nav"><a class="nav-link" href="/">← Dashboard</a></nav>
+      <h1 class="page-title">Archives</h1>
+    </header>
+    <main class="page-main">
+      <!-- Column headers, grid-aligned with the .archive-row cells below;
+           each header doubles as its column's sort control. -->
+      <div id="archives-sort" class="list-header">
+        <span data-sort-key="status" class="col-status">Status</span>
+        <span data-sort-key="slug" class="col-spec">Spec</span>
+        <span class="list-header-metrics">
+          <span data-sort-key="date">Date</span>
+          <span data-sort-key="verifiedTasks" title="tasks complete / total">Tasks</span>
+          <span data-sort-key="totalCostUsd">Cost</span>
+        </span>
+      </div>
+      <div id="archives-list"></div>
     </main>
     <script src="/archives.js"></script>
   </body>

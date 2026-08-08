@@ -1,23 +1,146 @@
 /* kanban.css — UI shell styles for the nightfoundry kanban board */
 
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 /* (1) Body — padding-bottom reserves space for the fixed progress bar */
 body {
   margin: 0;
   padding-bottom: 24px;
-  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
 }
 
-/* (2) App header */
-#app-header {
+/* (2) App header — cost chip anchored top-right via flex space-between */
+#app-header,
+.app-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
   padding: 8px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
-/* (10) Cost display — tabular numbers + hover tooltip support */
+/* (2a) Anchor base — no default blue/purple links anywhere */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+/* (2b) Nav link — pill-shaped button used for back links and top nav */
+.nav-link {
+  display: inline-block;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.nav-link:hover {
+  color: var(--accent-hover);
+  background: var(--surface-2);
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
+/* (2c) Brand wordmark — ember rule + weight contrast, muted qualifier */
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+}
+
+.brand-title {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+}
+
+.brand-title .brand-word {
+  font-weight: 300;
+  color: var(--text-2);
+}
+
+.brand-title .brand-word-strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.brand-qualifier {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* (2d) Page title — archives listing and archive-detail headers.
+   .page-nav sits left; the title takes the remaining row so the header
+   reads "back link · title" instead of pushing the title to the edge. */
+.app-bar .page-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-title {
+  margin: 0;
+  margin-right: auto;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.page-title-mono {
+  margin-right: auto;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* (2e) Archive-detail page — align top-level blocks with the header's gutter.
+   #kanban-root is excluded: #milestone-columns brings its own 16px gutter. */
+.detail-page > section:not(#kanban-root),
+.detail-page > .section-label {
+  margin: 8px 16px;
+}
+
+.detail-page > #report-button {
+  display: inline-block;
+  margin: 8px 16px 32px;
+}
+
+/* (2f) Page main — vertical stack for the archives listing */
+.page-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+
+/* (10) Cost display — mono tabular-numbers chip, top-right of #app-header */
 #cost-display {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
   cursor: help;
 }
 
@@ -29,6 +152,7 @@ body {
   gap: 16px;
   overflow-x: auto;
   padding: 0 16px 16px;
+  background: var(--bg);
 }
 
 /* (4) Milestone column and mission card */
@@ -36,31 +160,41 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
 }
 
 .mission-card {
-  border: 1px solid #ddd;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
+  color: var(--text);
 }
 
 /* (5) Sub-mission swimlane subheader */
 .submission-header {
   font-weight: 600;
   padding: 4px 0;
-  border-bottom: 1px solid #eee;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
 }
 
 /* (6) Task cards */
 .task-card {
-  border-left: 4px solid gray;
+  background: var(--surface);
+  color: var(--text);
+  border-left: 4px solid var(--text-3);
   padding: 6px 8px;
   margin: 4px 0;
   cursor: pointer;
 }
 
 .task-card .task-id {
-  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-family: var(--font-mono);
+  color: var(--text-2);
 }
 
 .task-card .task-desc {
@@ -69,36 +203,38 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
 }
 
-/* (7) Five status border colors */
+/* (7) Five status border colors — mapped to semantic tokens */
 .task-pending {
-  border-left-color: gray;
+  border-left-color: var(--text-3);
 }
 
 .task-in-progress {
-  border-left-color: blue;
+  border-left-color: var(--info);
 }
 
-.task-verified {
-  border-left-color: green;
+.task-complete {
+  border-left-color: var(--ok);
 }
 
 .task-failed {
-  border-left-color: red;
+  border-left-color: var(--fail);
 }
 
 .task-blocked {
-  border-left-color: orange;
+  border-left-color: var(--warn);
 }
 
-/* (7a) Archived milestone — desaturated status palette + softer card affordance */
-#milestone-columns.archived .task-pending { border-left-color: #bbb; }
-.archived .task-in-progress { border-left-color: #9aa5b1; animation: none; }
-.archived .task-verified    { border-left-color: #8fb89a; }
-.archived .task-failed      { border-left-color: #c79a9a; }
-.archived .task-blocked     { border-left-color: #d6b07a; }
-.archived .task-card        { box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+/* (7a) Archived milestone — same semantic tokens, muted via opacity only */
+#milestone-columns.archived .task-pending { border-left-color: var(--text-3); }
+.archived .task-in-progress { border-left-color: var(--info); animation: none; }
+.archived .task-complete    { border-left-color: var(--ok); }
+.archived .task-failed      { border-left-color: var(--fail); }
+.archived .task-blocked     { border-left-color: var(--warn); }
+.archived .task-card        { opacity: 0.6; box-shadow: var(--shadow); }
+.archived .mission-card     { opacity: 0.85; }
 
 /* (8) Verifier panel — fixed right drawer */
 #verify-panel {
@@ -107,8 +243,10 @@ body {
   top: 0;
   bottom: 24px;
   width: 360px;
-  background: #fff;
-  border-left: 1px solid #ccc;
+  background: var(--surface);
+  color: var(--text);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
   padding: 16px;
   overflow-y: auto;
 }
@@ -124,12 +262,12 @@ body {
   right: 0;
   bottom: 0;
   height: 24px;
-  background: #eee;
+  background: var(--surface-2);
 }
 
 #progress-fill {
   height: 100%;
-  background: #4caf50;
+  background: var(--ok);
   width: 0%;
   transition: width 0.3s;
 }
@@ -140,4 +278,168 @@ body {
   top: 50%;
   transform: translate(-50%, -50%);
   font-size: 12px;
+  color: var(--text);
+}
+
+/* (11) Archive row-card — surface card used by archives.html / archive-detail.html */
+.archive-row-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  color: var(--text);
+}
+
+/* (12) Status badge — base plus clean/failed/degraded variants.
+   Fixed min-width keeps the badge column (and the name column after it)
+   vertically aligned across rows and under the Status header. */
+.status-badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 2px 8px;
+  min-width: 10ch;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-badge.clean {
+  color: var(--ok);
+  border: 1px solid var(--ok);
+}
+
+.status-badge.failed {
+  color: var(--fail);
+  border: 1px solid var(--fail);
+}
+
+.status-badge.degraded {
+  color: var(--warn);
+  border: 1px solid var(--warn);
+}
+
+/* (13) Conclusion band — surface-2 background strip */
+.conclusion-band {
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* (14) Section label — small uppercase heading */
+.section-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* (15) Numeric — mono tabular-nums for cost/count cells */
+.numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* (15b) Header right cluster — cost chip with the Archives entry floating
+   at its right, styled as a raised pill */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-link-floating {
+  box-shadow: var(--shadow);
+  border-color: var(--accent);
+}
+
+.nav-link-floating:hover {
+  background: var(--surface-2);
+}
+
+/* (16) Archives list rows — layout for .archive-row-card consumers
+   (migrated from archives.js inline styles; colors via tokens only) */
+.archive-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+}
+
+.archive-row .archive-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.archive-row .archive-metrics {
+  /* Fixed-width, separator-divided metric cells so date / task-count / cost
+     align into clean vertical columns across rows. Column widths budget for
+     the cells' 12px horizontal padding (~3ch) ON TOP of the content:
+     date "2026-08-07 20:43" = 16ch + padding → 20ch; tasks "20/20" → 9ch;
+     cost "$127.13" → 11ch. Keep in sync with .list-header-metrics. */
+  margin-left: auto;
+  display: grid;
+  /* Absolute px, NOT ch: ch is font-relative, and the header row uses a
+     smaller font than the row cells — ch-sized columns silently diverge. */
+  grid-template-columns: 172px 84px 100px;
+  align-items: center;
+}
+
+.archive-row .archive-metrics > span {
+  padding: 0 16px;
+  border-left: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.archive-row-degraded,
+.archive-row-degraded .archive-name,
+.archive-row-degraded .archive-degraded-label {
+  color: var(--text-3);
+}
+
+/* (17) Archives column headers — grid-aligned with .archive-row cells;
+   each label doubles as that column's sort control.
+   The `#archives-sort [data-sort-key]` selector is a pinned DOM contract. */
+#archives-sort {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  /* 12px horizontal padding + 1px border mirrors .archive-row-card's inset
+     so the header cells sit exactly over the row cells */
+  padding: 4px 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+#archives-sort .col-status {
+  min-width: 10ch;
+}
+
+.list-header-metrics {
+  margin-left: auto;
+  display: grid;
+  /* Must match .archive-row .archive-metrics column widths exactly —
+     absolute px so the two grids can never diverge across font sizes */
+  grid-template-columns: 172px 84px 100px;
+  align-items: center;
+}
+
+.list-header-metrics > [data-sort-key] {
+  /* All headers align-front (left), sitting exactly over the cell content */
+  padding: 0 16px;
+  text-align: left;
+}
+
+#archives-sort [data-sort-key] {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  cursor: pointer;
+  user-select: none;
+}
+
+#archives-sort [data-sort-key]:hover {
+  color: var(--text);
 }
