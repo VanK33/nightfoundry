@@ -411,9 +411,10 @@ await test('TC5 SCEN_C: #milestone-columns.classList.contains("archived") === tr
 // ── SCEN_D ────────────────────────────────────────────────────────────────────
 
 // TC6a: runReportRelPath='report.html' with id='test-1' →
-//        #report-button.getAttribute('href') === '/archives/test-1/RUN-REPORT.html'
+//        #report-button.getAttribute('href') === '/archives/test-1/report.html'
+//        (filename comes from the API's runReportRelPath, not a frontend hardcode)
 //        #report-button.getAttribute('target') === '_blank'
-await test('TC6a SCEN_D: runReportRelPath set → #report-button href="/archives/test-1/RUN-REPORT.html" target="_blank"', async () => {
+await test('TC6a SCEN_D: runReportRelPath set → #report-button href="/archives/test-1/report.html" target="_blank"', async () => {
   const { dom, document } = await bootArchiveDetail({ archiveId: 'test-1', responseData: detailResp });
   try {
     const reportBtn = document.getElementById('report-button');
@@ -422,8 +423,8 @@ await test('TC6a SCEN_D: runReportRelPath set → #report-button href="/archives
     const href = reportBtn.getAttribute('href');
     assert.strictEqual(
       href,
-      '/archives/test-1/RUN-REPORT.html',
-      `Expected href="/archives/test-1/RUN-REPORT.html", got: "${href}"`
+      '/archives/test-1/report.html',
+      `Expected href="/archives/test-1/report.html", got: "${href}"`
     );
 
     const target = reportBtn.getAttribute('target');

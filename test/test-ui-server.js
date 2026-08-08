@@ -55,6 +55,39 @@ await test('GET / returns 200 with the dashboard-specific title marker', async (
   }
 });
 
+// TC1b: /archives/<id>/report.html is served from the archivesDir static
+// mount — the archive-detail report button depends on this route existing.
+await test('GET /archives/<id>/report.html serves the archived report from archivesDir', async () => {
+  const os = await import('os');
+  const fs = await import('fs');
+  const path = await import('path');
+  const tmpArchives = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-server-archives-'));
+  fs.mkdirSync(path.join(tmpArchives, 'test-1'));
+  fs.writeFileSync(path.join(tmpArchives, 'test-1', 'report.html'), '<html>REPORT-MARKER</html>', 'utf8');
+
+  const server = createServer({ archivesDir: tmpArchives }).listen(0);
+  try {
+    const port = server.address().port;
+    const { res, body } = await new Promise((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${port}/archives/test-1/report.html`, (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve({ res, body: Buffer.concat(chunks).toString() }));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(5000, () => {
+        req.destroy(new Error('Request timed out after 5000ms — server did not respond'));
+      });
+    });
+    assert.strictEqual(res.statusCode, 200, `Expected status 200, got ${res.statusCode}`);
+    assert.ok(body.includes('REPORT-MARKER'), `Expected the archived report body, got: ${body.slice(0, 200)}`);
+  } finally {
+    server.close(() => {});
+    fs.rmSync(tmpArchives, { recursive: true, force: true });
+  }
+});
+
 // TC2: graceful shutdown via server.close()
 await test('graceful shutdown via server.close()', async () => {
   const sigintBefore = process.listenerCount('SIGINT');

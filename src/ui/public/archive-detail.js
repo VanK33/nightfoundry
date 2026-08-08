@@ -126,10 +126,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // (d) #report-button
+  // (d) #report-button — the report's filename comes from the API
+  // (runReportRelPath, e.g. 'report.html'), never hardcoded here.
   const reportBtn = document.getElementById('report-button');
   if (response.runReportRelPath) {
-    reportBtn.href = '/archives/' + encodeURIComponent(id) + '/RUN-REPORT.html';
+    reportBtn.href = '/archives/' + encodeURIComponent(id) + '/' + response.runReportRelPath;
     reportBtn.target = '_blank';
   } else {
     reportBtn.hidden = true;

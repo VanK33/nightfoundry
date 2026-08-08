@@ -21,6 +21,10 @@ export function createServer({ projectRoot = process.cwd(), archivesDir = path.j
   app.get('/api/cost', createCostHandler({ projectRoot }));
   app.get('/api/task/:id/verify', createTaskVerifyHandler({ projectRoot }));
 
+  // Serve archived run artifacts (report.html and friends) so links like
+  // /archives/<id>/report.html from the archive-detail page resolve.
+  app.use('/archives', express.static(archivesDir));
+
   app.use('/', express.static(path.join(__dirname, 'public')));
 
   return {
