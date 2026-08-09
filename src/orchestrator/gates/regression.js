@@ -28,14 +28,19 @@ const RUN_NPM_TEST_TIMEOUT_MS = 120_000;
  * exitCode 0 on success, non-zero on failure, -1 on timeout or when the
  * child was terminated by any signal. `signal` carries the signal name
  * (e.g. 'SIGKILL') when the child was killed by a signal, else null.
+ *
+ * @param {string} projectRoot
+ * @param {object} [deps={}]  - { execSync? } injection seam; defaults to the
+ *   real execSync imported from 'child_process'.
  */
-export function runTestCommand(projectRoot) {
+export function runTestCommand(projectRoot, deps = {}) {
+  const _execSync = deps.execSync ?? execSync;
   let exitCode = 0;
   let output = '';
   let signal = null;
 
   try {
-    const stdout = execSync(config.execution.testCommand, {
+    const stdout = _execSync(config.execution.testCommand, {
       cwd: projectRoot,
       encoding: 'utf8',
       timeout: RUN_NPM_TEST_TIMEOUT_MS,
@@ -268,7 +273,7 @@ Sibling missions legitimately modify other files in the shared working tree; cha
  * Mission-level regression: does the codebase satisfy what the mission described?
  * Spawns a verifier session with broad scope (mission plan + all task summaries).
  */
-export async function verifyMission({ missionId, missionPlan, verifier, projectRoot, harnessDir, onLog }) {
+export async function verifyMission({ missionId, missionPlan, verifier, projectRoot, harnessDir, onLog, deps = {} }) {
   onLog(`  Running mission regression for ${missionId}...`);
 
   const missionStateFile = path.join(harnessDir, 'state', `mission-${missionId}.json`);
@@ -398,7 +403,7 @@ Check:
     passed = true;
     onLog(`  Mission ${missionId} regression: PASSED`);
   } else {
-    const smokeResult = runTestCommand(projectRoot);
+    const smokeResult = runTestCommand(projectRoot, deps);
     const textSignal = structuredVerdictPassed({ structured: cleanedStructured });
 
     if (smokeResult.exitCode === 0 && textSignal) {
@@ -425,7 +430,7 @@ Check:
  * Milestone-level regression: does the codebase deliver what the spec/milestone described?
  * Final delivery gate — user decides on failure.
  */
-export async function verifyMilestone({ milestoneId, milestoneDesc, specPath, verifier, projectRoot, harnessDir, onLog }) {
+export async function verifyMilestone({ milestoneId, milestoneDesc, specPath, verifier, projectRoot, harnessDir, onLog, deps = {} }) {
   onLog(`\n  Running milestone regression for ${milestoneId}...`);
 
   // Collect mission summaries
@@ -524,7 +529,7 @@ This is the final gate before delivery. Check:
   } else if (result.verified) {
     passed = true;
   } else {
-    const smokeResult = runTestCommand(projectRoot);
+    const smokeResult = runTestCommand(projectRoot, deps);
     const textSignal = structuredVerdictPassed({ structured: cleanedStructured });
 
     if (smokeResult.exitCode === 0 && textSignal) {

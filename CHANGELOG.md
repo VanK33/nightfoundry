@@ -1,3 +1,11 @@
+## [0.2.14] - 2026-08-09 — Add archive replay driver and engine injection seams
+
+### New features
+- Add archive-based replay driver CLI with --probe mode for corpus analysis
+- Add replay library with archive loader, session factory, and replay comparator
+- Enable constructor-injectable sessionManager, command executors, snapshot operations, and phantom-write checks
+- Add comprehensive test coverage for replay library and driver (28 test cases total)
+
 ## [0.2.13] - 2026-08-06 — Add planner session rotation with K-mission and token-tier limits
 
 ### New features

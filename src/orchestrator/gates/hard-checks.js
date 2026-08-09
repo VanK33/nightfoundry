@@ -54,7 +54,17 @@ function truncate(str, max = OUTPUT_TRUNCATE_CHARS) {
   return str.slice(0, max) + `\n... (truncated, ${str.length - max} more chars)`;
 }
 
-function runOne(check, projectRoot) {
+// When deps.runCommand is supplied it is called instead of execSync, with
+// the identical (command, options) pair — its returned stdout, or the error
+// it throws, drives the same classification logic as the execSync default.
+function execCommand(command, options, runCommand) {
+  if (runCommand) {
+    return runCommand(command, options);
+  }
+  return execSync(command, options);
+}
+
+function runOne(check, projectRoot, runCommand) {
   const expectExitCode = check.expectExitCode ?? DEFAULT_EXPECT_EXIT_CODE;
   const timeoutMs = check.timeout != null ? check.timeout * 1000 : HARD_CHECK_DEFAULT_TIMEOUT_MS;
 
@@ -64,13 +74,13 @@ function runOne(check, projectRoot) {
   let timedOut = false;
 
   try {
-    stdout = execSync(check.command, {
+    stdout = execCommand(check.command, {
       cwd: projectRoot,
       encoding: 'utf8',
       timeout: timeoutMs,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: withRunMarkerEnv(),
-    });
+    }, runCommand);
   } catch (err) {
     exitCode = err.status != null ? err.status : -1;
     stdout = (err.stdout || '').toString();
@@ -140,7 +150,8 @@ function formatReport(taskId, results) {
   return lines.join('\n');
 }
 
-export async function runHardChecks(harnessDir, taskId, projectRoot) {
+export async function runHardChecks(harnessDir, taskId, projectRoot, deps = {}) {
+  const { runCommand } = deps;
   const verifyPath = path.join(harnessDir, 'verify', `task-${taskId}.json`);
   if (!fs.existsSync(verifyPath)) {
     throw new Error(`verify.json not found for task ${taskId}: ${verifyPath}`);
@@ -154,7 +165,7 @@ export async function runHardChecks(harnessDir, taskId, projectRoot) {
   }
 
   const checks = Array.isArray(verify.hardChecks) ? verify.hardChecks : [];
-  const results = checks.map((check) => runOne(check, projectRoot));
+  const results = checks.map((check) => runOne(check, projectRoot, runCommand));
 
   // Write the report regardless of pass/fail.
   const verificationDir = path.join(harnessDir, 'verification');
@@ -197,9 +208,13 @@ export async function runHardChecks(harnessDir, taskId, projectRoot) {
  *   isMilestoneOnlyCheck; omit for legacy zero-token-only classification.
  *   `activeTasks`: every non-invalidated planned task, forwarded to
  *   isMultiOwnerCheck; omit to accept milestone-only checks alone
+ * @param {{runCommand?: (command: string, options: object) => string}} [deps] -
+ *   `runCommand`: when supplied, called instead of execSync with the same
+ *   (command, options) pair for each check's execution.
  * @returns {{passed: boolean, failures: {name: string, command: string, exitCode: number, outputTail: string}[]}}
  */
-export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetFiles, activeTasks } = {}) {
+export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetFiles, activeTasks } = {}, deps = {}) {
+  const { runCommand } = deps;
   const milestoneOnly = (Array.isArray(checks) ? checks : []).filter((c) =>
     isMilestoneOnlyCheck(c, specTargetFiles, projectRoot)
     || (Array.isArray(activeTasks) && isMultiOwnerCheck(c, activeTasks, projectRoot)));
@@ -236,14 +251,14 @@ export function runMilestoneOnlyChecks(checks, projectRoot, { onLog, specTargetF
     let stderr = '';
     let timedOut = false;
     try {
-      stdout = execSync(check.command, {
+      stdout = execCommand(check.command, {
         cwd: projectRoot,
         encoding: 'utf8',
         timeout: MILESTONE_ONLY_CHECK_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: withRunMarkerEnv(),
-      });
+      }, runCommand);
     } catch (err) {
       exitCode = err.status != null ? err.status : -1;
       stdout = (err.stdout || '').toString();

@@ -88,11 +88,11 @@ export function recordGateOverride(harnessDir, taskId, gate, evidence) {
   }
 }
 
-export async function applyHardCheckGate(task, verifyResult, label, harnessDir, projectRoot, onLog) {
+export async function applyHardCheckGate(task, verifyResult, label, harnessDir, projectRoot, onLog, deps = {}) {
   let hardCheckGate = null;
   let hardCheckUnavailable = false;
   try {
-    hardCheckGate = await runHardChecks(harnessDir, task.id, projectRoot);
+    hardCheckGate = await runHardChecks(harnessDir, task.id, projectRoot, deps);
   } catch (hcErr) {
     hardCheckUnavailable = true;
     onLog('    Task ' + task.id + ': hard-check gate FAILED — verify.json missing or unreadable: ' + hcErr.message);

@@ -438,6 +438,8 @@ export const TEST_FILES = [
   'test/test-tree-hash-memo.js',
   'test/test-final-gate-memo.js',
   'test/test-parallel-runner.js',
+  'test/test-replay-lib.js',
+  'test/test-replay-driver.js',
 ];
 
 // Per-child captured-output ceiling, matching the old spawnSync maxBuffer:

@@ -217,7 +217,33 @@ class Pipeline {
     this._archive = opts.archive || archive;
     this._runFinalTestGate = opts.runFinalTestGate || runFinalTestGate;
 
-    this.sessionManager = new SessionManager();
+    // Injection seam for snapshot capture/restore so tests can drive the
+    // Pipeline's before/after/last-failed snapshot lifecycle without the
+    // real filesystem-backed snapshots.js implementation. Production passes
+    // nothing and uses the real snapshotFiles/restoreSnapshot.
+    this._snapshotFiles = opts.snapshotFiles || snapshotFiles;
+    this._restoreSnapshot = opts.restoreSnapshot || restoreSnapshot;
+
+    // Injection seam for the phantom-write predicate so tests can drive the
+    // disambiguation-probe route deterministically without the real
+    // filesystem-backed snapshots.js implementation. Production passes
+    // nothing and uses the real assertChangesLanded.
+    this._assertChangesLanded = opts.assertChangesLanded || assertChangesLanded;
+
+    // Injection seam for the hard-check gate's runCommand (and any other
+    // hard-check dependencies) so tests can drive both hard-check call
+    // sites deterministically without shelling out. Production passes
+    // nothing and each callee falls back to its own defaults.
+    this._hardCheckDeps = opts.hardCheckDeps || {};
+
+    // Injection seam for the regression gates' test-command runner
+    // (gates/regression.js's runTestCommand, `deps.execSync ?? execSync`),
+    // forwarded to verifyMission/verifyMilestone below. Production passes
+    // nothing and the gates shell out for real; replay supplies a recorded
+    // executor so a replayed run never invokes a child process.
+    this._regressionDeps = opts.regressionDeps || {};
+
+    this.sessionManager = opts.sessionManager || new SessionManager();
     this.logger = new Logger(this.harnessDir);
     this.tokenTracker = new TokenTracker(this.harnessDir);
     this.sessionManager.setTokenTracker(this.tokenTracker);
@@ -3765,6 +3791,7 @@ class Pipeline {
       projectRoot: this.projectRoot,
       harnessDir: this.harnessDir,
       onLog: this.onLog,
+      deps: this._regressionDeps,
     });
 
     this._consumeStrippedChecks({
@@ -3981,6 +4008,7 @@ class Pipeline {
           projectRoot: this.projectRoot,
           harnessDir: this.harnessDir,
           onLog: this.onLog,
+          deps: this._regressionDeps,
         });
 
         // (9) If passed, break out of remediation loop
@@ -4287,7 +4315,7 @@ class Pipeline {
 
     this.onLog(`\n  Spec-criteria drain: ${milestoneOnly.length} milestone-only check(s), ${fileChecks.length} file-check criterion(s)...`);
 
-    const commandResult = runMilestoneOnlyChecks(milestoneOnly, this.projectRoot, { onLog: this.onLog, specTargetFiles, activeTasks });
+    const commandResult = runMilestoneOnlyChecks(milestoneOnly, this.projectRoot, { onLog: this.onLog, specTargetFiles, activeTasks }, this._hardCheckDeps);
     const fileResult = runFileCheckCriteria(fileChecks, this.projectRoot);
     const failures = [...commandResult.failures, ...fileResult.failures];
     if (failures.length > 0) {
@@ -4767,6 +4795,7 @@ class Pipeline {
       projectRoot: this.projectRoot,
       harnessDir: this.harnessDir,
       onLog: this.onLog,
+      deps: this._regressionDeps,
     });
 
     this._consumeStrippedChecks({
@@ -4882,6 +4911,7 @@ class Pipeline {
         projectRoot: this.projectRoot,
         harnessDir: this.harnessDir,
         onLog: this.onLog,
+        deps: this._regressionDeps,
       });
 
       if (recheck.isStub) throw new Error('Mission ' + missionId + ' regression after remediation: verifier returned no structured_output');
@@ -4920,7 +4950,7 @@ class Pipeline {
   _captureLastFailed(task) {
     const affected = readAffectedFiles(this.harnessDir, task.id);
     const allFiles = [...new Set([...(task.targetFiles || []), ...affected])];
-    snapshotFiles(this.harnessDir, this.projectRoot, task.id, 'last-failed', allFiles);
+    this._snapshotFiles(this.harnessDir, this.projectRoot, task.id, 'last-failed', allFiles);
   }
 
   /**
@@ -4948,7 +4978,7 @@ class Pipeline {
   }
 
   async _applyHardCheckGate(task, verifyResult, label) {
-    return applyHardCheckGate(task, verifyResult, label, this.harnessDir, this.projectRoot, this.onLog);
+    return applyHardCheckGate(task, verifyResult, label, this.harnessDir, this.projectRoot, this.onLog, this._hardCheckDeps);
   }
 
   /**
@@ -5052,7 +5082,7 @@ class Pipeline {
     // Revalidation path: task was previously verified but needs re-verification
     if (preExecStatus === 'needs_revalidation') {
       this.onLog(`    Task ${task.id}: needs revalidation`);
-      const restored = restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'after', this._computeRestoreOverrides(task, 'after'));
+      const restored = this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'after', this._computeRestoreOverrides(task, 'after'));
       if (restored) this.onLog(`      Restored ${restored} file(s) from after-snapshot`);
       await transitionTask(this.harnessDir, task.id, 'awaiting_verification');
 
@@ -5084,7 +5114,7 @@ class Pipeline {
         this.onLog(`    Task ${task.id}: revalidation FAILED → re-executing`);
         await transitionTask(this.harnessDir, task.id, 'failed');
         this._captureLastFailed(task);
-        restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
+        this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
         await this._executeAndVerifyTask(missionId, subMissionId, task, 0, opts);
         return;
       }
@@ -5098,9 +5128,9 @@ class Pipeline {
       this.onLog(`    Task ${task.id}: executing...`);
 
       if (retryCount === 0) {
-        snapshotFiles(this.harnessDir, this.projectRoot, task.id, 'before', task.targetFiles || []);
+        this._snapshotFiles(this.harnessDir, this.projectRoot, task.id, 'before', task.targetFiles || []);
       } else {
-        const restored = restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
+        const restored = this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
         if (restored) this.onLog(`      Restored ${restored} file(s) from before-snapshot`);
       }
 
@@ -5164,7 +5194,7 @@ class Pipeline {
         if (err instanceof WallClockExceededError || err.name === 'WallClockExceededError') {
           this.onLog(`Task ${task.id}: wall-clock exceeded (${err.message}) — non-retryable, dispatching analyzer`);
           this._captureLastFailed(task);
-          restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
+          this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
           await this._dispatchAnalyzer(task, 'execution', retryCount);
           return;
         }
@@ -5183,7 +5213,7 @@ class Pipeline {
         this.onLog(`    Task ${task.id}: BLOCKED by executor — deterministic refusal, non-retryable, dispatching analyzer`);
         await transitionTask(this.harnessDir, task.id, 'failed');
         this._captureLastFailed(task);
-        restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
+        this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
         await this._dispatchAnalyzer(task, 'execution', retryCount);
         return;
       }
@@ -5206,7 +5236,7 @@ class Pipeline {
         .filter(Boolean);
       const filesToCheck = [...new Set([...(task.targetFiles || []), ...affectedFromExec])];
       const diff = execResult.status === 'COMPLETED'
-        ? assertChangesLanded(this.harnessDir, this.projectRoot, task.id, filesToCheck)
+        ? this._assertChangesLanded(this.harnessDir, this.projectRoot, task.id, filesToCheck)
         : { ok: true, unchanged: [] };
       if (!diff.ok) {
         // Defect #17: phantom-write is deterministic — retrying an
@@ -5240,7 +5270,7 @@ class Pipeline {
       if (err instanceof WallClockExceededError || err.name === 'WallClockExceededError') {
         this.onLog(`Task ${task.id}: wall-clock exceeded (${err.message}) — non-retryable, dispatching analyzer`);
         this._captureLastFailed(task);
-        restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
+        this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
         await this._dispatchAnalyzer(task, 'verification', retryCount);
         return;
       }
@@ -5277,7 +5307,7 @@ class Pipeline {
         // NOT the union-scoped filesToCheck probe result): the executor's
         // self-reported affectedFiles are untrustworthy in the phantom-write
         // case and must not re-enter the gate (contract-not-self-report).
-        const declaredDiff = assertChangesLanded(this.harnessDir, this.projectRoot, task.id, task.targetFiles || []);
+        const declaredDiff = this._assertChangesLanded(this.harnessDir, this.projectRoot, task.id, task.targetFiles || []);
         const bothMissing = declaredDiff.bothMissing;
 
         if (bothMissing.length > 0) {
@@ -5319,7 +5349,7 @@ class Pipeline {
 
         const affected = readAffectedFiles(this.harnessDir, task.id);
         const allFiles = [...new Set([...(task.targetFiles || []), ...affected])];
-        snapshotFiles(this.harnessDir, this.projectRoot, task.id, 'after', allFiles);
+        this._snapshotFiles(this.harnessDir, this.projectRoot, task.id, 'after', allFiles);
         return;
       }
     }
@@ -5349,7 +5379,7 @@ class Pipeline {
     // Notify StatusBar of task failure progress (final failure — no more retries).
     this._bumpProgress(task.id);
     this._captureLastFailed(task);
-    restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
+    this._restoreSnapshot(this.harnessDir, this.projectRoot, task.id, 'before', this._computeRestoreOverrides(task, 'before'));
     await this._dispatchAnalyzer(task, 'verification', retryCount);
   }
 

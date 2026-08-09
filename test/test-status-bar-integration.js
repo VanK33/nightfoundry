@@ -139,6 +139,15 @@ function makePipelineStub(overrides = {}) {
   // run() calls this._runFinalTestGate after _reviewGate; the real constructor
   // sets it but the stub bypasses construction. No-op keeps run() from crashing.
   stub._runFinalTestGate = () => {};
+  // _executeAndVerifyTask calls the snapshot capture/restore seam; the real
+  // constructor assigns this._snapshotFiles/_restoreSnapshot but the stub
+  // bypasses construction. No-ops keep the task lifecycle from crashing;
+  // restore returns 0 (falsy) so the "Restored N file(s)" log stays silent.
+  stub._snapshotFiles  = () => {};
+  stub._restoreSnapshot = () => 0;
+  // Same constructor-bypass gap for the phantom-write predicate seam:
+  // an all-clear verdict keeps the disambiguation-probe route dormant.
+  stub._assertChangesLanded = () => ({ ok: true, unchanged: [], bothMissing: [] });
   // run() re-points the harness seam into the per-run dir via _repointHarness,
   // which re-injects the rebuilt tokenTracker into sessionManager; the real
   // constructor sets sessionManager but the stub bypasses construction.

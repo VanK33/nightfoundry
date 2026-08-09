@@ -32,9 +32,32 @@
  *       external projects
  * TC6b: archive final gate — with the default command and no test:all script, the
  *       gate is skipped (spy NOT called) — existing behavior preserved
+ * TC7:  runTestCommand deps injection seam (task 001-002-001-001) —
+ *   TC7-1: injected { execSync: fake } is invoked INSTEAD of the real execSync,
+ *          receiving config.execution.testCommand as arg[0] and an options
+ *          object with cwd === fixture
+ *   TC7-2: that options object also carries encoding 'utf8', stdio
+ *          ['pipe','pipe','pipe'], and a positive numeric timeout
+ *   TC7-3: fake returning 'INJECTED_OK' → { exitCode: 0, output: 'INJECTED_OK', signal: null }
+ *   TC7-4: fake throwing { status: 3, stdout: 'OUT_MARKER', stderr: 'ERR_MARKER' } →
+ *          exitCode 3, signal null, output contains both markers
+ *   TC7-5: fake throwing { signal: 'SIGKILL' } → exitCode -1, signal 'SIGKILL',
+ *          output names SIGKILL
+ *   TC7-6: fake throwing { code: 'ETIMEDOUT' } (no signal) → exitCode -1, signal null
+ *   TC7-7: fake throwing a bare error (no status/signal/code) → exitCode 1, signal null
+ *   TC7-8: BINDING proof — with testCommand overridden to a marker-writing
+ *          command, runTestCommand(fixture) with NO second argument spawns the
+ *          REAL command (marker file present), exitCode 0, signal null
+ *   TC7-9: same, but with an explicit empty deps object runTestCommand(fixture, {}) —
+ *          identical real-command behavior
+ *   TC7-10: runFullTestSuite's signature is untouched — still takes a single
+ *           projectRoot argument and returns { exitCode, output, signal }
  *
- * Tests mutate config.execution in-process and restore it in finally (spec constraint);
- * the execSync wrappers themselves are never stubbed.
+ * Tests mutate config.execution in-process and restore it in finally (spec constraint).
+ * TC1-TC6b never stub the execSync wrappers themselves — only the trigger condition.
+ * TC7's new deps-seam cases inject a fake executor through the sanctioned optional
+ * `deps` parameter of runTestCommand; there is no module-level stubbing and no
+ * monkey-patching of child_process.
  *
  * Run: node test/test-configurable-test-commands.js
  */
@@ -316,6 +339,189 @@ await test('TC6b: archive gate still skipped with default command and no test:al
     );
   } finally {
     cleanup(dir);
+  }
+});
+
+await test('TC7-1: injected { execSync: fake } is invoked instead of the real execSync, receiving testCommand + options.cwd', () => {
+  const fixture = createFixtureDir();
+  try {
+    let calls = 0;
+    let capturedCmd;
+    let capturedOpts;
+    const fake = (cmd, opts) => {
+      calls++;
+      capturedCmd = cmd;
+      capturedOpts = opts;
+      return 'FAKE_OUTPUT';
+    };
+    const overrideCmd = 'node -e "process.exit(9)"';
+    withConfigOverride('testCommand', overrideCmd, () =>
+      runTestCommand(fixture, { execSync: fake })
+    );
+    assert.strictEqual(calls, 1, 'the injected fake must be invoked exactly once');
+    assert.strictEqual(
+      capturedCmd,
+      overrideCmd,
+      'the fake must receive config.execution.testCommand (as set at call time) as its first argument'
+    );
+    assert.ok(capturedOpts && typeof capturedOpts === 'object', 'the fake must receive an options object');
+    assert.strictEqual(capturedOpts.cwd, fixture, 'options.cwd must equal the fixture dir');
+    // Real execSync's exit-9 override never ran — proof the fake replaced it.
+    assert.ok(
+      !fs.existsSync(path.join(fixture, 'should-not-exist.txt')),
+      'sanity: no stray file from a real spawn'
+    );
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-2: injected options carry encoding utf8, stdio [pipe,pipe,pipe], and a positive numeric timeout', () => {
+  const fixture = createFixtureDir();
+  try {
+    let capturedOpts;
+    const fake = (cmd, opts) => {
+      capturedOpts = opts;
+      return '';
+    };
+    runTestCommand(fixture, { execSync: fake });
+    assert.strictEqual(capturedOpts.encoding, 'utf8', 'options.encoding must be utf8');
+    assert.deepStrictEqual(
+      capturedOpts.stdio,
+      ['pipe', 'pipe', 'pipe'],
+      'options.stdio must deep-equal [pipe,pipe,pipe]'
+    );
+    assert.strictEqual(typeof capturedOpts.timeout, 'number', 'options.timeout must be a number');
+    assert.ok(capturedOpts.timeout > 0, 'options.timeout must be positive');
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-3: injected executor returning INJECTED_OK yields exitCode 0, output INJECTED_OK, signal null', () => {
+  const fixture = createFixtureDir();
+  try {
+    const fake = () => 'INJECTED_OK';
+    const r = runTestCommand(fixture, { execSync: fake });
+    assert.deepStrictEqual(r, { exitCode: 0, output: 'INJECTED_OK', signal: null });
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-4: injected executor throwing status 3 + stdout/stderr markers yields exitCode 3, signal null, both markers in output', () => {
+  const fixture = createFixtureDir();
+  try {
+    const fake = () => {
+      const err = new Error('boom');
+      err.status = 3;
+      err.stdout = 'OUT_MARKER';
+      err.stderr = 'ERR_MARKER';
+      throw err;
+    };
+    const r = runTestCommand(fixture, { execSync: fake });
+    assert.strictEqual(r.exitCode, 3);
+    assert.strictEqual(r.signal, null);
+    assert.ok(r.output.includes('OUT_MARKER'), 'output must contain OUT_MARKER');
+    assert.ok(r.output.includes('ERR_MARKER'), 'output must contain ERR_MARKER');
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-5: injected executor throwing signal SIGKILL yields exitCode -1, signal SIGKILL, output names SIGKILL', () => {
+  const fixture = createFixtureDir();
+  try {
+    const fake = () => {
+      const err = new Error('killed');
+      err.signal = 'SIGKILL';
+      throw err;
+    };
+    const r = runTestCommand(fixture, { execSync: fake });
+    assert.strictEqual(r.exitCode, -1);
+    assert.strictEqual(r.signal, 'SIGKILL');
+    assert.ok(r.output.includes('SIGKILL'), 'output must name SIGKILL');
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-6: injected executor throwing code ETIMEDOUT (no signal) yields exitCode -1, signal null', () => {
+  const fixture = createFixtureDir();
+  try {
+    const fake = () => {
+      const err = new Error('timed out');
+      err.code = 'ETIMEDOUT';
+      throw err;
+    };
+    const r = runTestCommand(fixture, { execSync: fake });
+    assert.strictEqual(r.exitCode, -1);
+    assert.strictEqual(r.signal, null);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-7: injected executor throwing a bare error (no status/signal/code) yields exitCode 1, signal null', () => {
+  const fixture = createFixtureDir();
+  try {
+    const fake = () => {
+      throw new Error('bare failure');
+    };
+    const r = runTestCommand(fixture, { execSync: fake });
+    assert.strictEqual(r.exitCode, 1);
+    assert.strictEqual(r.signal, null);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-8: BINDING — runTestCommand(fixture) with NO deps argument spawns the REAL command', () => {
+  const fixture = createFixtureDir();
+  try {
+    const r = withConfigOverride('testCommand', markerCommand('tc7-8-marker.txt'), () =>
+      runTestCommand(fixture)
+    );
+    assert.strictEqual(r.exitCode, 0, 'real command exiting 0 must yield exitCode 0');
+    assert.strictEqual(r.signal, null, 'signal must be null on a clean exit');
+    assert.ok(
+      fs.existsSync(path.join(fixture, 'tc7-8-marker.txt')),
+      'the REAL command must have run (marker file missing) when no deps argument is passed'
+    );
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-9: BINDING — runTestCommand(fixture, {}) with an empty deps object also spawns the REAL command', () => {
+  const fixture = createFixtureDir();
+  try {
+    const r = withConfigOverride('testCommand', markerCommand('tc7-9-marker.txt'), () =>
+      runTestCommand(fixture, {})
+    );
+    assert.strictEqual(r.exitCode, 0, 'real command exiting 0 must yield exitCode 0');
+    assert.strictEqual(r.signal, null, 'signal must be null on a clean exit');
+    assert.ok(
+      fs.existsSync(path.join(fixture, 'tc7-9-marker.txt')),
+      'the REAL command must have run (marker file missing) when deps is an empty object'
+    );
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+await test('TC7-10: runFullTestSuite signature is untouched — single projectRoot arg, returns { exitCode, output, signal }', () => {
+  const fixture = createFixtureDir();
+  try {
+    const r = withConfigOverride('testAllCommand', 'node -e "process.exit(0)"', () =>
+      runFullTestSuite(fixture)
+    );
+    assert.strictEqual(runFullTestSuite.length, 1, 'runFullTestSuite must still declare exactly one parameter');
+    assert.strictEqual(r.exitCode, 0);
+    assert.strictEqual(r.signal, null);
+    assert.ok(Object.prototype.hasOwnProperty.call(r, 'output'), 'result must have an output property');
+  } finally {
+    cleanup(fixture);
   }
 });
 
