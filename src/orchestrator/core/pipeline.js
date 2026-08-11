@@ -70,7 +70,7 @@ import { extractScopeItems } from '../core/scope-parser.js';
 import { checkScopeCoverageByMapping } from '../gates/scope-coverage.js';
 import { runHardChecks, runMilestoneOnlyChecks, runFileCheckCriteria } from '../gates/hard-checks.js';
 import { checkTestRegistration } from '../gates/test-registration.js';
-import { IncompleteScopeError } from '../core/incomplete-scope-error.js';
+import { IncompleteScopeError, UnassignedSpecCheckError } from '../core/incomplete-scope-error.js';
 import { VerificationAuditError } from '../core/verification-audit-error.js';
 import { appendWarnings, appendUncertainAssumptions } from './warnings-ledger.js';
 import { SpecCriterionError } from '../core/spec-criterion-error.js';
@@ -4204,7 +4204,7 @@ class Pipeline {
         this.onLog(`Spec hard-check coverage warning: ${orphans.length} path-bearing spec check(s) are not assigned to any task and would never run:\n${orphanCommands.map((cmd) => `  - ${cmd}`).join('\n')}`);
         return;
       }
-      throw new IncompleteScopeError(orphanCommands);
+      throw new UnassignedSpecCheckError(orphanCommands);
     }
   }
 

@@ -1,3 +1,9 @@
+## [0.2.15] - 2026-08-11 — Add fail-loud CLI flag parsing and spec-check coverage error
+
+### Bug fixes
+- CLI parser now rejects unknown flags with error messages naming the offending token verbatim, preventing silent failures from typos
+- Spec hard-check coverage failures now throw UnassignedSpecCheckError with accurate messaging about unassigned acceptance commands instead of misleading generic IncompleteScopeError
+
 ## [0.2.14] - 2026-08-09 — Add archive replay driver and engine injection seams
 
 ### New features

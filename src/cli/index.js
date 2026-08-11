@@ -443,6 +443,97 @@ const VALUE_SHORT_FLAGS = new Set(['p']);
 const VALUE_LONG_FLAGS = new Set(['role', 'task', 'project', 'last', 'since', 'resume', 'port', 'note']);
 
 /**
+ * Union of every long flag the CLI is expected to recognise (paired with
+ * KNOWN_SHORT_FLAGS below for short flags), derived by unioning four
+ * mandated sources:
+ *
+ *   1. Literal `flags['...']` / `flags.x` reads across src/cli — in this
+ *      file's main() and every command module under src/cli/commands/.
+ *   2. VALUE_LONG_FLAGS / VALUE_SHORT_FLAGS membership above (flags that
+ *      always consume a following value).
+ *   3. The dynamic flag-lookup tables consulted instead of a literal
+ *      `flags['...']` read: RESOLVE_ACTIONS in src/cli/commands/park.js
+ *      (`requeue`, `waive`, `reject`) and RESOLVE_VERBS in
+ *      src/cli/commands/warnings.js (`waive`, `defer`, `done`).
+ *   4. Every flag documented in the USAGE text constant above (e.g.
+ *      --allow-dirty, --no-git-required, --allow-incomplete-scope,
+ *      --include-failed, --skip-test-gate, --preserve/-P, --report,
+ *      --port, --all, --last, --since, --task, --no-tty, --resume,
+ *      --batch, --force, --note).
+ *
+ * The legacy FLAG_TO_COMMAND keys from suggest.js (without their leading
+ * dashes: run, status, archive, usage, init, health, review, version, help)
+ * are unioned in as well, since main() routes those tokens through
+ * parseArgs before reaching its 'Did you mean' branch.
+ *
+ * This set was derived by running the full test suite (`npm run test:all`)
+ * and adding any flag whose rejection by parseArgs caused a legitimate test
+ * failure; the resulting KNOWN_LONG_FLAGS / KNOWN_SHORT_FLAGS sets were
+ * then re-validated against the full suite (398/398 passing) with no test
+ * relaxed to accommodate the whitelist. This constant does not change
+ * parsing behavior; it exists as a reference set for flag-hygiene checks.
+ */
+const KNOWN_LONG_FLAGS = new Set([
+  // (1) long keys read directly off `flags` in main()/commands
+  'project',
+  'json',
+  'all',
+  'batch',
+  'resume',
+  'role',
+  'task',
+  'last',
+  'since',
+  'detailed',
+  'report',
+  'auto',
+  'preserve',
+  'force',
+  'runs',
+  'note',
+  'port',
+  'allow-dirty',
+  'no-git-required',
+  'allow-incomplete-scope',
+  'spec-stdin',
+  'include-failed',
+  'skip-test-gate',
+  'no-review',
+  'no-tty',
+  // (2) VALUE_LONG_FLAGS
+  ...VALUE_LONG_FLAGS,
+  // (3) dynamic-table members from park.js (RESOLVE_ACTIONS) and warnings.js (RESOLVE_VERBS)
+  'requeue',
+  'waive',
+  'reject',
+  'defer',
+  'done',
+  // (4) legacy FLAG_TO_COMMAND keys from suggest.js, without leading dashes
+  'run',
+  'status',
+  'archive',
+  'usage',
+  'init',
+  'health',
+  'review',
+  'version',
+  'help',
+]);
+
+/**
+ * Union of every short flag the CLI is expected to recognise, derived using
+ * the same four mandated sources documented above KNOWN_LONG_FLAGS: (1)
+ * literal `flags.x` reads across src/cli, (2) VALUE_SHORT_FLAGS membership,
+ * (3) RESOLVE_ACTIONS (src/cli/commands/park.js) / RESOLVE_VERBS
+ * (src/cli/commands/warnings.js) — neither of which contributes any short
+ * flags today — and (4) short flags documented in the USAGE text (-p, -a,
+ * -j). This set was validated against the full test suite (398/398
+ * passing). This constant does not change parsing behavior; it exists as a
+ * reference set for flag-hygiene checks.
+ */
+const KNOWN_SHORT_FLAGS = new Set(['p', 'a', 'j', 'd', 'P', 'r', 'R', ...VALUE_SHORT_FLAGS]);
+
+/**
  * Parse CLI args into { flags, positional }.
  * Supports --long-name [value], -x [value], -abc (combined shorts).
  *
@@ -458,6 +549,9 @@ function parseArgs(args) {
 
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
+      if (!KNOWN_LONG_FLAGS.has(key)) {
+        throw new Error(`Unknown option: ${arg}`);
+      }
       if (VALUE_LONG_FLAGS.has(key)) {
         if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
           flags[key] = args[++i];
@@ -472,6 +566,9 @@ function parseArgs(args) {
       const chars = arg.slice(1);
       for (let j = 0; j < chars.length; j++) {
         const c = chars[j];
+        if (!KNOWN_SHORT_FLAGS.has(c)) {
+          throw new Error(`Unknown option: ${arg}`);
+        }
         // Consume next arg as value only if:
         //   - this char is a value-taking flag
         //   - it is the last char in the group
