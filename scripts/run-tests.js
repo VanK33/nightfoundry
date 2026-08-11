@@ -112,6 +112,7 @@ export const TEST_FILES = [
   'test/test-spec-json-readers.js',
   'test/test-run-cost-display.js',
   'test/test-session-manager-guard.js',
+  'test/test-pretooluse-guard-hook.js',
   'test/test-session-manager-instrumentation.js',
   'test/test-session-manager-unit.js',
   'test/test-small-task.js',

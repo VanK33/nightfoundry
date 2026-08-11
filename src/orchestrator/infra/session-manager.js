@@ -176,7 +176,7 @@ class ReusableSession {
 
       const q = sessionManager._queryFn({
         prompt: this._stream,
-        options: sdkOptions,
+        options: sessionManager._toQueryOptions(sdkOptions),
       });
       this.handle._query = q;
 
@@ -826,7 +826,7 @@ class SessionManager {
 
         const q = this._queryFn({
           prompt: options.prompt,
-          options: sdkOptions,
+          options: this._toQueryOptions(sdkOptions),
         });
         handle._query = q;
 
@@ -1058,7 +1058,62 @@ class SessionManager {
       return this._guardToolUse(toolName, toolInput, targetFiles, readFiles, options.cwd);
     };
 
+    // ENFORCEMENT PATH: under permissionMode 'bypassPermissions' the SDK
+    // (agent-sdk >= 0.3) auto-approves every tool call BEFORE consulting
+    // canUseTool — the callback is shadowed and the SDK emits a
+    // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED warning. The 0.2.x line still
+    // consulted it (guard denials are on record in archive failed-202,
+    // 2026-07-19), so the 0.3 upgrade silently disabled this guard. Hooks
+    // run regardless of permission mode, so the SAME callback is wired as
+    // a PreToolUse hook — the replacement the SDK's own warning names.
+    // canUseTool stays on this object for the unit tests that drive the
+    // guard directly and for any future non-bypass mode, but it is
+    // stripped before the options reach query() (see _toQueryOptions), so
+    // the SDK never sees a shadowed callback.
+    const guard = sdkOpts.canUseTool;
+    sdkOpts.hooks = {
+      PreToolUse: [{
+        hooks: [async (hookInput) => {
+          const verdict = guard(hookInput.tool_name, hookInput.tool_input ?? {});
+          if (verdict && verdict.behavior === 'deny') {
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: verdict.message,
+              },
+            };
+          }
+          // Allow: carry the guard's (possibly path-normalized) input
+          // through, mirroring the updatedInput contract canUseTool had.
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: (verdict && verdict.updatedInput) || hookInput.tool_input || {},
+            },
+          };
+        }],
+      }],
+    };
+
     return sdkOpts;
+  }
+
+  /**
+   * Project a _buildSdkOptions() result onto what is actually handed to the
+   * SDK's query(): identical except canUseTool is stripped. The guard's
+   * enforcement path is the PreToolUse hook built alongside it (see
+   * _buildSdkOptions); passing the callback too would only trigger the
+   * SDK's CLAUDE_SDK_CAN_USE_TOOL_SHADOWED warning on every spawn under
+   * bypassPermissions, enforcing nothing.
+   *
+   * @param {object} sdkOptions - a _buildSdkOptions() result
+   * @returns {object} the same options minus canUseTool
+   */
+  _toQueryOptions(sdkOptions) {
+    const { canUseTool: _stripped, ...forSdk } = sdkOptions;
+    return forSdk;
   }
 
   /**
