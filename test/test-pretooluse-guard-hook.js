@@ -145,6 +145,56 @@ await test('TC5 _toQueryOptions strips canUseTool but keeps hooks and every othe
   }
 });
 
+// ── TC6: symlinked project root — two spellings of one file are one file ─
+await test('TC6 a symlinked root alias does not false-deny in-root writes (archive-226 regression)', async () => {
+  const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-real-'));
+  const alias = realRoot + '-alias';
+  fs.symlinkSync(realRoot, alias);
+  try {
+    const target = path.join(realRoot, 'a.js');
+    fs.writeFileSync(target, 'x');
+    // Session rooted at the SYMLINK spelling; tool calls use the REAL spelling.
+    const sdkOpts = buildOpts(alias, ['a.js']);
+    const hook = hookOf(sdkOpts);
+
+    // Read via the ALIAS spelling, then Edit via the REAL spelling: one file.
+    const read = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: path.join(alias, 'a.js') }, tool_use_id: 's1' }, 's1', {});
+    assert.strictEqual(read?.hookSpecificOutput?.permissionDecision, 'allow');
+    const edit = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: target }, tool_use_id: 's2' }, 's2', {});
+    assert.strictEqual(edit?.hookSpecificOutput?.permissionDecision, 'allow',
+      `Cross-spelling Edit must pass D1+D2+read-before-edit, got ${JSON.stringify(edit)}`);
+
+    // A brand-new file (Write, not on disk yet) via the real spelling too.
+    const sdkOpts2 = buildOpts(alias, ['b.js']);
+    const hook2 = hookOf(sdkOpts2);
+    const write = await hook2({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(realRoot, 'b.js') }, tool_use_id: 's3' }, 's3', {});
+    assert.strictEqual(write?.hookSpecificOutput?.permissionDecision, 'allow',
+      `New-file Write through the other spelling must pass, got ${JSON.stringify(write)}`);
+  } finally {
+    fs.rmSync(alias, { force: true });
+    fs.rmSync(realRoot, { recursive: true, force: true });
+  }
+});
+
+// ── TC7: canonicalization must not over-allow — true out-of-root still denied
+await test('TC7 out-of-root writes stay denied under a symlinked root', async () => {
+  const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-real-'));
+  const alias = realRoot + '-alias';
+  fs.symlinkSync(realRoot, alias);
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-other-'));
+  try {
+    const sdkOpts = buildOpts(alias, ['a.js']);
+    const hook = hookOf(sdkOpts);
+    const out = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(other, 'a.js') }, tool_use_id: 's4' }, 's4', {});
+    assert.strictEqual(out?.hookSpecificOutput?.permissionDecision, 'deny', `Expected deny, got ${JSON.stringify(out)}`);
+    assert.ok(/outside the project root/.test(out.hookSpecificOutput.permissionDecisionReason));
+  } finally {
+    fs.rmSync(alias, { force: true });
+    fs.rmSync(realRoot, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
+  }
+});
+
 // ── Summary ──────────────────────────────────────────────────────────────
 console.log(`\n${passCount} passed, ${failCount} failed`);
 process.exit(failCount > 0 ? 1 : 0);

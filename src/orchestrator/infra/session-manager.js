@@ -1034,7 +1034,7 @@ class SessionManager {
       // Track every Read call so _guardToolUse can verify prior-read for Edit/Write
       if (toolName === 'Read') {
         const fp = toolInput?.file_path;
-        if (fp) readFiles.add(fp);
+        if (fp) readFiles.add(this._canonicalPath(fp));
       }
       // Opt-in whole-suite Bash deny (spawn-level flag; currently only the
       // reviewer passes it). The full suite is the final gate's job — a
@@ -1207,6 +1207,56 @@ class SessionManager {
   ];
 
   /**
+   * Membership test for the read-tracking Set against a canonicalized
+   * path. Fast path: entries added through the guard hook are already
+   * canonical. Fallback: entries may be seeded as raw absolute paths
+   * (the Set's original contract), so scan-and-canonicalize before
+   * concluding a file was never Read.
+   *
+   * @param {Set<string>} readFiles
+   * @param {string} canonicalAbs - output of _canonicalPath
+   * @returns {boolean}
+   */
+  _readFilesHas(readFiles, canonicalAbs) {
+    if (readFiles.has(canonicalAbs)) return true;
+    for (const f of readFiles) {
+      if (this._canonicalPath(f) === canonicalAbs) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Canonicalize an absolute path for guard comparisons: realpath-resolve
+   * the longest EXISTING prefix and re-append the non-existent tail
+   * verbatim — a Write may legitimately target a path that does not exist
+   * yet. This closes the two-spellings hole a symlinked project root opens
+   * (e.g. a `foo -> foo.nosync` alias makes .../foo/x.js and
+   * .../foo.nosync/x.js the same file, which a plain path.resolve
+   * prefix/equality test treats as different trees — archive 226's false
+   * denials). Failure-soft: if no prefix of the path exists, the input is
+   * returned unchanged.
+   *
+   * @param {string} p - an absolute path
+   * @returns {string} the canonicalized path
+   */
+  _canonicalPath(p) {
+    if (!p) return p;
+    let head = p;
+    let tail = '';
+    for (;;) {
+      try {
+        const real = fs.realpathSync(head);
+        return tail ? path.join(real, tail) : real;
+      } catch {
+        const parent = path.dirname(head);
+        if (parent === head) return p;
+        tail = tail ? path.join(path.basename(head), tail) : path.basename(head);
+        head = parent;
+      }
+    }
+  }
+
+  /**
    * Guard tool use for sub-agent sessions.
    * - Bash: block dangerous commands (git commit, rm -rf, etc.)
    * - Edit/Write: when sessionCwd is known, DENY writes whose resolved absolute
@@ -1251,12 +1301,19 @@ class SessionManager {
       const filePath = toolInput?.file_path || '';
 
       // Resolve the tool's file_path to an absolute path for boundary and
-      // exact-match checks. path.resolve is the only resolver used (D3);
-      // fs.realpath is intentionally NOT called here.
+      // exact-match checks, then CANONICALIZE it (D3, revised 2026-08-12):
+      // every comparison side below goes through _canonicalPath, which
+      // realpath-resolves the longest existing prefix. A symlinked project
+      // root (e.g. the `<name> -> <name>.nosync` iCloud-remediation alias)
+      // gives the same file two absolute spellings; plain path.resolve
+      // treats those as different trees, which made D1 false-deny in-root
+      // writes on the guard's first live outing (archive 226).
       const abs = filePath
-        ? (path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(sessionCwd || process.cwd(), filePath))
+        ? this._canonicalPath(
+            path.isAbsolute(filePath)
+              ? path.resolve(filePath)
+              : path.resolve(sessionCwd || process.cwd(), filePath)
+          )
         : '';
 
       // D1: unconditional project-root boundary when sessionCwd is known.
@@ -1265,7 +1322,7 @@ class SessionManager {
       // catches the mismatch after the fact; this catches it before bytes
       // land on disk.
       if (sessionCwd && abs) {
-        const root = path.resolve(sessionCwd);
+        const root = this._canonicalPath(path.resolve(sessionCwd));
         const inRoot = abs === root || abs.startsWith(root + path.sep);
         if (!inRoot) {
           return {
@@ -1287,7 +1344,7 @@ class SessionManager {
         const rootForTf = sessionCwd ? path.resolve(sessionCwd) : null;
         const allowed = targetFiles.some((tf) => {
           if (typeof tf !== 'string') return false;
-          const tfAbs = rootForTf ? path.resolve(rootForTf, tf) : path.resolve(tf);
+          const tfAbs = this._canonicalPath(rootForTf ? path.resolve(rootForTf, tf) : path.resolve(tf));
           return abs === tfAbs;
         });
         if (!allowed) {
@@ -1296,8 +1353,14 @@ class SessionManager {
             message: `${toolName} blocked: ${filePath} is not in targetFiles`,
           };
         }
-        // Require prior Read for existing files — prevents blind overwrites
-        if (fs.existsSync(filePath) && !readFiles.has(filePath)) {
+        // Require prior Read for existing files — prevents blind overwrites.
+        // Compared on the CANONICAL path (see abs above): Read and Edit may
+        // legitimately spell the same file through different root aliases.
+        // Membership is checked canonical-vs-canonical, with a fallback scan
+        // so entries seeded as raw absolute paths (the Set's original
+        // contract, still pinned by test-session-manager-guard.js) keep
+        // matching regardless of which spelling they used.
+        if (fs.existsSync(abs) && !this._readFilesHas(readFiles, abs)) {
           return {
             behavior: 'deny',
             message: `${toolName} blocked: ${filePath} exists on disk but has not been Read in this session`,
