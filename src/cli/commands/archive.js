@@ -882,6 +882,15 @@ export function validateChangelogSources(changelog, diffSummary) {
  *   8. writeGitignore
  *   9. bootstrap(projectRoot, { force: true }) to reinitialize
  *
+ * The --include-failed (forensic) branch mirrors steps 4-9 above but skips the
+ * Summarizer and release-tracking writes. It still runs the same two fail-soft
+ * post-archive steps as the clean path: generateRunReport (writes report.html)
+ * and scripts/export-ccusage.js (exports token usage). Both are best-effort —
+ * a failure in either is caught and logged, never thrown — and neither writes
+ * CHANGELOG.md, RUNS.md, or bumps package.json version, and neither path calls
+ * updateRunHistory for a failed archive. See the --include-failed branch policy
+ * comment below for the full no-history rationale.
+ *
  * @param {string} projectRoot - Absolute path to the project root
  * @param {string|null|undefined} name - Archive name (used to compute slug)
  * @param {object} flags - CLI flags; flags.auto or flags.a enables auto mode; flags.preserve or flags.P keeps the spec file at the project root after archiving
@@ -949,6 +958,13 @@ export async function archive(projectRoot, name, flags = {}, deps = {}) {
   // not verify. Successful-archive remains the only path that updates those
   // release-tracking files. (Design decision logged 2026-05-21 after first
   // self-archive of B-2 raised the question.)
+  //
+  // Parity note: this branch still generates report.html via generateRunReport
+  // and exports token usage via scripts/export-ccusage.js, same as the clean
+  // path — both fail-soft (a caught error is logged, never thrown). Neither
+  // step touches CHANGELOG.md, RUNS.md, or package.json version, and this
+  // branch never calls updateRunHistory (that call is gated on cleanDelivery
+  // in the clean path only).
   if (flags['include-failed']) {
     // (a) Read state.
     const failedState = readState(harnessDir);
@@ -1018,6 +1034,28 @@ export async function archive(projectRoot, name, flags = {}, deps = {}) {
     try { writeFingerprint(harnessDir); } catch { /* advisory — dispersion fingerprint is non-critical */ }
     moveHarnessToArchive(harnessDir, failedArchiveDir);
     console.log('[archive] Moved harness state into archive');
+
+    // Generate run report (fail-soft — mirrors the clean path's Step 11a,
+    // but never calls updateRunHistory since this is not a clean delivery).
+    try {
+      await generateRunReport(failedArchiveDir, projectRoot);
+      console.log('[archive] Generated run report');
+    } catch (err) {
+      console.warn(`[archive] Run report generation failed (continuing): ${err.message}`);
+    }
+
+    // Export token usage to ccusage-compatible JSONL (fail-soft — mirrors the
+    // clean path's Step 11).
+    try {
+      const failedExportScript = path.join(CC_ORCH_ROOT, 'scripts', 'export-ccusage.js');
+      if (fs.existsSync(failedExportScript)) {
+        execSync(`node "${failedExportScript}" --project "${projectRoot}" --archive ${failedArchiveDirName}`, { encoding: 'utf8' });
+        console.log('[archive] Exported token usage to ccusage');
+      }
+    } catch (err) {
+      console.warn(`[archive] ccusage export failed (continuing): ${err.message}`);
+    }
+
     clearActiveRunPointer(projectRoot);
 
     // Remove the drained per-run harness dir now that its contents have been

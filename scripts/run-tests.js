@@ -276,6 +276,7 @@ export const TEST_FILES = [
   'test/test-ui-command.js',
   'test/test-ui-routing.js',
   'test/test-archive-failed.js',
+  'test/test-failed-archive-parity.js',
   'test/test-dispersion-fingerprint.js',
   'test/test-dispersion-cli.js',
   'test/test-git-safety-precheck.js',

@@ -1,3 +1,10 @@
+## [0.2.16] - 2026-08-12 — Enable failed-archive run reports and ccusage export
+
+### New features
+- Failed-archive path now invokes generateRunReport after harness state move with fail-soft error handling, generating report.html for forensic archives
+- Failed-archive path now invokes scripts/export-ccusage.js to export token usage with fail-soft error handling, ensuring failed run costs are captured in ccusage data
+- Run report now safely handles failed-archive manifest shapes with haltReason and haltTaskId fields, rendering halt section in report.html with HTML escaping while maintaining byte-identical output for clean runs
+
 ## [0.2.15] - 2026-08-11 — Add fail-loud CLI flag parsing and spec-check coverage error
 
 ### Bug fixes

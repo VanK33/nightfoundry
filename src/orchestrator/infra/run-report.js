@@ -53,6 +53,8 @@ export function gatherReportData(archiveDir, projectRoot, deps = {}) {
   let totalSessions = 0;
   let milestones = [];
   let changelog = [];
+  let haltReason = '';
+  let haltTaskId = null;
 
   const manifestPath = path.join(archiveDir, 'manifest.json');
   try {
@@ -65,6 +67,8 @@ export function gatherReportData(archiveDir, projectRoot, deps = {}) {
     totalSessions = manifest.totalSessions ?? 0;
     milestones = manifest.milestones ?? [];
     changelog = manifest.changelog ?? [];
+    haltReason = manifest.haltReason ?? '';
+    haltTaskId = manifest.haltTaskId ?? null;
   } catch {
     // manifest missing or unparseable — keep defaults
   }
@@ -169,6 +173,8 @@ export function gatherReportData(archiveDir, projectRoot, deps = {}) {
     findings,
     taskStatuses,
     diffSummary,
+    haltReason,
+    haltTaskId,
   };
 }
 
@@ -192,6 +198,8 @@ export function renderReportHtml(data) {
     taskStatuses = [],
     diffSummary = '',
     changelog = [],
+    haltReason = '',
+    haltTaskId = null,
   } = data;
 
   const archiveId = seq ? `Run #${seq}` : 'Run Report';
@@ -215,6 +223,14 @@ export function renderReportHtml(data) {
       <p>${escapeHtml(f.description || '')}</p>
       ${f.file ? `<code>${escapeHtml(f.file)}</code>` : ''}
     </div>`;
+
+  // Halt section — only rendered when a non-empty haltReason is present
+  const haltHtml = typeof haltReason === 'string' && haltReason.length > 0
+    ? `<section class="halt">
+      <h2>Halted</h2>
+      <p>${escapeHtml(haltReason)}${haltTaskId != null ? ` (task <code>${escapeHtml(haltTaskId)}</code>)` : ''}</p>
+    </section>`
+    : '';
 
   const findingsHtml = findings.length > 0
     ? `<section class="findings">
@@ -367,7 +383,7 @@ export function renderReportHtml(data) {
       <h2>Diff Summary</h2>
       ${diffSection}
     </section>
-    ${findingsHtml}
+    ${findingsHtml}${haltHtml}
     <section>
       <h2>Test Coverage</h2>
       ${taskStatusesHtml}
