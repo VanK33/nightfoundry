@@ -119,6 +119,8 @@ Write evidence so it's checkable: a bare path (`path/to/file.js`) becomes `file-
 
 Keep every check scoped to its own task's declared files: a check should assert the content or behavior of the file(s) that task is responsible for, not the state of the tree as a whole. Phrasing like "only these files were modified" or "no other files changed" is a tree-wide assertion and is rejected by the structural lint — write instead what the task's own file now does or contains. (A behavioral verb or arrow — e.g. "returns", "throws", "→" — in the check text is fine and doesn't trigger this rejection; so is a tree-state phrase that appears strictly inside a backtick-quoted literal, e.g. quoting an error message.)
 
+Grep patterns must not look like file paths: the plan-scope lint tokenizes every `command` and treats each path-like token (contains `/`, or ends in a known file extension) as a file reference that some task's targetFiles must cover — it cannot tell a grep search PATTERN from a file argument. `grep -c "export-ccusage.js" src/cli/commands/archive.js` therefore demands coverage of `export-ccusage.js`; if that file is declared scope-out, the plan can never pass the lint. To assert "this code references file X", grep for an extension-free distinctive stem instead (`"export-ccusage"`). Also note `grep -c` alone passes on ANY match (exit 0 at count ≥ 1) — to assert a specific number of sites, wrap it in a count assertion: `test "$(grep -c "export-ccusage" src/cli/commands/archive.js)" -ge 3`.
+
 ## (g) Smoke vs full test-run semantics and assumption-safe wording
 
 **Two test commands, two purposes:**
