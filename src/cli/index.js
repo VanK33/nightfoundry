@@ -218,6 +218,10 @@ async function main() {
 
     case 'usage': {
       if (positional[1] === 'compare') {
+        if (!positional[2] || !positional[3]) {
+          console.error('Usage: cc-orch usage compare <a> <b>');
+          process.exit(1);
+        }
         return compare(projectRoot, positional[2], positional[3], {});
       }
       // --include-failed auto-implies --all: the include-failed filter only
@@ -256,8 +260,16 @@ async function main() {
       if (sub === 'list') {
         return archiveList(projectRoot, { json: jsonOut });
       } else if (sub === 'show') {
+        if (!positional[2]) {
+          console.error('Usage: cc-orch archive show <id> [--report]');
+          process.exit(1);
+        }
         return archiveShow(projectRoot, positional[2], { json: jsonOut, report: !!flags.report });
       } else if (sub === 'diff') {
+        if (!positional[2] || !positional[3]) {
+          console.error('Usage: cc-orch archive diff <a> <b>');
+          process.exit(1);
+        }
         return archiveDiff(projectRoot, positional[2], positional[3], { json: jsonOut });
       } else {
         return archive(projectRoot, sub, flags);
@@ -269,8 +281,16 @@ async function main() {
       if (sub === 'list') {
         return queueList(projectRoot, { json: jsonOut });
       } else if (sub === 'remove') {
+        if (!positional[2]) {
+          console.error('Usage: cc-orch queue remove <slug>');
+          process.exit(1);
+        }
         return queueRemove(projectRoot, positional[2], { json: jsonOut });
       } else if (sub === 'retry') {
+        if (!positional[2]) {
+          console.error('Usage: cc-orch queue retry <slug>');
+          process.exit(1);
+        }
         return queueRetry(projectRoot, positional[2]);
       } else {
         console.error('Usage: cc-orch queue list|remove|retry <slug>');
@@ -284,8 +304,16 @@ async function main() {
       if (sub === 'list') {
         return parkList(projectRoot, { json: jsonOut });
       } else if (sub === 'show') {
+        if (!positional[2]) {
+          console.error('Usage: cc-orch park show <slug>');
+          process.exit(1);
+        }
         return parkShow(projectRoot, positional[2]);
       } else if (sub === 'resolve') {
+        if (!positional[2]) {
+          console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject [--note <text>]');
+          process.exit(1);
+        }
         return parkResolve(projectRoot, positional[2], flags);
       } else {
         console.error('Usage: cc-orch park list|show <slug>|resolve <slug> --requeue|--waive|--reject [--note <text>]');
@@ -299,6 +327,10 @@ async function main() {
       if (sub === 'list') {
         return warningsList(projectRoot, { all: !!flags.all, json: jsonOut });
       } else if (sub === 'show') {
+        if (!positional[2]) {
+          console.error('Usage: cc-orch warnings show <id>');
+          process.exit(1);
+        }
         return warningsShow(projectRoot, positional[2]);
       } else if (sub === 'resolve') {
         return warningsResolve(projectRoot, positional.slice(2), flags);

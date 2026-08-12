@@ -20,6 +20,9 @@
  *   TC14 — 'cc-orch help' output includes 'dry-run' and 'task'
  *   TC15 — Fuzzy match: 'dry-rn' suggests 'dry-run'
  *   TC16 — '.md' shortcut routes to 'run', not 'dry-run'
+ *   TC19–TC26 — queue remove|retry / park show|resolve / archive show|diff /
+ *               usage compare / warnings show fail loud with a usage line
+ *               when the required slug/id argument is missing
  */
 import assert from 'assert';
 import fs from 'fs';
@@ -522,6 +525,51 @@ await test("TC18: '--role' at end of args exits non-zero with 'requires a value'
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// TC19–TC26 — subcommands with a required slug/id argument fail loud with a
+// usage line when the argument is missing, instead of passing undefined into
+// the handler (which used to surface as a bogus "queue entry is damaged
+// (The \"path\" argument must be of type string)" error naming 'undefined').
+// ---------------------------------------------------------------------------
+const MISSING_ARG_CASES = [
+  { tc: 'TC19', args: ['queue', 'retry'], usage: 'Usage: cc-orch queue retry <slug>' },
+  { tc: 'TC20', args: ['queue', 'remove'], usage: 'Usage: cc-orch queue remove <slug>' },
+  { tc: 'TC21', args: ['park', 'show'], usage: 'Usage: cc-orch park show <slug>' },
+  { tc: 'TC22', args: ['park', 'resolve'], usage: 'Usage: cc-orch park resolve <slug>' },
+  { tc: 'TC23', args: ['archive', 'show'], usage: 'Usage: cc-orch archive show <id>' },
+  { tc: 'TC24', args: ['archive', 'diff', 'only-one'], usage: 'Usage: cc-orch archive diff <a> <b>' },
+  { tc: 'TC25', args: ['usage', 'compare', 'only-one'], usage: 'Usage: cc-orch usage compare <a> <b>' },
+  { tc: 'TC26', args: ['warnings', 'show'], usage: 'Usage: cc-orch warnings show <id>' },
+];
+
+for (const { tc, args, usage } of MISSING_ARG_CASES) {
+  await test(`${tc}: 'cc-orch ${args.join(' ')}' without required arg exits non-zero with usage line`, async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-router-test-'));
+    try {
+      const result = spawnCli(args, { cwd: tmpDir });
+      const combined = (result.stdout || '') + (result.stderr || '');
+
+      assert.notStrictEqual(
+        result.status,
+        0,
+        `Expected non-zero exit code for '${args.join(' ')}' with missing arg, got 0`
+      );
+
+      assert.ok(
+        combined.includes(usage),
+        `Expected "${usage}" in output, got: ${combined.trim()}`
+      );
+
+      assert.ok(
+        !combined.includes('undefined'),
+        `Output must not leak 'undefined' for missing arg, got: ${combined.trim()}`
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Summary
