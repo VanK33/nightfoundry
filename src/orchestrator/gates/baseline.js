@@ -30,7 +30,33 @@
  * Never throws across its boundary: the whole run is wrapped in try/catch
  * and always returns a result object.
  *
+ * Optional full-suite exemption: callers may pass a truthy second argument
+ * (a full-suite exemption descriptor) to suppress the full slot entirely —
+ * neither the `fullSkip` no-script evaluation nor `runFullTestSuite` is
+ * invoked, the exempted full command is NOT appended to `skipped`, and the
+ * function returns `{ ok: true, skipped }` immediately after the smoke arm
+ * completes (subject to the identical-command dedup, which still short-
+ * circuits before the full slot regardless of the exemption). With the
+ * argument absent, null, or otherwise falsy, behaviour is unchanged from the
+ * single-argument form. The exemption exists SOLELY to suppress the full
+ * suite for this one call — it never touches the smoke arm, the dedup
+ * short-circuit, or the failure/skip paths.
+ *
+ * When the exemption applies, exactly one `[baseline]`-prefixed line is
+ * logged naming: (a) the batch's marked entry slugs the exemption covers
+ * (descriptor.entries[].slug), (b) the park-resume stash commit SHA(s)/ref(s)
+ * carried by those entries (descriptor.entries[].stashSha), and (c) the fixed
+ * reason the exemption is sound — every pending entry in the batch carries a
+ * park-resume marker whose WIP was already re-attached, so the full suite was
+ * already proven for this tree. A descriptor with a missing or empty
+ * `entries` array degrades to a `(none recorded)` placeholder for the slug
+ * and/or stash list rather than throwing or printing `undefined`. No
+ * exemption log line is emitted when no exemption argument is supplied.
+ *
  * @param {string} projectRoot
+ * @param {{ entries?: Array<{ slug?: string, stashSha?: string }> }} [fullSuiteExemption]
+ *   Truthy to suppress the full-suite arm. `entries` names the batch's marked
+ *   entries (slug) and the park-resume stash SHA/ref each carries (stashSha).
  * @returns {{ ok: true, skipped: string[] }
  *         | { ok: false, command: string, exitCode: number, outputTail: string, message: string }}
  */
@@ -114,10 +140,16 @@ function buildFailureResult(command, result, projectRoot) {
  * full contract.
  *
  * @param {string} projectRoot
+ * @param {{ entries?: Array<{ slug?: string, stashSha?: string }> }} [fullSuiteExemption]
+ *   Truthy to suppress the full-suite arm ONLY — the smoke arm and dedup
+ *   short-circuit are unaffected. `entries` names the batch's marked entries
+ *   (slug) and the park-resume stash SHA/ref each carries (stashSha); an
+ *   absent or empty `entries` list degrades to a `(none recorded)`
+ *   placeholder in the logged exemption line rather than throwing.
  * @returns {{ ok: true, skipped: string[] }
  *         | { ok: false, command: string, exitCode: number, outputTail: string, message: string }}
  */
-export function runBaselineGate(projectRoot) {
+export function runBaselineGate(projectRoot, fullSuiteExemption) {
   try {
     const skipped = [];
 
@@ -143,6 +175,25 @@ export function runBaselineGate(projectRoot) {
     // the smoke slot already just decided (run-and-passed, or skipped) —
     // never re-evaluate or re-run it.
     if (identical) {
+      return { ok: true, skipped };
+    }
+
+    // Full-suite exemption: when truthy, the full slot is not evaluated or
+    // run at all — no fullSkip no-script check, no runFullTestSuite call,
+    // and the (exempted) full command is not recorded in `skipped`. Log
+    // exactly one [baseline] line naming the covered entries, their
+    // park-resume stash SHAs/refs, and why the exemption is sound.
+    if (fullSuiteExemption) {
+      const exemptedEntries = Array.isArray(fullSuiteExemption.entries) ? fullSuiteExemption.entries : [];
+      const slugs = exemptedEntries.map((entry) => entry && entry.slug).filter(Boolean);
+      const stashes = exemptedEntries.map((entry) => entry && entry.stashSha).filter(Boolean);
+      const slugsText = slugs.length > 0 ? slugs.join(', ') : '(none recorded)';
+      const stashesText = stashes.length > 0 ? stashes.join(', ') : '(none recorded)';
+      console.log(
+        `[baseline] Full-suite gate exempted for \`${fullCommand}\` — marked entries: ${slugsText}; ` +
+          `park-resume stash(es): ${stashesText}; reason: every pending entry in the batch carries a ` +
+          `park-resume marker whose WIP was already re-attached, so the full suite was already proven for this tree.`
+      );
       return { ok: true, skipped };
     }
 

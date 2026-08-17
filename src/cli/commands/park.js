@@ -5,6 +5,7 @@ import {
   updateQueueEntryStatus,
   readParkScene,
   writeParkScene,
+  writeParkResumeMarker,
 } from '../../orchestrator/core/state.js';
 import {
   showParkSnapshot,
@@ -357,6 +358,29 @@ export function parkResolve(projectRoot, slug, flags = {}) {
       // Reattach succeeded — drop the anchoring ref (the WIP now lives in the
       // working tree) so no orphaned park ref accumulates.
       cleanupParkSnapshot(slug, projectRoot);
+
+      // Persist the park-resume marker so a later re-validation can recognize
+      // this entry was resumed from a park snapshot. Only meaningful when the
+      // scene carried a durable stash COMMIT SHA — scene.stashRef (the
+      // refs/park/<slug> ref name) must never reach the marker, because
+      // cleanupParkSnapshot just deleted that ref on this same resolve, so a
+      // marker holding it would be unreadable. Fail-soft: a marker-write
+      // failure must not undo the reattach/cleanup already committed above —
+      // warn and continue to the scene write + status flip below.
+      if (scene.stashSha) {
+        try {
+          writeParkResumeMarker(projectRoot, slug, {
+            stashSha: scene.stashSha,
+            baseSha: scene.baseSha,
+            resolvedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn(
+            `Warning: could not write the park-resume marker for '${slug}' ` +
+            `(${err.message}). The requeue itself succeeded.`
+          );
+        }
+      }
     } else {
       // --reject / --waive: the preserved work is being discarded — drop the
       // anchoring ref (no reattach) so the stash object becomes gc-able.
@@ -386,19 +410,25 @@ export function parkResolve(projectRoot, slug, flags = {}) {
   // below) so an aborted resolve never removes anything. Keyed strictly on
   // the recorded runId — no slug-matching — and skipped entirely when the
   // runId is the active run's pointer target.
-  // singlePath scenes represent the only active run on this queue entry's
-  // path: any resolve verb (requeue/waive/reject) settles it, so the
+  // Every resolve verb (requeue/waive/reject) settles this run, so the
   // active-run pointer must be cleared too — but strictly only when it still
   // names THIS run (never clobber a pointer some other run has since claimed).
   // ORDER MATTERS (W-361): the clear must happen BEFORE
   // removeParkedRunHarnessDir, whose own guard skips deletion while the
-  // pointer still names scene.runId — the old order left every singlePath
-  // resolve with an orphan run dir.
-  if (scene.singlePath === true) {
+  // pointer still names scene.runId — the old order left every resolve
+  // with an orphan run dir.
+  // Fail-soft: an error reading/clearing the pointer must not undo the scene
+  // write + status flip already committed above — warn and continue.
+  try {
     const pointer = readActiveRunPointer(projectRoot);
     if (pointer?.runId === scene.runId) {
       clearActiveRunPointer(projectRoot);
     }
+  } catch (err) {
+    console.warn(
+      `Warning: could not release the active-run pointer for run ` +
+      `'${scene.runId}' (${err.message}). The resolve itself succeeded.`
+    );
   }
 
   removeParkedRunHarnessDir(projectRoot, scene.runId);

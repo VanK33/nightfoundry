@@ -31,6 +31,7 @@ import {
   writeMissionState, writeVerifyJson, isMissionAlreadyStarted, writeQueueEntry,
   listQueue, readQueueEntry, removeQueueEntry, buildFileToMissionMap,
   assertNoStubVerifierSidecar, writeParkScene, readParkScene,
+  readParkResumeMarker, removeParkResumeMarker,
   updateQueueEntryStatus, writeJsonAtomic,
   writeGateFlags, readGateFlags,
   resolveHarnessFileRef,
@@ -268,6 +269,17 @@ class Pipeline {
     // park-eligible gate runs), so _parkEntry can stamp park.json with the
     // runId of the run that was parked. Left null outside batchResume.
     this._activeEntryRunId = null;
+
+    // Tracks the park-resume exemption record (from _parkResumeExemption)
+    // for the queue entry currently being processed by batchResume. Set at
+    // the top of each per-entry iteration alongside this._activeEntryRunId,
+    // so it is null for an unmarked entry and never leaks from one entry to
+    // the next. This is a one-shot, per-entry lifecycle: the on-disk marker
+    // it was derived from is deleted once the entry actually begins
+    // executing (at the claimActiveRun/bootstrap point), but this in-memory
+    // record remains readable for the rest of that entry's iteration,
+    // including its failure paths.
+    this._activeEntryParkResume = null;
 
     const userOnLog = opts.onLog || console.log;
     const userOnConfirm = opts.onConfirm || (() => true);
@@ -1456,7 +1468,15 @@ class Pipeline {
     let isGitRepo = true;
     try {
       ensureGitExcludes(this.projectRoot);
-      porcelain = execSync('git status --porcelain', { stdio: ['pipe', 'pipe', 'pipe'], cwd: this.projectRoot, encoding: 'utf8' }).trim();
+      // Trim only TRAILING whitespace here, never leading: porcelain v1 lines
+      // are "XY <path>" where a leading space in XY (e.g. " M file" for an
+      // unstaged modification) is significant. A plain .trim() on the whole
+      // string only ever corrupts the FIRST line (interior newlines protect
+      // every other line), but that is exactly the single-dirty-file case
+      // the per-line parsers below rely on — String.prototype.trim() strips
+      // leading whitespace off the whole string, not per line, which silently
+      // shifts a " M file" first line to "M file" and misparses its path.
+      porcelain = execSync('git status --porcelain', { stdio: ['pipe', 'pipe', 'pipe'], cwd: this.projectRoot, encoding: 'utf8' }).replace(/\s+$/, '');
     } catch (gitErr) {
       // Not a git repository (or git unavailable): skip the clean-tree guard.
       // batchResume is exercised in non-git temp dirs by some existing tests,
@@ -1466,8 +1486,70 @@ class Pipeline {
       isGitRepo = false;
     }
     if (porcelain.length > 0) {
-      this.onLog('Batch refused: working tree is not clean. Commit or stash changes before running cc-orch resume --batch. (cc-orch\'s own artifacts — .harness/, queue/, and root-level spec files — are auto-excluded from git; the changes above are outside that set.)');
-      return { archived: 0, failed: 0, parked: 0 };
+      const refusalMessage = 'Batch refused: working tree is not clean. Commit or stash changes before running cc-orch resume --batch. (cc-orch\'s own artifacts — .harness/, queue/, and root-level spec files — are auto-excluded from git; the changes above are outside that set.)';
+      // A park resolved by `cc-orch park resolve` restores a preserved stash
+      // BEFORE this guard runs, which legitimately dirties the tree with the
+      // very changes the batch is meant to resume — the guard as written
+      // would deadlock that batch forever. Narrow the refusal: a dirty tree
+      // is still tolerated when every dirty path is accounted for by the
+      // restored path set of a pending entry that carries a park-resume
+      // marker (readParkResumeMarker + _parkResumeExemption). Any other
+      // reason falls back to the strict guard above, unchanged.
+      const pendingForExemption = listQueue(this.projectRoot).filter((e) => e.status === 'pending');
+      const markedEntries = [];
+      let unobtainableExemption = false;
+      for (const e of pendingForExemption) {
+        let marker;
+        try {
+          marker = readParkResumeMarker(this.projectRoot, e.slug);
+        } catch {
+          marker = null;
+        }
+        if (!marker || typeof marker !== 'object') continue;
+        const exemption = this._parkResumeExemption(e.slug);
+        if (!exemption) {
+          // Entry carries a marker but its restored path set could not be
+          // resolved (bad/missing stashSha, unresolvable stash, etc.) — we
+          // cannot safely narrow the guard, so fail closed exactly as today.
+          unobtainableExemption = true;
+          break;
+        }
+        markedEntries.push({ slug: e.slug, stashSha: exemption.stashSha, paths: exemption.paths });
+      }
+
+      let exempt = false;
+      if (markedEntries.length > 0 && !unobtainableExemption) {
+        const restoredUnion = new Set();
+        for (const m of markedEntries) {
+          for (const p of m.paths) restoredUnion.add(p);
+        }
+        const dirtyPaths = porcelain
+          .split('\n')
+          .filter((line) => line.trim().length > 0)
+          .map((line) => {
+            // Porcelain v1: 2 status chars + a space + the path (the leading
+            // space of e.g. " M file" is significant, so slice from index 3,
+            // not trim). For renames ("R  old -> new") the survivor is the
+            // destination.
+            let pathPart = line.slice(3).replace(/^"|"$/g, '');
+            const arrowIdx = pathPart.indexOf(' -> ');
+            if (arrowIdx !== -1) pathPart = pathPart.slice(arrowIdx + 4).replace(/^"|"$/g, '');
+            return pathPart;
+          });
+        exempt = dirtyPaths.every((p) => restoredUnion.has(p));
+      }
+
+      if (!exempt) {
+        this.onLog(refusalMessage);
+        return { archived: 0, failed: 0, parked: 0 };
+      }
+
+      this.onLog(
+        `Clean-tree guard narrowed: dirty working tree matches the restored path set of park-resume ` +
+        `entr${markedEntries.length === 1 ? 'y' : 'ies'} ` +
+        markedEntries.map((m) => `'${m.slug}' (stash ${m.stashSha})`).join(', ') +
+        ' — proceeding with batch instead of refusing.'
+      );
     }
 
     sweepOrphanRunDirs(this.projectRoot, { log: (m) => this.onLog(m) });
@@ -1542,6 +1624,14 @@ class Pipeline {
         // further down instead of being regenerated.
         const entryRunId = generateRunId(entry.slug);
         this._activeEntryRunId = entryRunId;
+        // One-shot per-entry lifecycle: (re)resolve the park-resume
+        // exemption for THIS entry at loop top, alongside
+        // this._activeEntryRunId, so it is null for an unmarked entry and
+        // never leaks from one entry to the next. The on-disk marker this is
+        // derived from is deleted once the entry begins executing (at the
+        // claimActiveRun/bootstrap point below); this in-memory record stays
+        // readable for the rest of this entry's iteration regardless.
+        this._activeEntryParkResume = this._parkResumeExemption(entry.slug);
 
         // Per-entry harness-anchoring invariant: each entry anchors its
         // harness to its own per-run dir at loop top, before any per-entry
@@ -1816,6 +1906,28 @@ class Pipeline {
           this._repointHarness(runHarnessDir(this.projectRoot, entryRunId));
           writeGlobalPlan(this.harnessDir, plan);
 
+          // Consume the one-shot park-resume exemption: the entry is now
+          // actually beginning execution (claimed + bootstrapped), so the
+          // on-disk marker must be deleted here so a single resolve grants
+          // at most one exempted attempt. this._activeEntryParkResume (the
+          // in-memory record read at loop top) is deliberately left intact
+          // — it remains readable for the rest of this entry's iteration,
+          // including its failure paths, even though the on-disk marker is
+          // now gone. Fail-soft: a removal failure warns and lets the entry
+          // continue rather than aborting execution.
+          if (this._activeEntryParkResume) {
+            try {
+              removeParkResumeMarker(this.projectRoot, entry.slug);
+              this.onLog(
+                `  Park-resume exemption for '${entry.slug}' (stash ${this._activeEntryParkResume.stashSha}) consumed — one-shot marker removed.`
+              );
+            } catch (markerErr) {
+              this.onLog(
+                `  Failed to remove park-resume marker for '${entry.slug}': ${markerErr.message}`
+              );
+            }
+          }
+
           // This-run source of truth: write THIS entry's uncertains into the
           // fresh state bootstrap just created (read-modify-write), so the
           // review gate and the archive can read state.uncertainAssumptions.
@@ -2058,6 +2170,24 @@ class Pipeline {
               this.onLog(`  Failed to extract test-gate failure detail for '${entry.slug}': ${extractErr.message}`);
             }
             if (isGitRepo) {
+              // A park-resumed entry re-attaches a prior remediation's WIP
+              // onto the working tree before re-execution — that WIP is
+              // NOT reachable from HEAD, so the hard reset below would
+              // destroy it. When this entry is running under a park-resume
+              // exemption, preserve the tree to a park ref FIRST so the
+              // resumed remediation is never silently lost. Preservation is
+              // fail-soft: a snapshot error is logged and the revert still
+              // proceeds.
+              if (this._activeEntryParkResume) {
+                try {
+                  const resumeParkSnapshot = createParkSnapshot(entry.slug, this.projectRoot);
+                  if (resumeParkSnapshot) {
+                    this.onLog(`  Preserved resumed remediation work-in-progress for '${entry.slug}' as ${resumeParkSnapshot.stashRef} — protects the re-attached park-resume WIP before the test-gate revert.`);
+                  }
+                } catch (parkErr) {
+                  this.onLog(`  ERROR: failed to snapshot resumed remediation work for '${entry.slug}' before test-gate revert: ${parkErr.message}`);
+                }
+              }
               try {
                 execSync('git reset --hard HEAD', { cwd: this.projectRoot, stdio: 'pipe' });
                 execSync('git clean -fd -e queue', { cwd: this.projectRoot, stdio: 'pipe' });
@@ -2152,6 +2282,24 @@ class Pipeline {
                 }
               } catch (extractErr) {
                 this.onLog(`  Failed to extract criteria-failure detail for '${entry.slug}': ${extractErr.message}`);
+              }
+              // A park-resumed entry re-attaches a prior remediation's WIP
+              // onto the working tree before re-execution — that WIP is
+              // NOT reachable from HEAD, so the hard reset below would
+              // destroy it. When this entry is running under a park-resume
+              // exemption, preserve the tree to a park ref FIRST so the
+              // resumed remediation is never silently lost. Preservation is
+              // fail-soft: a snapshot error is logged and the revert still
+              // proceeds.
+              if (this._activeEntryParkResume) {
+                try {
+                  const resumeParkSnapshot = createParkSnapshot(entry.slug, this.projectRoot);
+                  if (resumeParkSnapshot) {
+                    this.onLog(`  Preserved resumed remediation work-in-progress for '${entry.slug}' as ${resumeParkSnapshot.stashRef} — protects the re-attached park-resume WIP before the criteria-failure revert.`);
+                  }
+                } catch (parkErr) {
+                  this.onLog(`  ERROR: failed to snapshot resumed remediation work for '${entry.slug}' before criteria-failure revert: ${parkErr.message}`);
+                }
               }
               try {
                 execSync('git reset --hard HEAD', { cwd: this.projectRoot, stdio: 'pipe' });
@@ -2371,6 +2519,26 @@ class Pipeline {
                   this.onLog(`  Preserved work-in-progress for '${entry.slug}' as ${parkSnapshot.stashRef} — inspect with: cc-orch park show ${entry.slug}`);
                 }
               } else {
+                // A park-resumed entry re-attaches a prior remediation's WIP
+                // onto the working tree before re-execution — that WIP is
+                // NOT reachable from HEAD, so the hard reset below would
+                // destroy it. When this entry is running under a park-resume
+                // exemption, preserve the tree to a park ref FIRST so the
+                // resumed remediation is never silently lost. Preservation
+                // is fail-soft: a snapshot error is logged and the revert
+                // still proceeds. (The isResolvablePark branch above already
+                // preserves the WIP unconditionally, so this branch is the
+                // only one that needs the extra guard.)
+                if (this._activeEntryParkResume) {
+                  try {
+                    const resumeParkSnapshot = createParkSnapshot(entry.slug, this.projectRoot);
+                    if (resumeParkSnapshot) {
+                      this.onLog(`  Preserved resumed remediation work-in-progress for '${entry.slug}' as ${resumeParkSnapshot.stashRef} — protects the re-attached park-resume WIP before the execution-failure revert.`);
+                    }
+                  } catch (parkErr) {
+                    this.onLog(`  ERROR: failed to snapshot resumed remediation work for '${entry.slug}' before execution-failure revert: ${parkErr.message}`);
+                  }
+                }
                 execSync('git reset --hard HEAD', { cwd: this.projectRoot, stdio: 'pipe' });
                 execSync('git clean -fd -e queue -e archives', { cwd: this.projectRoot, stdio: 'pipe' });
               }
@@ -2541,6 +2709,22 @@ class Pipeline {
 
     updateQueueEntryStatus(this.projectRoot, entry.slug, status);
     this.onLog(`  Entry '${entry.slug}' marked ${status} (site: ${scene.site}) — inspect with: cc-orch park show ${entry.slug}`);
+
+    // Best-effort active-run pointer release (fail-soft — mirrors
+    // _releaseActiveRunPointerOnPlanningFailure's try/catch-warn-never-throw
+    // pattern). Only a pointer naming THIS parking run is cleared — a
+    // pointer naming any other run is left untouched. A throwing read/clear
+    // is logged and swallowed: the park scene stays written and the
+    // disposition above never fails.
+    try {
+      const pointer = readActiveRunPointer(this.projectRoot);
+      if (pointer?.runId === runId) {
+        clearActiveRunPointer(this.projectRoot);
+        this.onLog(`  Released active-run pointer for run ${runId} after parking '${entry.slug}'.`);
+      }
+    } catch (pointerErr) {
+      this.onLog(`  Failed to release active-run pointer for '${entry.slug}': ${pointerErr.message}`);
+    }
 
     // Best-effort brainstorm-candidate ledger emit (fail-soft — mirrors
     // createParkSnapshot's try/catch-warn-never-throw pattern). Must never
@@ -2791,12 +2975,36 @@ class Pipeline {
    * Instance method (not inline execSync) so tests can stub it to drive the
    * abort flow and unit-test it directly.
    *
+   * w4-park-resume-failure-path-exemption narrowing: after the archives/
+   * exclusion below, a dirty path is ALSO tolerated when it lies within the
+   * restored path set of the CURRENT entry's in-memory park-resume exemption
+   * record (this._activeEntryParkResume, set at loop top by batchResume via
+   * _parkResumeExemption and left readable for the rest of that entry's
+   * iteration, including its failure paths — see the field's doc comment in
+   * the constructor). A park-resume reattach can legitimately leave the tree
+   * dirty with the very WIP the failure-path revert is not meant to touch;
+   * without this, every failed entry that was resumed from a park would trip
+   * this guard on its own restored WIP. This is a NARROWING only: a null
+   * record (entry never carried a marker, or the marker's restored path set
+   * could not be resolved) keeps today's behavior exactly — every dirty path
+   * (outside archives/) aborts. Likewise, with a non-null record, any dirty
+   * path OUTSIDE the record's restored set still aborts with today's
+   * message. The probe-failure branch above is unaffected and still fails
+   * closed.
+   *
    * @param {string} slug - Queue entry slug, named in the abort message.
    */
   _assertBatchTreeClean(slug) {
     let porcelain;
     try {
-      porcelain = execSync('git status --porcelain', { cwd: this.projectRoot, encoding: 'utf8', stdio: 'pipe' }).trim();
+      // Trim only TRAILING whitespace, never leading: porcelain v1 lines are
+      // "XY <path>" where a leading space in XY (e.g. " M file" for an
+      // unstaged modification) is significant. A plain .trim() on the whole
+      // string strips leading whitespace off the WHOLE STRING, not per line,
+      // which silently shifts a " M file" FIRST line to "M file" and
+      // misparses its path (every other line is unaffected — interior
+      // newlines protect them).
+      porcelain = execSync('git status --porcelain', { cwd: this.projectRoot, encoding: 'utf8', stdio: 'pipe' }).replace(/\s+$/, '');
     } catch (probeErr) {
       // Confirmed-git-at-batch-start (caller gates on isGitRepo) → fail closed.
       throw new Error(
@@ -2825,12 +3033,100 @@ class Pipeline {
         if (arrowIdx !== -1) pathPart = pathPart.slice(arrowIdx + 4).replace(/^"|"$/g, '');
         return !(pathPart === 'archives/' || pathPart === 'archives' || pathPart.startsWith('archives/'));
       });
-    if (dirtyLines.length > 0) {
+
+    if (dirtyLines.length === 0) return;
+
+    // Narrowing: a null record (unmarked entry, or an unobtainable restored
+    // path set) keeps today's behavior exactly — fall straight through to
+    // the abort below with every remaining dirty line still counted.
+    const exemption = this._activeEntryParkResume;
+    let stillDirty = dirtyLines;
+    if (exemption && Array.isArray(exemption.paths)) {
+      const restoredSet = new Set(exemption.paths);
+      stillDirty = dirtyLines.filter((line) => {
+        let pathPart = line.slice(3).replace(/^"|"$/g, '');
+        const arrowIdx = pathPart.indexOf(' -> ');
+        if (arrowIdx !== -1) pathPart = pathPart.slice(arrowIdx + 4).replace(/^"|"$/g, '');
+        return !restoredSet.has(pathPart);
+      });
+      if (stillDirty.length < dirtyLines.length) {
+        this.onLog(
+          `  Tree-cleanliness check for '${slug}' narrowed: ${dirtyLines.length - stillDirty.length} dirty ` +
+          `path(s) tolerated because they lie within the restored path set of the park-resume exemption ` +
+          `for '${slug}' (stash ${exemption.stashSha}) — that WIP was reattached by the resolved park, not ` +
+          'left over from this failure.'
+        );
+      }
+    }
+
+    if (stillDirty.length > 0) {
       throw new Error(
         `Working tree is still dirty after the failure-path revert for entry '${slug}' (already marked failed). ` +
         'Aborting the batch to protect remaining entries from a contaminated working tree.'
       );
     }
+  }
+
+  /**
+   * _parkResumeExemption(slug) — Resolve the park-resume exemption for a
+   * queue entry, i.e. the set of repo-relative paths a resolved park's
+   * preserved stash is allowed to touch.
+   *
+   * Reads queue/<slug>/resumed-from-park.json via the park-resume marker
+   * reader exported by state.js (mission 001-001). When the entry carries a
+   * usable marker, resolves the durable stash COMMIT SHA it recorded
+   * (marker.stashSha — never a refs/park/<slug> ref name, which is deleted on
+   * resolve and would not survive this lookup) to the list of paths that
+   * stash restores via `git stash show --name-only -u <stashSha>` (argv form,
+   * no shell, stdio 'pipe') run in this.projectRoot.
+   *
+   * Returns null — meaning "no exemption, fall back to the strict guard" —
+   * for every case where the exemption cannot be established:
+   *   - no marker for this entry (readParkResumeMarker returns null)
+   *   - marker.stashSha is missing / not a non-empty string
+   *   - the git probe throws (bad SHA, non-git repo, etc.)
+   *   - the git probe exits non-zero
+   *   - the git probe's stdout is empty after trimming (no paths)
+   *
+   * Never throws — every failure mode above is caught and converted to null
+   * so callers can unconditionally fall back to the strict guard.
+   *
+   * @param {string} slug - Queue entry slug.
+   * @returns {{ stashSha: string, paths: string[] } | null}
+   */
+  _parkResumeExemption(slug) {
+    let marker;
+    try {
+      marker = readParkResumeMarker(this.projectRoot, slug);
+    } catch {
+      return null;
+    }
+    if (!marker || typeof marker !== 'object') return null;
+
+    const stashSha = marker.stashSha;
+    if (!stashSha || typeof stashSha !== 'string') return null;
+
+    let output;
+    try {
+      output = execFileSync(
+        'git',
+        ['stash', 'show', '--name-only', '-u', stashSha],
+        { cwd: this.projectRoot, encoding: 'utf8', stdio: 'pipe' }
+      );
+    } catch {
+      // Bad SHA, stash unresolvable, non-zero exit, or any other git error
+      // — no usable exemption.
+      return null;
+    }
+
+    const paths = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (paths.length === 0) return null;
+
+    return { stashSha, paths };
   }
 
   // ── Review gate ──

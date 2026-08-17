@@ -368,6 +368,8 @@ export const TEST_FILES = [
   'test/test-park-requeue-reattach.js',
   'test/test-park-snapshot-cleanup.js',
   'test/test-park-resume-consistency.js',
+  'test/test-park-requeue-preflights.js',
+  'test/test-park-pointer-release.js',
   'test/test-uncertain-advisory.js',
   'test/test-analyzer-closure.js',
   'test/test-auto-waive-scene.js',

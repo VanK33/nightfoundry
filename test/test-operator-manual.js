@@ -310,10 +310,27 @@ const DEBUGGING_FLOWS = [
   '## Flow d: a queued spec never seems to advance',
   '## Flow e: reported cost or usage looks wrong',
   '## Flow f: a command exits cleanly but nothing changed',
+  '## Flow h: park cleanup and the park-resume preflight exemption',
+];
+
+// Verbatim substrings from Flow h — pointer release/removal ordering,
+// warn-and-continue on a failed release, `clean --runs` orphan reaping, the
+// park-resume preflight exemption's scope (full-suite-arm-only, every-entry-
+// marked, smoke arm always runs), the clean-tree narrowing limited to the
+// marker stash's restored paths, and the one-shot marker.
+const DEBUGGING_PARK_CLEANUP_PINS = [
+  "resolving a parked entry releases the active-run pointer only when the pointer's `runId` is exactly equal to the resolved run's `runId`",
+  "This release happens BEFORE the parked run's `.harness/<runId>/` directory is removed",
+  'If reading or clearing the pointer fails, the resolve does not fail — it logs a warning and the park disposition (scene write + status flip to `pending`/`rejected`) still completes.',
+  "A pointer whose `runId` has no corresponding run directory on disk is orphaned and is reaped (removed).",
+  'suppresses only the full-suite baseline arm of the pre-spend baseline gate — never the smoke arm, which always runs regardless of the marker',
+  'The suppression only applies when EVERY pending entry in the batch carries the park-resume marker',
+  'the preflight clean-tree narrowing accepts a dirty working tree only when its dirty paths are a subset of the paths restored from the marker\'s stash',
+  'The marker itself is one-shot: it is removed as soon as the entry begins executing, so a later re-park/re-requeue of the same entry starts from a fresh (unmarked) state.',
 ];
 
 function ac4_chapterPins() {
-  console.log('\n=== (4) chapter pins — spec-authoring (a)-(g) + debugging flows (a)-(f) ===\n');
+  console.log('\n=== (4) chapter pins — spec-authoring (a)-(g) + debugging flows (a)-(f), (h) ===\n');
   const specText = fs.readFileSync(SPEC_AUTHORING_PATH, 'utf8');
   for (const heading of SPEC_AUTHORING_SECTIONS) {
     assert(`spec-authoring: heading present — "${heading}"`, specText.includes(heading));
@@ -324,6 +341,9 @@ function ac4_chapterPins() {
   const debugText = fs.readFileSync(DEBUGGING_PATH, 'utf8');
   for (const heading of DEBUGGING_FLOWS) {
     assert(`debugging: heading present — "${heading}"`, debugText.includes(heading));
+  }
+  for (const pin of DEBUGGING_PARK_CLEANUP_PINS) {
+    assert(`debugging: Flow h pin present — "${pin}"`, debugText.includes(pin));
   }
 }
 

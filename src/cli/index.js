@@ -37,6 +37,7 @@ import { TokenTracker } from '../orchestrator/infra/token-tracker.js';
 import { activeHarnessDir, harnessRoot } from '../orchestrator/core/run-context.js';
 import { loadProjectConfig } from '../orchestrator/infra/project-config.js';
 import { runBaselineGate } from '../orchestrator/gates/baseline.js';
+import { listQueue, readParkResumeMarker } from '../orchestrator/core/state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -190,7 +191,8 @@ async function main() {
         // tree was validated when it started, so it is intentionally not
         // baseline-gated here; only the --batch path (picking up fresh specs
         // from the queue) needs the baseline check applied.
-        const baselineResult = await runBaselineGate(projectRoot);
+        const exemption = computeBatchBaselineExemption(projectRoot);
+        const baselineResult = await runBaselineGate(projectRoot, exemption);
         if (!baselineResult.ok) {
           console.error(baselineResult.message);
           process.exit(1);
@@ -622,6 +624,41 @@ function parseArgs(args) {
   }
 
   return { flags, positional };
+}
+
+/**
+ * Compute a batch baseline-gate exemption descriptor for a project's queue.
+ *
+ * Mirrors the exact "pending" set that batchResume executes (pipeline.js's
+ * `entries.filter((e) => e.status === 'pending')`). The batch baseline gate
+ * is exempted ONLY when every pending entry carries a park-resume marker
+ * (queue/{slug}/resumed-from-park.json, read via readParkResumeMarker) — a
+ * single un-resolved pending entry, or an empty queue, means no exemption.
+ *
+ * Never throws: any read/IO/parse error (including a missing queue/
+ * directory, which listQueue already reports as []) simply yields null, the
+ * same degraded-queue outcome as "no exemption".
+ *
+ * @param {string} projectRoot
+ * @returns {{ entries: Array<{ slug: string, stashSha: string }> } | null}
+ */
+export function computeBatchBaselineExemption(projectRoot) {
+  try {
+    const entries = listQueue(projectRoot);
+    const pending = entries.filter((e) => e.status === 'pending');
+    if (pending.length === 0) return null;
+
+    const exemptEntries = [];
+    for (const entry of pending) {
+      const marker = readParkResumeMarker(projectRoot, entry.slug);
+      if (!marker || typeof marker.stashSha !== 'string' || !marker.stashSha) return null;
+      exemptEntries.push({ slug: entry.slug, stashSha: marker.stashSha });
+    }
+
+    return { entries: exemptEntries };
+  } catch {
+    return null;
+  }
 }
 
 // Only run when executed directly (not when imported as a module)

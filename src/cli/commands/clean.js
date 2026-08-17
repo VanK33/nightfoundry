@@ -9,7 +9,12 @@ import path from 'path';
 import { askYesNo } from '../prompt.js';
 import { archive } from './archive.js';
 import { listSnapshotRefs, cleanupParkSnapshot } from '../../orchestrator/core/park-snapshot.js';
-import { harnessRoot } from '../../orchestrator/core/run-context.js';
+import {
+  harnessRoot,
+  runHarnessDir,
+  readActiveRunPointer,
+  clearActiveRunPointer,
+} from '../../orchestrator/core/run-context.js';
 import { classifyOrphanRunDirs } from '../../orchestrator/core/harness-reaper.js';
 
 /**
@@ -193,6 +198,40 @@ export async function reapOrphanRunDirs(projectRoot, flags = {}) {
 }
 
 /**
+ * Reap an ORPHANED active-run pointer (`.harness/active-run`).
+ *
+ * Orphanhood is decided ONLY from the filesystem fact that the pointer's
+ * runId has no corresponding run directory on disk
+ * (runHarnessDir(projectRoot, runId) does not exist) — there is no
+ * inspection of state.json/globalStatus or any other state-shape inference
+ * about whether the run is alive.
+ *
+ * A pointer whose run directory exists is left untouched. A missing or
+ * unparseable pointer (readActiveRunPointer returns null) is a no-op. Any
+ * failure while reading or clearing the pointer is caught, emits a
+ * console.warn, and does not propagate.
+ *
+ * @param {string} projectRoot - Absolute path to the project root
+ */
+function reapOrphanActiveRunPointer(projectRoot) {
+  try {
+    const pointer = readActiveRunPointer(projectRoot);
+    if (!pointer || !pointer.runId) {
+      return;
+    }
+    const dir = runHarnessDir(projectRoot, pointer.runId);
+    if (fs.existsSync(dir)) {
+      // Run dir still present on disk — pointer is not orphaned. PRESERVE.
+      return;
+    }
+    clearActiveRunPointer(projectRoot);
+    console.log(`[clean] Removed orphaned active-run pointer for ${pointer.runId}.`);
+  } catch (err) {
+    console.warn(`[clean] Failed to reap orphaned active-run pointer: ${err.message}`);
+  }
+}
+
+/**
  * Remove .harness/ from the given project root.
  *
  * Flow:
@@ -212,6 +251,7 @@ export async function reapOrphanRunDirs(projectRoot, flags = {}) {
 export async function clean(projectRoot, flags = {}, deps = {}) {
   if (flags.runs) {
     await reapOrphanRunDirs(projectRoot, flags);
+    reapOrphanActiveRunPointer(projectRoot);
     return;
   }
 

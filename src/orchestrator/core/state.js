@@ -24,11 +24,27 @@
  *   updateQueueEntryStatus(projectRoot, slug, status)
  *   writeParkScene(projectRoot, slug, scene)
  *   writeAutoWaiveScene(projectRoot, slug, scene) → path written
+ *   PARK_RESUME_MARKER_FILE
+ *   writeParkResumeMarker(projectRoot, slug, { stashSha, baseSha, resolvedAt }) → path written
+ *   readParkResumeMarker(projectRoot, slug) → marker | null
+ *   removeParkResumeMarker(projectRoot, slug) → boolean
  *   readParkScene(projectRoot, slug) → scene | null
  *   listQueue(projectRoot) → Array<{ slug, spec, plan, validatedAt, status, assumptionResults, specJson }>
  *   removeQueueEntry(projectRoot, slug)
  *   assertNoStubVerifierSidecar(harnessDir, taskId)
  *   buildFileToMissionMap(harnessDir, changedFiles?) → Map<filePath, missionId>
+ *
+ * Projection note: the park-resume marker (PARK_RESUME_MARKER_FILE /
+ * writeParkResumeMarker / readParkResumeMarker / removeParkResumeMarker) is
+ * NOT folded into the readQueueEntry/listQueue projection — those keep their
+ * documented shape { slug, spec, plan, validatedAt, status,
+ * assumptionResults, specJson } unchanged. The marker is resolve-scoped
+ * (written on park-resolve, removed the moment the entry begins executing),
+ * so baking it into the entry projection would make every listQueue caller's
+ * shape depend on that transient state; consumers (missions
+ * 001-002/001-003/001-004) instead call readParkResumeMarker(projectRoot,
+ * slug) per slug. The plain-text queue/<slug>/status file format is
+ * unchanged by this contract.
  */
 import fs from 'fs';
 import path from 'path';
@@ -527,6 +543,18 @@ export function writeQueueEntry(projectRoot, slug, { spec, plan, validatedAt, st
  * `specJson` is the raw spec.json sibling content: a string when
  * queue/{slug}/spec.json exists, `null` when absent.
  *
+ * Projection decision: this return shape deliberately does NOT include the
+ * park-resume marker (see PARK_RESUME_MARKER_FILE / writeParkResumeMarker /
+ * readParkResumeMarker / removeParkResumeMarker below) — it stays exactly
+ * `{ slug, spec, plan, validatedAt, status, assumptionResults, specJson }`.
+ * The marker is resolve-scoped (written on park-resolve, removed the moment
+ * the entry begins executing), so folding it into this projection would make
+ * every readQueueEntry/listQueue caller's shape depend on that transient
+ * state. Consumers that need it (missions 001-002/001-003/001-004) call
+ * readParkResumeMarker(projectRoot, slug) separately, per slug. The plain-text
+ * queue/{slug}/status file format is unchanged by the marker's introduction —
+ * the marker lives in its own sibling JSON file.
+ *
  * @param {string} projectRoot
  * @param {string} slug
  * @returns {{ slug: string, spec: string, plan: object, validatedAt: string, status: string, assumptionResults: Array, specJson: string | null } | null}
@@ -655,6 +683,96 @@ export function writeAutoWaiveScene(projectRoot, slug, scene) {
 }
 
 /**
+ * Filename of the park-resume marker written on resolve, under
+ * queue/<slug>/.
+ */
+export const PARK_RESUME_MARKER_FILE = 'resumed-from-park.json';
+
+/**
+ * Write the park-resume marker for a queue entry to
+ * queue/{slug}/resumed-from-park.json.
+ *
+ * Records the durable stash commit SHA and base SHA the resolve carried
+ * forward from the park snapshot, plus the ISO timestamp the resolve
+ * happened at. Creates queue/{slug}/ if absent. Atomic (write → fsync →
+ * rename) via writeJsonAtomic, so a reader observes either the previous
+ * content or the complete new content and never a truncated file.
+ *
+ * `stashSha` MUST be the durable stash COMMIT SHA (scene.stashSha), never a
+ * `refs/park/<slug>` ref name — the anchoring ref is deleted by
+ * cleanupParkSnapshot on the same resolve, so persisting the ref name here
+ * would leave the marker pointing at nothing. Throws when stashSha is
+ * missing, is not a string, or begins with 'refs/'.
+ *
+ * @param {string} projectRoot
+ * @param {string} slug
+ * @param {{ stashSha: string, baseSha: string, resolvedAt: string }} params
+ * @returns {string} absolute path of the written marker
+ */
+export function writeParkResumeMarker(projectRoot, slug, { stashSha, baseSha, resolvedAt } = {}) {
+  if (!stashSha || typeof stashSha !== 'string' || stashSha.startsWith('refs/')) {
+    throw new Error(
+      `writeParkResumeMarker: stashSha must be the durable stash commit SHA, not a refs/park/<slug> ref name or missing value — got ${JSON.stringify(stashSha)}`
+    );
+  }
+
+  const entryDir = path.join(projectRoot, 'queue', slug);
+  fs.mkdirSync(entryDir, { recursive: true });
+
+  const markerPath = path.join(entryDir, PARK_RESUME_MARKER_FILE);
+  writeJsonAtomic(markerPath, { stashSha, baseSha, resolvedAt });
+  return markerPath;
+}
+
+/**
+ * Read the park-resume marker for a queue entry from
+ * queue/{slug}/resumed-from-park.json.
+ *
+ * Returns null — never throws — when the marker file is absent, unreadable,
+ * contains malformed JSON, or parses to a value that is not a plain object.
+ *
+ * @param {string} projectRoot
+ * @param {string} slug
+ * @returns {{ stashSha: string, baseSha: string, resolvedAt: string } | null}
+ */
+export function readParkResumeMarker(projectRoot, slug) {
+  const markerPath = path.join(projectRoot, 'queue', slug, PARK_RESUME_MARKER_FILE);
+  let raw;
+  try {
+    raw = fs.readFileSync(markerPath, 'utf8');
+  } catch {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  return parsed;
+}
+
+/**
+ * Remove the park-resume marker for a queue entry
+ * (queue/{slug}/resumed-from-park.json), if present.
+ *
+ * Called when an entry begins executing, so a single resolve grants at most
+ * one exempted attempt. Never throws for a missing marker or a missing
+ * entry directory.
+ *
+ * @param {string} projectRoot
+ * @param {string} slug
+ * @returns {boolean} true when a marker was removed, false when none existed
+ */
+export function removeParkResumeMarker(projectRoot, slug) {
+  const markerPath = path.join(projectRoot, 'queue', slug, PARK_RESUME_MARKER_FILE);
+  if (!fs.existsSync(markerPath)) return false;
+  fs.rmSync(markerPath, { force: true });
+  return true;
+}
+
+/**
  * Read the park scene for a queue entry.
  *
  * Returns null when park.json is missing or unparseable — never throws.
@@ -687,6 +805,12 @@ export function readParkScene(projectRoot, slug) {
  * and returns entries sorted by their validatedAt timestamp. Non-directory
  * entries in queue/ are skipped. Returns an empty array when queue/ does
  * not exist.
+ *
+ * Same projection decision as readQueueEntry: entries here carry no
+ * resumed-from-park field — the park-resume marker is not part of this
+ * shape. A caller that needs to know whether a given slug is exempt from
+ * park re-validation must call readParkResumeMarker(projectRoot, slug) for
+ * that slug directly, rather than reading it off the listQueue result.
  *
  * @param {string} projectRoot
  * @returns {Array<{ slug: string, spec: string, plan: object, validatedAt: *, status: string, assumptionResults: Array, specJson: string | null }>}

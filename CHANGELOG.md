@@ -1,3 +1,13 @@
+## [0.2.17] - 2026-08-17 — Release active-run pointer; enable requeue preflight exemption
+
+### New features
+- Park-resume marker persists durable stash SHA and metadata, surviving git ref cleanup during resolve
+- Baseline gate skips full-suite arm for park-resumed batches with all pending entries carrying park-resume marker; pipeline tree-cleanliness checks narrowed to restored stash paths; working tree protected with snapshots before destructive reverts
+- Operator manual documents park cleanup (pointer auto-release, orphan reaping) and park-resume preflight exemption scope
+
+### Bug fixes
+- Release active-run pointer when parking entries, eliminating manual cleanup; allow `clean --runs` to reap orphaned pointers left by older versions
+
 ## [0.2.16] - 2026-08-12 — Enable failed-archive run reports and ccusage export
 
 ### New features

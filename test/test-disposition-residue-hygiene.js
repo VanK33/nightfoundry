@@ -50,8 +50,10 @@ delete process.env.CC_ORCH_ACTIVE_RUN;
  *   TC-e2 — parkResolve on a legacy scene WITHOUT a runId field resolves
  *           successfully with a silent skip — no dir is (or even can be)
  *           removed.
- *   TC-e3 — scene runId equals the active-run pointer's runId: the
- *           pointer-target dir is NOT removed and resolve still succeeds.
+ *   TC-e3 — scene runId equals the active-run pointer's runId: parkResolve
+ *           releases the pointer first, after which the parked run's dir IS
+ *           removed and resolve still succeeds; a pointer naming a DIFFERENT
+ *           runId is left untouched and its run dir still exists.
  *   TC-f  — forensic failed-archive (archive(root, name, {'include-failed':
  *           true}) on a halted per-run harness) leaves NO .harness/run-*
  *           residue for the archived run, while shared dirs and a sibling
@@ -87,6 +89,8 @@ import {
   clearActiveRunPointer,
   runHarnessDir,
   harnessRoot,
+  activeRunPointerPath,
+  readActiveRunPointer,
 } from '../src/orchestrator/core/run-context.js';
 import { Planner } from '../src/orchestrator/agents/planner.js';
 import {
@@ -498,17 +502,23 @@ await test('TC-e2: parkResolve on a legacy scene without runId resolves successf
 });
 
 // ── TC-e3 ─────────────────────────────────────────────────────────────────
-// scene runId equals the active-run pointer's runId — the pointer-target
-// dir is NOT removed and resolve still succeeds.
+// scene runId equals the active-run pointer's runId — parkResolve releases
+// the pointer FIRST, after which the parked run's dir IS removed and resolve
+// still succeeds. A pointer naming a DIFFERENT runId is left untouched and
+// its run dir still exists afterward.
 
-await test('TC-e3: scene runId equal to the active-run pointer is NOT removed; resolve still succeeds', async () => {
-  const root = makeTmpRoot('cc-orch-residue-e3-');
+await test('TC-e3: scene runId equal to the active-run pointer releases the pointer and removes its dir; a mismatched pointer is left untouched', async () => {
+  // Part (i) — match: scene.runId === active-run pointer's runId. Per the
+  // release-then-remove contract (W-361), parkResolve clears the pointer
+  // FIRST, so removeParkedRunHarnessDir's own guard (skip while the pointer
+  // still names this runId) no longer applies and the dir IS removed.
+  const rootMatch = makeTmpRoot('cc-orch-residue-e3-match-');
   try {
-    const slug = 'residue-e3-slug';
-    const { runId } = makeRun(root, { slug: 'residue-e3-active', kind: 'run', claim: true });
+    const slug = 'residue-e3-match-slug';
+    const { runId } = makeRun(rootMatch, { slug: 'residue-e3-active', kind: 'run', claim: true });
 
-    createQueueEntry(root, slug, { plan: makePlan(), status: 'parked' });
-    writeParkScene(root, slug, {
+    createQueueEntry(rootMatch, slug, { plan: makePlan(), status: 'parked' });
+    writeParkScene(rootMatch, slug, {
       site: 'active-pointer-match',
       parkedAt: new Date().toISOString(),
       runId,
@@ -516,25 +526,106 @@ await test('TC-e3: scene runId equal to the active-run pointer is NOT removed; r
       resolution: null,
     });
 
-    assert.ok(fs.existsSync(runHarnessDir(root, runId)), 'TC-e3: fixture — the active run dir must exist');
+    assert.ok(fs.existsSync(runHarnessDir(rootMatch, runId)), 'TC-e3: fixture — the active run dir must exist');
+    assert.ok(
+      fs.existsSync(activeRunPointerPath(rootMatch)),
+      'TC-e3: fixture — the active-run pointer must exist before resolve',
+    );
 
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
-      parkResolve(root, slug, { waive: true });
+      parkResolve(rootMatch, slug, { waive: true });
     } finally {
-      assert.notStrictEqual(process.exitCode, 1, 'TC-e3: parkResolve must succeed');
+      assert.notStrictEqual(
+        process.exitCode,
+        1,
+        'TC-e3: parkResolve must succeed when scene.runId matches the active pointer',
+      );
       process.exitCode = prevExitCode;
     }
 
     assert.ok(
-      fs.existsSync(runHarnessDir(root, runId)),
-      `TC-e3: .harness/${runId}/ is the active-run pointer target and must NOT be removed`,
+      !fs.existsSync(activeRunPointerPath(rootMatch)),
+      'TC-e3: the active-run pointer must be released (removed) once the matching run is resolved',
     );
-    const entry = readQueueEntry(root, slug);
-    assert.strictEqual(entry.status, 'pending', `TC-e3: --waive resolves to status 'pending', got '${entry.status}'`);
+    assert.ok(
+      !fs.existsSync(runHarnessDir(rootMatch, runId)),
+      `TC-e3: .harness/${runId}/ must be removed after the pointer is released`,
+    );
+    const entryMatch = readQueueEntry(rootMatch, slug);
+    assert.strictEqual(
+      entryMatch.status,
+      'pending',
+      `TC-e3: --waive resolves to status 'pending', got '${entryMatch.status}'`,
+    );
   } finally {
-    cleanup(root);
+    cleanup(rootMatch);
+  }
+
+  // Part (ii) — mismatch: the active-run pointer names a DIFFERENT runId than
+  // the parked scene. parkResolve must leave that pointer untouched and its
+  // run dir must still exist afterward.
+  const rootMismatch = makeTmpRoot('cc-orch-residue-e3-mismatch-');
+  try {
+    const slug = 'residue-e3-mismatch-slug';
+    const { runId: otherRunId } = makeRun(rootMismatch, {
+      slug: 'residue-e3-other-active',
+      kind: 'run',
+      claim: true,
+    });
+    const { runId: sceneRunId } = makeRun(rootMismatch, {
+      slug: 'residue-e3-parked',
+      kind: 'run',
+      claim: false,
+    });
+
+    createQueueEntry(rootMismatch, slug, { plan: makePlan(), status: 'parked' });
+    writeParkScene(rootMismatch, slug, {
+      site: 'active-pointer-mismatch',
+      parkedAt: new Date().toISOString(),
+      runId: sceneRunId,
+      previousResolutions: [],
+      resolution: null,
+    });
+
+    assert.ok(
+      fs.existsSync(runHarnessDir(rootMismatch, otherRunId)),
+      'TC-e3: fixture — the (different) active run dir must exist',
+    );
+
+    const prevExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      parkResolve(rootMismatch, slug, { waive: true });
+    } finally {
+      assert.notStrictEqual(
+        process.exitCode,
+        1,
+        'TC-e3: parkResolve must succeed even when the scene runId does not match the active pointer',
+      );
+      process.exitCode = prevExitCode;
+    }
+
+    const pointer = readActiveRunPointer(rootMismatch);
+    assert.ok(pointer, 'TC-e3: a mismatched active-run pointer must still exist after resolve');
+    assert.strictEqual(
+      pointer.runId,
+      otherRunId,
+      `TC-e3: the active-run pointer must remain untouched, still naming ${otherRunId}, got ${pointer && pointer.runId}`,
+    );
+    assert.ok(
+      fs.existsSync(runHarnessDir(rootMismatch, otherRunId)),
+      `TC-e3: .harness/${otherRunId}/ (the untouched pointer's target) must still exist`,
+    );
+    const entryMismatch = readQueueEntry(rootMismatch, slug);
+    assert.strictEqual(
+      entryMismatch.status,
+      'pending',
+      `TC-e3: --waive resolves to status 'pending', got '${entryMismatch.status}'`,
+    );
+  } finally {
+    cleanup(rootMismatch);
   }
 });
 
