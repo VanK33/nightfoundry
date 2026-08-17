@@ -284,6 +284,44 @@ await test('I2e: Bash dangerous-pattern denial byte-unchanged (git commit blocke
   );
 });
 
+// I2f — bare `git restore <path>` / `git checkout <path>` are denied. The
+// original pattern required a literal `--` after the verb, so the bare form
+// slipped through — a read-only verifier used exactly that to destructively
+// revert uncommitted deliverables (cross-session report, 2026-08-17).
+await test('I2f: bare git restore/checkout forms are denied (no `--` required)', () => {
+  const sm = new SessionManager();
+  const denied = [
+    'git restore src/foo.js',
+    'git restore .',
+    'git checkout src/foo.js',
+    'git checkout -b feature-x',
+    'git checkout -- src/foo.js',
+    'git restore --staged src/foo.js',
+  ];
+  for (const cmd of denied) {
+    const result = sm._guardToolUse('Bash', { command: cmd }, undefined);
+    assert.strictEqual(result?.behavior, 'deny', `Expected DENY for: ${cmd}`);
+  }
+});
+
+// I2g — read-only git commands stay allowed: the widened pattern must not
+// catch inspection commands a verifier legitimately needs.
+await test('I2g: read-only git commands remain allowed after the pattern widening', () => {
+  const sm = new SessionManager();
+  const allowed = [
+    'git status',
+    'git diff HEAD',
+    'git show HEAD:src/foo.js',
+    'git log --oneline -5',
+    'git stash list',
+    'git rev-parse HEAD',
+  ];
+  for (const cmd of allowed) {
+    const result = sm._guardToolUse('Bash', { command: cmd }, undefined);
+    assert.notStrictEqual(result?.behavior, 'deny', `Expected ALLOW for: ${cmd}; got ${JSON.stringify(result)}`);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // I3 — the `includes` loophole is CLOSED
 // ─────────────────────────────────────────────────────────────────────────

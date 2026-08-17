@@ -1192,7 +1192,11 @@ class SessionManager {
     /\bgit\s+reset\b/,
     /\bgit\s+rebase\b/,
     /\bgit\s+merge\b/,
-    /\bgit\s+(checkout|restore)\s+--/,
+    // Bare forms included: `git restore <path>` / `git checkout <path>` discard
+    // uncommitted work just like the `--`-separated forms — a read-only agent
+    // (verifier) used the bare form to destroy in-flight deliverables before
+    // the pattern was widened (cross-session report, 2026-08-17).
+    /\bgit\s+(checkout|restore)\b/,
     /\bgit\s+stash\s+drop\b/,
     /\bgit\s+branch\s+-[dD]\b/,
     /\bgit\s+tag\s+-d\b/,
