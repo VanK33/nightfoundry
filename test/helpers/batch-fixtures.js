@@ -20,9 +20,18 @@
  *   - makeRealBatchPipeline(root, { archive, executeAllMilestones, reviewGate,
  *                                    onLog }) — the execute/review seams default to
  *                                    no-ops (callers that overrode them post-build
- *                                    are unaffected). reExtractAssumptions is
- *                                    stubbed too so the remediation path never
- *                                    spawns a live planner session.
+ *                                    are unaffected). reExtractAssumptions AND
+ *                                    remediateAssumption are stubbed too so the
+ *                                    remediation path never spawns a live planner
+ *                                    session: the remediateAssumption default
+ *                                    THROWS, driving batchResume's catch-skip leg
+ *                                    deterministically (extractSpecSection's fuzzy
+ *                                    matching can hit slug-derived spec titles, so
+ *                                    "section not found" is NOT a reliable shield —
+ *                                    TC4/TC7 of test-batch-resume.js reached a real
+ *                                    paid Opus session through exactly that gap).
+ *                                    Tests that assert the applied-fix path override
+ *                                    it per-test (e.g. test-batch-resume.js TC5).
  *
  * File-specific helpers (preserve's milestone-shaped makePlan / specJson
  * createQueueEntry / _executeMilestoneParallel-driving makeBatchPipeline,
@@ -172,6 +181,12 @@ export function makeRealBatchPipeline(root, {
   pipeline.planner.planGlobal = async () => makePlan();
   pipeline.planner.verifyAssumptions = async () => [];
   pipeline.planner.reExtractAssumptions = async () => [];
+  // Hermetic default: throw instead of spawning a real planner session.
+  // batchResume catches and logs "remediateAssumption failed — skipping",
+  // which is the same skip leg TC4/TC7 always intended to exercise.
+  pipeline.planner.remediateAssumption = async () => {
+    throw new Error('makeRealBatchPipeline: remediateAssumption not stubbed — hermetic default refuses to spawn a real planner session');
+  };
   pipeline.planner.closeReusableSession = async () => {};
   pipeline._executeAllMilestones = executeAllMilestones;
   pipeline._reviewGate = reviewGate;
