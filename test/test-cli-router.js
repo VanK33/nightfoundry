@@ -23,6 +23,12 @@
  *   TC19–TC26 — queue remove|retry / park show|resolve / archive show|diff /
  *               usage compare / warnings show fail loud with a usage line
  *               when the required slug/id argument is missing
+ *   TC27 — direct `node src/cli/index.js version` renders the 'nightfoundry'
+ *          banner with the package.json version
+ *   TC28 — invoked through a shim/symlink named 'cc-orch', version and help
+ *          render 'cc-orch' (not 'nightfoundry')
+ *   TC29 — invoked through a shim/symlink named 'nightfoundry', version and
+ *          help render 'nightfoundry'
  */
 import assert from 'assert';
 import fs from 'fs';
@@ -63,6 +69,29 @@ function spawnCli(args, opts = {}) {
     result.status,
     null,
     `CLI did not exit cleanly for args ${JSON.stringify(args)}`
+  );
+
+  return result;
+}
+
+/**
+ * Run the CLI via an explicit entry-point path (e.g. a shim/symlink whose
+ * basename drives displayName()'s 'cc-orch' / 'nightfoundry' rendering),
+ * rather than always spawning the real src/cli/index.js path directly.
+ */
+function spawnCliVia(entryPath, args, opts = {}) {
+  const result = childSpawnSync(process.execPath, [entryPath, ...args], {
+    env: { ...process.env },
+    timeout: 10000,
+    encoding: 'utf8',
+    ...opts,
+  });
+
+  assert.ifError(result.error);
+  assert.notStrictEqual(
+    result.status,
+    null,
+    `CLI did not exit cleanly for entry ${entryPath} args ${JSON.stringify(args)}`
   );
 
   return result;
@@ -570,6 +599,97 @@ for (const { tc, args, usage } of MISSING_ARG_CASES) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// TC27 — direct `node src/cli/index.js version` renders the 'nightfoundry'
+// banner with the package.json version
+// ---------------------------------------------------------------------------
+await test("TC27: direct invocation of src/cli/index.js renders 'nightfoundry v<version>'", async () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')
+  );
+
+  const result = spawnCli(['version']);
+  const combined = (result.stdout || '') + (result.stderr || '');
+
+  assert.ok(
+    combined.includes(`nightfoundry v${pkg.version}`),
+    `Expected output to contain "nightfoundry v${pkg.version}", got: ${combined.trim()}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TC28 — invoked through a shim/symlink named 'cc-orch', version and help
+// render 'cc-orch' (not 'nightfoundry')
+// ---------------------------------------------------------------------------
+await test("TC28: invoked via a 'cc-orch' shim, version and help render 'cc-orch'", async () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-shim-test-'));
+  try {
+    const shimPath = path.join(tmpDir, 'cc-orch');
+    fs.symlinkSync(cliPath, shimPath);
+
+    const versionResult = spawnCliVia(shimPath, ['version']);
+    const versionCombined = (versionResult.stdout || '') + (versionResult.stderr || '');
+
+    assert.ok(
+      versionCombined.includes(`cc-orch v${pkg.version}`),
+      `Expected output to contain "cc-orch v${pkg.version}", got: ${versionCombined.trim()}`
+    );
+
+    const helpResult = spawnCliVia(shimPath, ['help']);
+    const helpCombined = (helpResult.stdout || '') + (helpResult.stderr || '');
+
+    assert.ok(
+      helpCombined.includes('cc-orch run <spec.md>'),
+      `Expected help output to contain "cc-orch run <spec.md>", got: ${helpCombined.trim()}`
+    );
+
+    assert.ok(
+      !helpCombined.includes('nightfoundry run'),
+      `Expected help output to contain no "nightfoundry run" command line, got: ${helpCombined.trim()}`
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC29 — invoked through a shim/symlink named 'nightfoundry', version and
+// help render 'nightfoundry'
+// ---------------------------------------------------------------------------
+await test("TC29: invoked via a 'nightfoundry' shim, version and help render 'nightfoundry'", async () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-shim-test-'));
+  try {
+    const shimPath = path.join(tmpDir, 'nightfoundry');
+    fs.symlinkSync(cliPath, shimPath);
+
+    const versionResult = spawnCliVia(shimPath, ['version']);
+    const versionCombined = (versionResult.stdout || '') + (versionResult.stderr || '');
+
+    assert.ok(
+      versionCombined.includes(`nightfoundry v${pkg.version}`),
+      `Expected output to contain "nightfoundry v${pkg.version}", got: ${versionCombined.trim()}`
+    );
+
+    const helpResult = spawnCliVia(shimPath, ['help']);
+    const helpCombined = (helpResult.stdout || '') + (helpResult.stderr || '');
+
+    assert.ok(
+      helpCombined.includes('nightfoundry run <spec.md>'),
+      `Expected help output to contain "nightfoundry run <spec.md>", got: ${helpCombined.trim()}`
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Summary

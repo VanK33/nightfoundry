@@ -1,10 +1,6 @@
 import assert from 'assert';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { KNOWN_COMMANDS } from '../src/cli/suggest.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { renderUsage } from '../src/cli/index.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -21,16 +17,9 @@ function test(name, fn) {
   }
 }
 
-// Extract USAGE block from src/cli/index.js
-const cliSource = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'cli', 'index.js'),
-  'utf8'
-);
-
-// Extract content between const USAGE = ` ... `
-const usageMatch = cliSource.match(/const USAGE\s*=\s*`([\s\S]*?)`\s*;/);
-assert.ok(usageMatch, 'Could not extract USAGE block from src/cli/index.js');
-const USAGE = usageMatch[1];
+// Render the templated USAGE text directly, rather than extracting it via
+// source regex.
+const USAGE = renderUsage('nightfoundry');
 
 // ---------- TC1: KNOWN_COMMANDS entries appear in USAGE ----------
 
@@ -39,8 +28,8 @@ test('TC1 KNOWN_COMMANDS entries appear in USAGE', () => {
   for (const cmd of KNOWN_COMMANDS) {
     if (skip.has(cmd)) continue;
     assert.ok(
-      USAGE.includes('cc-orch ' + cmd),
-      `Missing command in USAGE: 'cc-orch ${cmd}'`
+      USAGE.includes('nightfoundry ' + cmd),
+      `Missing command in USAGE: 'nightfoundry ${cmd}'`
     );
   }
 });

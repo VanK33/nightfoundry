@@ -7,7 +7,7 @@
  *   TC1 — parseArgs(['ui','--port','4040']) returns { positional: ['ui'], flags: { port: '4040' } }
  *   TC2 — parseArgs(['ui']) returns { positional: ['ui'], flags: {} }
  *   TC3 — KNOWN_COMMANDS.includes('ui') is true
- *   TC4 — `node src/cli/index.js help` stdout contains 'cc-orch ui [--port N]'
+ *   TC4 — `node src/cli/index.js help` stdout contains 'nightfoundry ui [--port N]'
  */
 import assert from 'assert';
 import path from 'path';
@@ -68,17 +68,17 @@ test("TC3: KNOWN_COMMANDS.includes('ui') is true", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TC4 — `node src/cli/index.js help` stdout contains 'cc-orch ui [--port N]'
+// TC4 — `node src/cli/index.js help` stdout contains 'nightfoundry ui [--port N]'
 // ---------------------------------------------------------------------------
-test("TC4: `node src/cli/index.js help` stdout contains 'cc-orch ui [--port N]'", () => {
+test("TC4: `node src/cli/index.js help` stdout contains 'nightfoundry ui [--port N]'", () => {
   const cliPath = path.resolve(__dirname, '../src/cli/index.js');
   const stdout = execFileSync(process.execPath, [cliPath, 'help'], {
     encoding: 'utf8',
     timeout: 10000,
   });
   assert.ok(
-    stdout.includes('cc-orch ui [--port N]'),
-    `Expected help output to contain 'cc-orch ui [--port N]', got:\n${stdout.trim()}`
+    stdout.includes('nightfoundry ui [--port N]'),
+    `Expected help output to contain 'nightfoundry ui [--port N]', got:\n${stdout.trim()}`
   );
 });
 

@@ -38,6 +38,7 @@ import { Planner } from '../src/orchestrator/agents/planner.js';
 import { extractRejectedPhrases } from '../src/orchestrator/core/scope-parser.js';
 import { aggregateAcrossArchives, enumerateArchives } from '../src/orchestrator/infra/cross-archive-analyzer.js';
 import { usage, usageAll } from '../src/cli/commands/usage.js';
+import { renderUsage } from '../src/cli/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -724,12 +725,10 @@ test('AC6/TC6_no_failed_still_live_only: usage with neither all nor includeFaile
 });
 
 test('AC6/TC6_help_documents_dependency: CLI USAGE help documents the include-failed → --all implication', () => {
-  const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'cli', 'index.js'), 'utf8');
-  // Bound the assertion to the USAGE template literal so we don't match
-  // unrelated code. The USAGE constant is a backtick template.
-  const usageMatch = src.match(/const\s+USAGE\s*=\s*`([\s\S]*?)`/);
-  assert.ok(usageMatch, 'Expected to locate the USAGE template literal in src/cli/index.js');
-  const usageText = usageMatch[1];
+  // Render the actual help text (rather than regex-matching a USAGE template
+  // literal out of the source) so this pins the rendered output the user
+  // actually sees, independent of how renderUsage() is implemented internally.
+  const usageText = renderUsage('cc-orch');
 
   assert.ok(/--include-failed/.test(usageText), 'USAGE must still document --include-failed');
 

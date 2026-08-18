@@ -41,55 +41,74 @@ import { listQueue, readParkResumeMarker } from '../orchestrator/core/state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const USAGE = `
-  cc-orch — Multi-agent pipeline orchestrator
+/**
+ * Determine the display name to use in usage/help/version output based on
+ * how the CLI was invoked (its `process.argv[1]` basename).
+ *
+ * @param {string} [argv1=process.argv[1]]
+ * @returns {'cc-orch' | 'nightfoundry'}
+ */
+export function displayName(argv1 = process.argv[1]) {
+  return path.basename(argv1 || '') === 'cc-orch' ? 'cc-orch' : 'nightfoundry';
+}
+
+/**
+ * Render the full CLI usage/help text, with the title line and every
+ * command-invocation prefix rendered from `name`.
+ *
+ * @param {string} [name=displayName()]
+ * @returns {string}
+ */
+export function renderUsage(name = displayName()) {
+  return `
+  ${name} — Multi-agent pipeline orchestrator
 
   Pipeline:
-    cc-orch run <spec.md> [-a]                         Run pipeline from spec
-    cc-orch dry-run <spec.md> [-a]                     Validate spec, queue for batch resume
-    cc-orch resume [--batch] [-a]   Resume from saved state (--batch processes queue)
-    cc-orch task "<description>"                       Run single ad-hoc task
-    cc-orch <spec.md> [-a]                             Shortcut for run
+    ${name} run <spec.md> [-a]                         Run pipeline from spec
+    ${name} dry-run <spec.md> [-a]                     Validate spec, queue for batch resume
+    ${name} resume [--batch] [-a]   Resume from saved state (--batch processes queue)
+    ${name} task "<description>"                       Run single ad-hoc task
+    ${name} <spec.md> [-a]                             Shortcut for run
 
   Brainstorm:
-    cc-orch brainstorm "<prose>" [--no-tty]   Start a brainstormer session for spec generation
-    cc-orch brainstorm --resume <slug>        Resume an existing brainstormer draft
+    ${name} brainstorm "<prose>" [--no-tty]   Start a brainstormer session for spec generation
+    ${name} brainstorm --resume <slug>        Resume an existing brainstormer draft
 
   Inspect:
-    cc-orch status [node-id]             Show harness state
-    cc-orch usage [-j] [-d] [--role R] [--all] [--last N] [--since YYYY-MM-DD] [--include-failed] [--task <id>]   Token/cost summary
+    ${name} status [node-id]             Show harness state
+    ${name} usage [-j] [-d] [--role R] [--all] [--last N] [--since YYYY-MM-DD] [--include-failed] [--task <id>]   Token/cost summary
                                        (--include-failed implies --all: it filters the cross-archive aggregator)
-    cc-orch usage compare <a> <b>        Compare token usage across archives
-    cc-orch review                                 Review staged candidates (accept/reject/edit/defer)
-    cc-orch health                                 Show system health and configuration status
-    cc-orch ui [--port N]              Start static UI server (default port 3939)
-    cc-orch dispersion                List archive fingerprints
-    cc-orch dispersion <archive-id>   Show fingerprint detail
-    cc-orch dispersion compare <a> <b>  Compare two archive fingerprints
+    ${name} usage compare <a> <b>        Compare token usage across archives
+    ${name} review                                 Review staged candidates (accept/reject/edit/defer)
+    ${name} health                                 Show system health and configuration status
+    ${name} ui [--port N]              Start static UI server (default port 3939)
+    ${name} dispersion                List archive fingerprints
+    ${name} dispersion <archive-id>   Show fingerprint detail
+    ${name} dispersion compare <a> <b>  Compare two archive fingerprints
 
   Archive & queue:
-    cc-orch archive [name] [-P|--preserve] [--skip-test-gate]  Archive run (--preserve keeps spec; --skip-test-gate bypasses the final test:all gate)
-    cc-orch archive list                 List archives
-    cc-orch archive show <id> [--report] Show archive (--report opens HTML in browser)
-    cc-orch archive diff <a> <b>         Diff two archives
-    cc-orch queue list                   List queued specs
-    cc-orch queue remove <slug>          Remove a queue entry
-    cc-orch queue retry <slug>           Reset a queue entry's status to pending for resume --batch
-    cc-orch park list                    List parked / halted-review / halted-analyzer queue entries
-    cc-orch park show <slug>             Show a parked entry's scene and spec paths
-    cc-orch park resolve <slug> --requeue|--waive|--reject [--note <text>]   Resolve a parked entry
+    ${name} archive [name] [-P|--preserve] [--skip-test-gate]  Archive run (--preserve keeps spec; --skip-test-gate bypasses the final test:all gate)
+    ${name} archive list                 List archives
+    ${name} archive show <id> [--report] Show archive (--report opens HTML in browser)
+    ${name} archive diff <a> <b>         Diff two archives
+    ${name} queue list                   List queued specs
+    ${name} queue remove <slug>          Remove a queue entry
+    ${name} queue retry <slug>           Reset a queue entry's status to pending for resume --batch
+    ${name} park list                    List parked / halted-review / halted-analyzer queue entries
+    ${name} park show <slug>             Show a parked entry's scene and spec paths
+    ${name} park resolve <slug> --requeue|--waive|--reject [--note <text>]   Resolve a parked entry
 
   Warnings ledger:
-    cc-orch warnings list [--all]        List open/deferred reviewer warnings (--all includes waived/done)
-    cc-orch warnings show <id>           Show one ledger entry in full
-    cc-orch warnings resolve <id...> --waive|--defer|--done [--note <text>]   Resolve ledger entries
-    cc-orch warnings brainstorm <id...> [--no-tty]   Draft one bundled fix spec from selected warnings
+    ${name} warnings list [--all]        List open/deferred reviewer warnings (--all includes waived/done)
+    ${name} warnings show <id>           Show one ledger entry in full
+    ${name} warnings resolve <id...> --waive|--defer|--done [--note <text>]   Resolve ledger entries
+    ${name} warnings brainstorm <id...> [--no-tty]   Draft one bundled fix spec from selected warnings
 
   Maintenance:
-    cc-orch clean [--force]              Clean up harness artifacts
-    cc-orch reset <task-id>              Reset a task's state for re-execution
-    cc-orch init [spec.md]               Bootstrap .harness/
-    cc-orch version | help               Show version | this help
+    ${name} clean [--force]              Clean up harness artifacts
+    ${name} reset <task-id>              Reset a task's state for re-execution
+    ${name} init [spec.md]               Bootstrap .harness/
+    ${name} version | help               Show version | this help
 
   Environment:
     PORT            Port for UI server (default: 3939)
@@ -110,6 +129,7 @@ const USAGE = `
     --no-git-required          Skip git repository check (run, dry-run)
     --allow-incomplete-scope    Warn instead of error on unmatched scope items
 `;
+}
 
 async function main() {
   const raw = process.argv.slice(2);
@@ -422,12 +442,12 @@ async function main() {
       const pkg = JSON.parse(
         fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8')
       );
-      console.log(`cc-orch v${pkg.version}`);
+      console.log(`${displayName()} v${pkg.version}`);
       return;
     }
 
     case 'help': {
-      console.log(USAGE);
+      console.log(renderUsage());
       return;
     }
 
@@ -442,7 +462,7 @@ async function main() {
           }
         }
         // No args at all: show help
-        console.log(USAGE);
+        console.log(renderUsage());
         return;
       }
 

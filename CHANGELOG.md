@@ -1,3 +1,12 @@
+## [0.2.18] - 2026-08-18 — Brand-surface rename: nightfoundry as primary, cc-orch alias
+
+### New features
+- CLI version and help now render the invoked command name (nightfoundry or cc-orch) based on how the CLI was invoked, instead of always showing cc-orch
+- Operator skill renamed from cc-orch-operator to nightfoundry-operator and redeployed to .claude/skills/nightfoundry-operator/
+- Project configuration now prefers .nightfoundry.json but honors .cc-orch.json as a fallback, with single non-fatal warning when both files exist
+- Guidance file renamed to nightfoundry-guidance.md; init() automatically migrates legacy cc-orch-guidance.md files and updates CLAUDE.local.md import lines in existing repos
+- README documentation rewritten to show nightfoundry as the primary command across all sections, with cc-orch positioned as a permanent alias
+
 ## [0.2.17] - 2026-08-17 — Release active-run pointer; enable requeue preflight exemption
 
 ### New features

@@ -10,33 +10,33 @@
  *
  * Onboarding scaffold (deployed AFTER the existing preflight-OK point, once
  * the shared skeleton is confirmed healthy):
- *   - cc-orch-guidance.md   MACHINE-OWNED — overwritten unconditionally on
- *     every init (the refresh path). Content is the shipped template asset
+ *   - nightfoundry-guidance.md   MACHINE-OWNED — overwritten unconditionally
+ *     on every init (the refresh path). Content is the shipped template asset
  *     prefixed with a stamp line ('<!-- cc-orch-guidance-hash: <12 hex> -->')
  *     computed as the first 12 hex chars of sha256(shipped template bytes).
  *   - CLAUDE.local.md       USER-OWNED, append-only, single-touch. Created
- *     with the marker comment + '@cc-orch-guidance.md' import line when
+ *     with the marker comment + '@nightfoundry-guidance.md' import line when
  *     absent; when present, those two lines are appended ONCE, iff the
  *     import line is not already present, byte-preserving all existing
  *     content (adding a newline first if the file doesn't already end in
  *     one); left byte-untouched when the import line is already present.
  *     Deleting the import line is an opt-out — no automatic path re-adds
  *     it, only an explicit re-init.
- *   - .cc-orch.json.example CREATE-ONLY — never overwritten, and init never
- *     writes a live .cc-orch.json (loadProjectConfig is fail-loud on
- *     unknown keys, so a guessed live config would break every later run).
+ *   - .nightfoundry.json.example CREATE-ONLY — never overwritten, and init
+ *     never writes a live .nightfoundry.json (loadProjectConfig is fail-loud
+ *     on unknown keys, so a guessed live config would break every later run).
  *   - .gitignore            USER-OWNED managed block, delimited by
  *     '# >>> cc-orch >>>' / '# <<< cc-orch <<<' markers. Created (file
  *     absent) or appended once (markers absent — byte-preserving existing
  *     content); left byte-untouched once both markers are present (no
  *     refresh, no dedup). Patterns mirror git-excludes.js's builder exactly
- *     plus '/CLAUDE.local.md' and '/cc-orch-guidance.md' (eight patterns
+ *     plus '/CLAUDE.local.md' and '/nightfoundry-guidance.md' (ten patterns
  *     total); 'archives/' is intentionally absent, mirroring that module's
  *     documented decision. Written even on a non-git root (harmless
  *     pre-git, takes effect on a later `git init`).
- *   - .claude/skills/cc-orch-operator/  MACHINE-OWNED — the shipped
- *     cc-orch-operator skill (SKILL.md + references/*.md), resolved from
- *     src/cli/skills/cc-orch-operator/ via import.meta.url (never the
+ *   - .claude/skills/nightfoundry-operator/  MACHINE-OWNED — the shipped
+ *     nightfoundry-operator skill (SKILL.md + references/*.md), resolved from
+ *     src/cli/skills/nightfoundry-operator/ via import.meta.url (never the
  *     target repo's own copy) and refreshed unconditionally on every init.
  *     Every source file is read into memory then written — NEVER
  *     fs.cpSync/fs.copyFileSync — so the self-hosted case (this repo
@@ -69,15 +69,15 @@ import { ensureGitExcludes } from '../../orchestrator/core/git-excludes.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // The shipped template asset — the single source of truth for both the
-// deployed cc-orch-guidance.md content and its freshness stamp.
-const TEMPLATE_PATH = path.resolve(__dirname, '..', 'templates', 'cc-orch-guidance.md');
+// deployed nightfoundry-guidance.md content and its freshness stamp.
+const TEMPLATE_PATH = path.resolve(__dirname, '..', 'templates', 'nightfoundry-guidance.md');
 
-// The shipped cc-orch-operator skill source — the single source of truth for
-// the deployed .claude/skills/cc-orch-operator/ copy (SKILL.md + references).
-// Agent sessions cannot edit files under a repo's .claude/, so the canonical
-// source lives on this ordinary (non-.claude) path instead.
-const SKILL_SRC_DIR = path.resolve(__dirname, '..', 'skills', 'cc-orch-operator');
-const SKILL_DEPLOY_RELPATH = path.join('.claude', 'skills', 'cc-orch-operator');
+// The shipped nightfoundry-operator skill source — the single source of truth
+// for the deployed .claude/skills/nightfoundry-operator/ copy (SKILL.md +
+// references). Agent sessions cannot edit files under a repo's .claude/, so
+// the canonical source lives on this ordinary (non-.claude) path instead.
+const SKILL_SRC_DIR = path.resolve(__dirname, '..', 'skills', 'nightfoundry-operator');
+const SKILL_DEPLOY_RELPATH = path.join('.claude', 'skills', 'nightfoundry-operator');
 const SKILL_SIDECAR_FILENAME = '.cc-orch-skill.json';
 
 // The shipped package.json — resolved via import.meta.url, NEVER the target
@@ -85,14 +85,26 @@ const SKILL_SIDECAR_FILENAME = '.cc-orch-skill.json';
 // printed/sidecar release channel and the sidecar version.
 const SHIPPED_PACKAGE_JSON_PATH = path.resolve(__dirname, '..', '..', '..', 'package.json');
 
-const GUIDANCE_FILENAME = 'cc-orch-guidance.md';
+const GUIDANCE_FILENAME = 'nightfoundry-guidance.md';
 const CLAUDE_LOCAL_FILENAME = 'CLAUDE.local.md';
-const IMPORT_LINE = '@cc-orch-guidance.md';
+const IMPORT_LINE = '@nightfoundry-guidance.md';
 const CLAUDE_LOCAL_MARKER =
   '<!-- cc-orch: the next line imports machine-managed cc-orch guidance; delete it to opt out -->';
 const GITIGNORE_BEGIN = '# >>> cc-orch >>>';
 const GITIGNORE_END = '# <<< cc-orch <<<';
-const CONFIG_EXAMPLE_FILENAME = '.cc-orch.json.example';
+const CONFIG_EXAMPLE_FILENAME = '.nightfoundry.json.example';
+
+// --- Old-surface (pre-rename) migration constants -------------------------
+// These three legs clean up artifacts from the previous 'cc-orch' branding
+// so a project that ran the old init isn't left with duplicate/stale
+// surfaces after upgrading. Each leg acts ONLY on artifacts it can prove are
+// machine-owned (a marker file or a machine-computed stamp line), and is a
+// byte-preserving no-op on anything it can't prove ownership of, including
+// on a second init() call against an already-migrated root.
+const OLD_SKILL_DEPLOY_RELPATH = path.join('.claude', 'skills', 'cc-orch-operator');
+const OLD_GUIDANCE_FILENAME = 'cc-orch-guidance.md';
+const OLD_GUIDANCE_STAMP_REGEX = /^<!-- cc-orch-guidance-hash: [0-9a-f]{12} -->$/;
+const OLD_IMPORT_LINE = '@cc-orch-guidance.md';
 
 // The projectRoot-anchored patterns for the committed .gitignore managed
 // block — mirrors git-excludes.js's builder exactly, plus the two local-only
@@ -113,7 +125,7 @@ function gitignoreBlockLines() {
     '/archives/candidates.jsonl',
     '/archives/warnings.jsonl',
     '/CLAUDE.local.md',
-    '/cc-orch-guidance.md',
+    '/nightfoundry-guidance.md',
     GITIGNORE_END,
   ];
 }
@@ -123,7 +135,85 @@ function sha256Hex12(buf) {
 }
 
 /**
- * MACHINE-OWNED: write cc-orch-guidance.md unconditionally (create or
+ * OLD-SURFACE MIGRATION (leg 1/3), machine-owned artifacts only: remove
+ * <projectRoot>/.claude/skills/cc-orch-operator/ recursively, but ONLY when
+ * it contains the machine-ownership marker file (the same sidecar filename
+ * deploySkill writes, '.cc-orch-skill.json'). When the marker is absent —
+ * e.g. a user-authored directory that happens to share the old skill's
+ * name — the directory is left byte-untouched. Runs once per init() call;
+ * a second run finds nothing left to remove and is a no-op.
+ * @param {string} projectRoot
+ * @returns {'removed'|'skipped'}
+ */
+function migrateOldSkillDir(projectRoot) {
+  const oldSkillDir = path.join(projectRoot, OLD_SKILL_DEPLOY_RELPATH);
+  const markerPath = path.join(oldSkillDir, SKILL_SIDECAR_FILENAME);
+  if (!fs.existsSync(markerPath)) {
+    return 'skipped';
+  }
+  fs.rmSync(oldSkillDir, { recursive: true, force: true });
+  return 'removed';
+}
+
+/**
+ * OLD-SURFACE MIGRATION (leg 2/3), machine-owned artifacts only: remove
+ * <projectRoot>/cc-orch-guidance.md, but ONLY when its first line matches
+ * the machine stamp format ('<!-- cc-orch-guidance-hash: <12 hex> -->').
+ * An unstamped (user-authored) file of that name is left byte-untouched.
+ * Runs once per init() call; a second run finds nothing left to remove and
+ * is a no-op.
+ * @param {string} projectRoot
+ * @returns {'removed'|'skipped'}
+ */
+function migrateOldGuidanceFile(projectRoot) {
+  const oldGuidancePath = path.join(projectRoot, OLD_GUIDANCE_FILENAME);
+  if (!fs.existsSync(oldGuidancePath)) {
+    return 'skipped';
+  }
+  const content = fs.readFileSync(oldGuidancePath, 'utf8');
+  const firstLine = content.split('\n')[0];
+  if (!OLD_GUIDANCE_STAMP_REGEX.test(firstLine)) {
+    return 'skipped';
+  }
+  fs.rmSync(oldGuidancePath);
+  return 'removed';
+}
+
+/**
+ * OLD-SURFACE MIGRATION (leg 3/3): in <projectRoot>/CLAUDE.local.md, rewrite
+ * the exact whole line '@cc-orch-guidance.md' to '@nightfoundry-guidance.md'
+ * when present, preserving every other byte of the file (including line
+ * endings, elsewhere) and NEVER deleting or creating the file. Runs before
+ * deployClaudeLocal's own import-presence check (see init()) so an
+ * already-migrated file gains no duplicate import line, and a second init()
+ * call — which finds the new import line already present — is a no-op.
+ * @param {string} projectRoot
+ * @returns {'rewritten'|'unchanged'|'absent'}
+ */
+function migrateClaudeLocalImportLine(projectRoot) {
+  const claudeLocalPath = path.join(projectRoot, CLAUDE_LOCAL_FILENAME);
+  if (!fs.existsSync(claudeLocalPath)) {
+    return 'absent';
+  }
+  const existing = fs.readFileSync(claudeLocalPath, 'utf8');
+  const lines = existing.split('\n');
+  let changed = false;
+  const rewritten = lines.map((line) => {
+    if (line === OLD_IMPORT_LINE) {
+      changed = true;
+      return IMPORT_LINE;
+    }
+    return line;
+  });
+  if (!changed) {
+    return 'unchanged';
+  }
+  fs.writeFileSync(claudeLocalPath, rewritten.join('\n'), 'utf8');
+  return 'rewritten';
+}
+
+/**
+ * MACHINE-OWNED: write nightfoundry-guidance.md unconditionally (create or
  * overwrite) from the shipped template, prefixed with a stamp line.
  * @param {string} projectRoot
  * @returns {string} the deployed file's absolute path
@@ -199,8 +289,8 @@ function computeSkillHash(entries) {
 }
 
 /**
- * Deploy the shipped cc-orch-operator skill (SKILL.md + references/*.md)
- * into <projectRoot>/.claude/skills/cc-orch-operator/, plus a sidecar JSON
+ * Deploy the shipped nightfoundry-operator skill (SKILL.md + references/*.md)
+ * into <projectRoot>/.claude/skills/nightfoundry-operator/, plus a sidecar JSON
  * stamp file recording {version, releaseChannel, hash}.
  *
  * Read-into-memory-then-write per file — NEVER fs.cpSync/fs.copyFileSync.
@@ -272,9 +362,9 @@ function deployClaudeLocal(projectRoot) {
 }
 
 /**
- * CREATE-ONLY: deploy .cc-orch.json.example, an inert example of the
+ * CREATE-ONLY: deploy .nightfoundry.json.example, an inert example of the
  * recognised config shape. Never overwritten once present; init never
- * writes a live .cc-orch.json.
+ * writes a live .nightfoundry.json.
  * @param {string} projectRoot
  * @returns {'created'|'skipped'}
  */
@@ -355,26 +445,35 @@ export function init(projectRoot, prdPath, opts = {}) {
     // calls this transitively; fail-soft by that function's own contract.
     ensureGitExcludes(projectRoot);
 
+    // Old-surface (pre-rename) migration legs — machine-owned artifacts
+    // only, each running exactly once per init() call. The CLAUDE.local.md
+    // import-line rewrite MUST precede deployClaudeLocal's import-presence
+    // check below, so an already-migrated file gains no duplicate import
+    // line.
+    migrateOldSkillDir(projectRoot);
+    migrateOldGuidanceFile(projectRoot);
+    migrateClaudeLocalImportLine(projectRoot);
+
     const guidancePath = deployGuidance(projectRoot);
     const claudeLocalStatus = deployClaudeLocal(projectRoot);
     const configExampleStatus = deployConfigExample(projectRoot);
     const gitignoreStatus = deployGitignore(projectRoot);
     const skillResult = deploySkill(projectRoot, { readChannel });
 
-    console.log(`cc-orch-guidance.md: ${guidancePath} (refreshed)`);
+    console.log(`nightfoundry-guidance.md: ${guidancePath} (refreshed)`);
     console.log(`CLAUDE.local.md: ${claudeLocalStatus}`);
-    console.log(`.cc-orch.json.example: ${configExampleStatus}`);
+    console.log(`.nightfoundry.json.example: ${configExampleStatus}`);
     console.log(`.gitignore: ${gitignoreStatus}`);
     for (const deployedPath of skillResult.deployedPaths) {
-      console.log(`cc-orch-operator skill: ${deployedPath} (refreshed)`);
+      console.log(`nightfoundry-operator skill: ${deployedPath} (refreshed)`);
     }
-    console.log(`cc-orch-operator skill release channel: ${skillResult.channel}`);
+    console.log(`nightfoundry-operator skill release channel: ${skillResult.channel}`);
     console.log(
-      'Recommend committing the deployed cc-orch-operator skill ' +
+      'Recommend committing the deployed nightfoundry-operator skill ' +
       `(${SKILL_DEPLOY_RELPATH}${path.sep}) to version control.`
     );
     console.log(
-      'If an AI session is already open in this repo, ask it to read cc-orch-guidance.md now.'
+      'If an AI session is already open in this repo, ask it to read nightfoundry-guidance.md now.'
     );
   } catch (err) {
     console.error(err.message);
@@ -449,7 +548,7 @@ export function guardFreshRoot(projectRoot, { refuse = false, readChannel = defa
       const guidancePath = path.join(projectRoot, GUIDANCE_FILENAME);
       if (!fs.existsSync(guidancePath)) {
         console.error(
-          'cc-orch-guidance.md is missing but CLAUDE.local.md still imports it — ' +
+          'nightfoundry-guidance.md is missing but CLAUDE.local.md still imports it — ' +
           'run `cc-orch init` to restore it.'
         );
         return;
@@ -462,11 +561,11 @@ export function guardFreshRoot(projectRoot, { refuse = false, readChannel = defa
 
       if (!deployedFirstLine.includes(expectedHash)) {
         console.error(
-          'cc-orch-guidance.md is outdated — run `cc-orch init` to refresh it.'
+          'nightfoundry-guidance.md is outdated — run `cc-orch init` to refresh it.'
         );
       }
 
-      // Third freshness leg: the deployed cc-orch-operator skill, dangling
+      // Third freshness leg: the deployed nightfoundry-operator skill, dangling
       // (sidecar missing) or outdated (sidecar hash stale vs. the SHIPPED
       // skill source — never the deployed copy's own bytes), collapsed into
       // one hint since the sidecar makes both conditions equally "refresh
@@ -484,13 +583,13 @@ export function guardFreshRoot(projectRoot, { refuse = false, readChannel = defa
       }
       if (!skillFresh) {
         console.error(
-          'cc-orch-operator skill is missing or outdated — run `cc-orch init` to refresh it.'
+          'nightfoundry-operator skill is missing or outdated — run `cc-orch init` to refresh it.'
         );
       }
     } catch {
       // Fail-soft by contract: any fs/hash error is a silent return, never
       // a throw and never a block on the calling verb (e.g. EISDIR when
-      // cc-orch-guidance.md is unexpectedly a directory).
+      // nightfoundry-guidance.md is unexpectedly a directory).
     }
     return;
   }

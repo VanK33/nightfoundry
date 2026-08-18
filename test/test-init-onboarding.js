@@ -1,7 +1,7 @@
 /**
  * test-init-onboarding.js — Unit + CLI-wiring tests for `cc-orch init`'s
  * onboarding scaffold (src/cli/commands/init.js) and the shipped guidance
- * template it deploys (src/cli/templates/cc-orch-guidance.md).
+ * template it deploys (src/cli/templates/nightfoundry-guidance.md).
  *
  * No Claude auth, no SDK, no network. Pure fs + temp directories
  * (fs.mkdtempSync fixture roots, realpathed immediately — os.tmpdir() is
@@ -15,7 +15,7 @@
  *       (<=30 lines, exactly four headings), read from the shipped
  *       template asset.
  *   (B) create-only/idempotence — a second init produces a byte-identical
- *       cc-orch-guidance.md; a pre-seeded CLAUDE.local.md (no trailing
+ *       nightfoundry-guidance.md; a pre-seeded CLAUDE.local.md (no trailing
  *       newline) and a pre-seeded user .gitignore have their bytes
  *       preserved, with the append-newline clause exercised.
  *   (C) .gitignore managed block — both markers, the eight patterns, and
@@ -27,11 +27,28 @@
  *   (F) CLI wiring legs — non-TTY spawnSync invocations of run/dry-run/
  *       brainstorm/the .md shortcut/status, never passing --auto/-a.
  *   (G) loadProjectConfig inertness — init never writes a live
- *       .cc-orch.json, so loadProjectConfig stays a no-op against an
- *       init-only root.
+ *       .nightfoundry.json (nor a legacy .cc-orch.json), so loadProjectConfig
+ *       stays a no-op against an init-only root.
  *   (H) freshness legs — refresh, opt-out, dangling, staleness,
  *       fresh-stamp silence, bare-harness, opt-out-with-residue, and
  *       fail-soft EISDIR.
+ *   (I) old-surface (pre-rename) migration legs — a pre-seeded marked
+ *       legacy .claude/skills/cc-orch-operator/ is removed while the new
+ *       nightfoundry-operator/ deploy lands; an unmarked legacy skill dir
+ *       is preserved byte-identical; a stamped legacy cc-orch-guidance.md
+ *       is removed while nightfoundry-guidance.md is written; an unstamped
+ *       legacy guidance file is preserved byte-identical; a pre-seeded
+ *       CLAUDE.local.md carrying the old '@cc-orch-guidance.md' import
+ *       line has only that line rewritten (surrounding bytes preserved,
+ *       exactly one import line surviving); a second init on that root is
+ *       byte-identical.
+ *   (J) dual-read config precedence — loadProjectConfig against fresh temp
+ *       roots: a root holding only .nightfoundry.json applies its override;
+ *       a root holding only the legacy .cc-orch.json applies its override;
+ *       a root holding BOTH resolves to the .nightfoundry.json value and
+ *       emits exactly one captured console line naming the shadowed
+ *       .cc-orch.json, never throwing. config.execution.testCommand/
+ *       testAllCommand are restored to their pre-leg values after each leg.
  *
  * Run: node test/test-init-onboarding.js
  */
@@ -130,17 +147,17 @@ function spawnCli(args, opts = {}) {
 
 // ── shared constants ─────────────────────────────────────────────────────
 
-const TEMPLATE_PATH = path.resolve(__dirname, '../src/cli/templates/cc-orch-guidance.md');
+const TEMPLATE_PATH = path.resolve(__dirname, '../src/cli/templates/nightfoundry-guidance.md');
 
 // Verbatim anchor sentences, one per heading, read from the shipped
-// template asset (src/cli/templates/cc-orch-guidance.md) at the time this
-// test was written. A real content edit to the template is expected to
+// template asset (src/cli/templates/nightfoundry-guidance.md) at the time
+// this test was written. A real content edit to the template is expected to
 // update these pins deliberately, not silently.
 const ANCHOR_SENTENCES = [
-  'This file is machine-managed by cc-orch; re-running cc-orch init refreshes it.',
+  'This file is machine-managed by nightfoundry; re-running nightfoundry init refreshes it.',
   'Runs live under .harness/, pending work under queue/, delivered runs under archives/.',
   "Record this project's lessons, decisions, and TODOs in this project's own files.",
-  'This repo ships the cc-orch operator skill at .claude/skills/cc-orch-operator/ — your session loads project skills automatically; read references/spec-authoring.md before hand-writing a spec and references/debugging.md when a run stops.',
+  'This repo ships the nightfoundry operator skill at .claude/skills/nightfoundry-operator/ — your session loads project skills automatically; read references/spec-authoring.md before hand-writing a spec and references/debugging.md when a run stops.',
 ];
 
 const GITIGNORE_PATTERNS = [
@@ -153,7 +170,7 @@ const GITIGNORE_PATTERNS = [
   '/archives/candidates.jsonl',
   '/archives/warnings.jsonl',
   '/CLAUDE.local.md',
-  '/cc-orch-guidance.md',
+  '/nightfoundry-guidance.md',
 ];
 
 const FRESH_HINT = 'fresh project — run `cc-orch init` first for scaffolding + AI guidance';
@@ -167,8 +184,8 @@ function acA_scaffoldAnchorsNegativePinSizeCeiling() {
   try {
     init(root);
 
-    const guidancePath = path.join(root, 'cc-orch-guidance.md');
-    assert('scaffold: cc-orch-guidance.md created', fs.existsSync(guidancePath));
+    const guidancePath = path.join(root, 'nightfoundry-guidance.md');
+    assert('scaffold: nightfoundry-guidance.md created', fs.existsSync(guidancePath));
 
     const deployed = fs.readFileSync(guidancePath, 'utf8');
     for (const sentence of ANCHOR_SENTENCES) {
@@ -211,7 +228,7 @@ function acB_createOnlyAndIdempotence() {
 
     init(root);
 
-    const guidancePath = path.join(root, 'cc-orch-guidance.md');
+    const guidancePath = path.join(root, 'nightfoundry-guidance.md');
     const guidanceAfterFirst = fs.readFileSync(guidancePath);
 
     const claudeLocalAfterFirst = fs.readFileSync(claudeLocalPath, 'utf8');
@@ -220,7 +237,7 @@ function acB_createOnlyAndIdempotence() {
     assert('create-only: a newline was inserted after the no-trailing-newline pre-existing content',
       claudeLocalAfterFirst.charAt(preSeededClaudeLocal.length) === '\n');
     assert('create-only: import line appended to CLAUDE.local.md',
-      claudeLocalAfterFirst.includes('@cc-orch-guidance.md'));
+      claudeLocalAfterFirst.includes('@nightfoundry-guidance.md'));
 
     const gitignoreAfterFirst = fs.readFileSync(gitignorePath, 'utf8');
     assert('create-only: pre-existing user .gitignore content preserved verbatim',
@@ -230,7 +247,7 @@ function acB_createOnlyAndIdempotence() {
     init(root);
 
     const guidanceAfterSecond = fs.readFileSync(guidancePath);
-    assert('idempotence: cc-orch-guidance.md byte-identical after second init',
+    assert('idempotence: nightfoundry-guidance.md byte-identical after second init',
       Buffer.compare(guidanceAfterFirst, guidanceAfterSecond) === 0);
 
     const claudeLocalAfterSecond = fs.readFileSync(claudeLocalPath, 'utf8');
@@ -292,8 +309,8 @@ function acD_nonGitFailSoft() {
     assert('non-git: init() does not throw on a non-git fixture root', threw === false);
     assert('non-git: no .git directory materialized as a side effect',
       !fs.existsSync(path.join(root, '.git')));
-    assert('non-git: cc-orch-guidance.md still deployed',
-      fs.existsSync(path.join(root, 'cc-orch-guidance.md')));
+    assert('non-git: nightfoundry-guidance.md still deployed',
+      fs.existsSync(path.join(root, 'nightfoundry-guidance.md')));
   } finally {
     cleanup(root);
   }
@@ -417,10 +434,12 @@ function acG_loadProjectConfigInertness() {
   try {
     init(root);
 
-    assert('inertness: init does not write a live .cc-orch.json',
+    assert('inertness: init does not write a live .nightfoundry.json',
+      !fs.existsSync(path.join(root, '.nightfoundry.json')));
+    assert('inertness: init does not write a live legacy .cc-orch.json',
       !fs.existsSync(path.join(root, '.cc-orch.json')));
-    assert('inertness: init writes only .cc-orch.json.example',
-      fs.existsSync(path.join(root, '.cc-orch.json.example')));
+    assert('inertness: init writes only .nightfoundry.json.example',
+      fs.existsSync(path.join(root, '.nightfoundry.json.example')));
 
     const before = {
       testCommand: config.execution.testCommand,
@@ -470,7 +489,7 @@ function acH_staleness() {
   const root = makeTmpRoot();
   try {
     init(root);
-    const guidancePath = path.join(root, 'cc-orch-guidance.md');
+    const guidancePath = path.join(root, 'nightfoundry-guidance.md');
     const original = fs.readFileSync(guidancePath, 'utf8');
     const tampered = original.replace(
       /<!-- cc-orch-guidance-hash: [0-9a-f]{12} -->/,
@@ -484,7 +503,7 @@ function acH_staleness() {
     });
     assert('staleness: no exception', threwSentinel === null && threwOther === null);
     assert('staleness: outdated hint printed',
-      stderrLines.some((l) => l.includes('cc-orch-guidance.md is outdated') && l.includes('cc-orch init')));
+      stderrLines.some((l) => l.includes('nightfoundry-guidance.md is outdated') && l.includes('cc-orch init')));
   } catch (err) {
     assert(`(H staleness): unexpected exception — ${err && err.message}`, false);
   } finally {
@@ -497,7 +516,7 @@ function acH_refresh() {
   const root = makeTmpRoot();
   try {
     init(root);
-    const guidancePath = path.join(root, 'cc-orch-guidance.md');
+    const guidancePath = path.join(root, 'nightfoundry-guidance.md');
     const original = fs.readFileSync(guidancePath, 'utf8');
     const tampered = original.replace(
       /<!-- cc-orch-guidance-hash: [0-9a-f]{12} -->/,
@@ -527,14 +546,14 @@ function acH_dangling() {
   const root = makeTmpRoot();
   try {
     init(root);
-    fs.rmSync(path.join(root, 'cc-orch-guidance.md'));
+    fs.rmSync(path.join(root, 'nightfoundry-guidance.md'));
 
     const { stderrLines, threwSentinel, threwOther } = withGuardStubs({ isTTY: false }, () => {
       guardFreshRoot(root, { refuse: true, readChannel: () => 'stable' });
     });
     assert('dangling: no exception', threwSentinel === null && threwOther === null);
     assert('dangling: hint printed',
-      stderrLines.some((l) => l.includes('cc-orch-guidance.md is missing') && l.includes('CLAUDE.local.md still imports it')));
+      stderrLines.some((l) => l.includes('nightfoundry-guidance.md is missing') && l.includes('CLAUDE.local.md still imports it')));
   } catch (err) {
     assert(`(H dangling): unexpected exception — ${err && err.message}`, false);
   } finally {
@@ -549,7 +568,7 @@ function acH_optOut() {
     init(root);
     // Simulate the user deleting the import line — a clean opt-out.
     fs.writeFileSync(path.join(root, 'CLAUDE.local.md'), '# My own notes, no import\n', 'utf8');
-    fs.rmSync(path.join(root, 'cc-orch-guidance.md'));
+    fs.rmSync(path.join(root, 'nightfoundry-guidance.md'));
 
     const { stderrLines, threwSentinel, threwOther } = withGuardStubs({ isTTY: false }, () => {
       guardFreshRoot(root, { refuse: true });
@@ -568,9 +587,9 @@ function acH_optOutWithResidue() {
   const root = makeTmpRoot();
   try {
     init(root);
-    const guidancePath = path.join(root, 'cc-orch-guidance.md');
+    const guidancePath = path.join(root, 'nightfoundry-guidance.md');
     const residue = fs.readFileSync(guidancePath, 'utf8');
-    // Delete the import line but leave cc-orch-guidance.md on disk.
+    // Delete the import line but leave nightfoundry-guidance.md on disk.
     fs.writeFileSync(path.join(root, 'CLAUDE.local.md'), '# My own notes, no import\n', 'utf8');
 
     const { stderrLines, threwSentinel, threwOther } = withGuardStubs({ isTTY: false }, () => {
@@ -612,7 +631,7 @@ function acH_failSoftEISDIR() {
   const root = makeTmpRoot();
   try {
     init(root);
-    const guidancePath = path.join(root, 'cc-orch-guidance.md');
+    const guidancePath = path.join(root, 'nightfoundry-guidance.md');
     fs.rmSync(guidancePath);
     fs.mkdirSync(guidancePath);
 
@@ -628,6 +647,317 @@ function acH_failSoftEISDIR() {
   } finally {
     cleanup(root);
   }
+}
+
+// ── (I) old-surface (pre-rename) migration legs ─────────────────────────────
+
+// TC1: a pre-seeded marked legacy skill dir (SKILL.md + the sidecar marker
+// '.cc-orch-skill.json') is removed entirely by init, while the new
+// nightfoundry-operator/ deploy lands alongside it.
+function acI_tc1_markedLegacySkillDirRemoved() {
+  console.log('\n=== (I) TC1 — marked legacy skill dir removed, new deploy present ===\n');
+  const root = makeTmpRoot();
+  try {
+    const oldSkillDir = path.join(root, '.claude', 'skills', 'cc-orch-operator');
+    fs.mkdirSync(oldSkillDir, { recursive: true });
+    fs.writeFileSync(path.join(oldSkillDir, 'SKILL.md'), '# legacy skill\n', 'utf8');
+    fs.writeFileSync(
+      path.join(oldSkillDir, '.cc-orch-skill.json'),
+      JSON.stringify({ version: '0.0.0', releaseChannel: 'stable', hash: '000000000000' }, null, 2) + '\n',
+      'utf8'
+    );
+
+    init(root);
+
+    assert('TC1: legacy .claude/skills/cc-orch-operator/ absent after init',
+      !fs.existsSync(oldSkillDir));
+    assert('TC1: new .claude/skills/nightfoundry-operator/SKILL.md exists after init',
+      fs.existsSync(path.join(root, '.claude', 'skills', 'nightfoundry-operator', 'SKILL.md')));
+  } catch (err) {
+    assert(`(I TC1): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+  }
+}
+
+// TC2: a legacy skill dir with the SAME name but NO sidecar marker is
+// user/foreign-owned as far as init can prove, so it must be left
+// byte-identical.
+function acI_tc2_unmarkedLegacySkillDirPreserved() {
+  console.log('\n=== (I) TC2 — unmarked legacy skill dir preserved byte-identical ===\n');
+  const root = makeTmpRoot();
+  try {
+    const oldSkillDir = path.join(root, '.claude', 'skills', 'cc-orch-operator');
+    fs.mkdirSync(oldSkillDir, { recursive: true });
+    const skillMdPath = path.join(oldSkillDir, 'SKILL.md');
+    fs.writeFileSync(skillMdPath, '# my own skill, not machine-owned\n', 'utf8');
+
+    const before = fs.readFileSync(skillMdPath);
+
+    init(root);
+
+    assert('TC2: unmarked legacy skill dir still present after init', fs.existsSync(skillMdPath));
+    const after = fs.readFileSync(skillMdPath);
+    assert('TC2: unmarked legacy SKILL.md byte-identical after init',
+      Buffer.compare(before, after) === 0);
+    assert('TC2: no sidecar marker was introduced into the unmarked legacy dir',
+      !fs.existsSync(path.join(oldSkillDir, '.cc-orch-skill.json')));
+  } catch (err) {
+    assert(`(I TC2): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+  }
+}
+
+// TC3: a stamped legacy cc-orch-guidance.md (first line matches the machine
+// stamp format) is removed by init, while nightfoundry-guidance.md is written.
+function acI_tc3_stampedLegacyGuidanceRemoved() {
+  console.log('\n=== (I) TC3 — stamped legacy guidance removed, nightfoundry-guidance.md written ===\n');
+  const root = makeTmpRoot();
+  try {
+    const oldGuidancePath = path.join(root, 'cc-orch-guidance.md');
+    fs.writeFileSync(
+      oldGuidancePath,
+      '<!-- cc-orch-guidance-hash: 000000000000 -->\n# Legacy guidance\nOld content.\n',
+      'utf8'
+    );
+
+    init(root);
+
+    assert('TC3: legacy cc-orch-guidance.md absent after init', !fs.existsSync(oldGuidancePath));
+    assert('TC3: nightfoundry-guidance.md written after init',
+      fs.existsSync(path.join(root, 'nightfoundry-guidance.md')));
+  } catch (err) {
+    assert(`(I TC3): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+  }
+}
+
+// TC4: an unstamped (user-authored) cc-orch-guidance.md — first line does
+// not match the machine stamp format — is left byte-identical.
+function acI_tc4_unstampedLegacyGuidancePreserved() {
+  console.log('\n=== (I) TC4 — unstamped legacy guidance preserved byte-identical ===\n');
+  const root = makeTmpRoot();
+  try {
+    const oldGuidancePath = path.join(root, 'cc-orch-guidance.md');
+    const preSeeded = '# My own notes named cc-orch-guidance.md\nNot machine-owned.\n';
+    fs.writeFileSync(oldGuidancePath, preSeeded, 'utf8');
+
+    const before = fs.readFileSync(oldGuidancePath);
+
+    init(root);
+
+    assert('TC4: unstamped legacy guidance still present after init', fs.existsSync(oldGuidancePath));
+    const after = fs.readFileSync(oldGuidancePath);
+    assert('TC4: unstamped legacy guidance byte-identical after init',
+      Buffer.compare(before, after) === 0);
+  } catch (err) {
+    assert(`(I TC4): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+  }
+}
+
+// TC5 + TC6: a pre-seeded CLAUDE.local.md holding user prose plus the old
+// '@cc-orch-guidance.md' import line has ONLY that line rewritten to
+// '@nightfoundry-guidance.md' — every surrounding byte preserved, exactly
+// one import line surviving, no old import line remaining (TC5). A second
+// init on that same root then leaves CLAUDE.local.md byte-identical (TC6).
+function acI_tc5tc6_claudeLocalImportLineRewrite() {
+  console.log('\n=== (I) TC5/TC6 — CLAUDE.local.md legacy import-line rewrite + idempotence ===\n');
+  const root = makeTmpRoot();
+  try {
+    const claudeLocalPath = path.join(root, 'CLAUDE.local.md');
+    const preSeeded =
+      '# My project notes\n' +
+      'Some prose before the import.\n' +
+      '@cc-orch-guidance.md\n' +
+      'Some prose after the import.\n';
+    fs.writeFileSync(claudeLocalPath, preSeeded, 'utf8');
+
+    init(root);
+
+    const afterFirst = fs.readFileSync(claudeLocalPath, 'utf8');
+    const expected = preSeeded.replace('@cc-orch-guidance.md', '@nightfoundry-guidance.md');
+
+    assert('TC5: rewritten CLAUDE.local.md matches expected (only the import line changed)',
+      afterFirst === expected);
+
+    const newImportOccurrences = afterFirst.split('\n').filter((l) => l === '@nightfoundry-guidance.md').length;
+    assert('TC5: exactly one new import line present', newImportOccurrences === 1);
+
+    assert('TC5: no legacy @cc-orch-guidance.md import line remains',
+      !afterFirst.includes('@cc-orch-guidance.md'));
+
+    assert('TC5: surrounding prose before the import preserved',
+      afterFirst.includes('Some prose before the import.'));
+    assert('TC5: surrounding prose after the import preserved',
+      afterFirst.includes('Some prose after the import.'));
+
+    // TC6 — a second init on the same (already-migrated) root leaves
+    // CLAUDE.local.md byte-identical.
+    init(root);
+    const afterSecond = fs.readFileSync(claudeLocalPath, 'utf8');
+    assert('TC6: CLAUDE.local.md byte-identical after a second init',
+      afterSecond === afterFirst);
+  } catch (err) {
+    assert(`(I TC5/TC6): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+  }
+}
+
+function acI_migrationLegs() {
+  console.log('\n=== (I) old-surface (pre-rename) migration legs ===\n');
+  acI_tc1_markedLegacySkillDirRemoved();
+  acI_tc2_unmarkedLegacySkillDirPreserved();
+  acI_tc3_stampedLegacyGuidanceRemoved();
+  acI_tc4_unstampedLegacyGuidancePreserved();
+  acI_tc5tc6_claudeLocalImportLineRewrite();
+}
+
+// ── (J) dual-read config precedence (.nightfoundry.json vs legacy .cc-orch.json) ─
+
+/**
+ * Runs `fn` with console.warn captured (restored in a finally block).
+ * Mirrors withGuardStubs' capture-and-restore style, scoped to console.warn
+ * only — this leg exercises loadProjectConfig's dual-read shadow warning,
+ * not process.exit/console.error.
+ * @param {() => void} fn
+ * @returns {{ warnLines: string[] }}
+ */
+function withWarnCapture(fn) {
+  const originalWarn = console.warn;
+  const warnLines = [];
+  console.warn = (...args) => { warnLines.push(args.join(' ')); };
+  try {
+    fn();
+  } finally {
+    console.warn = originalWarn;
+  }
+  return { warnLines };
+}
+
+// TC1: a root holding only .nightfoundry.json applies its override.
+function acJ_tc1_nightfoundryOnlyApplies() {
+  console.log('\n=== (J) TC1 — .nightfoundry.json alone applies its override ===\n');
+  const root = makeTmpRoot();
+  const before = {
+    testCommand: config.execution.testCommand,
+    testAllCommand: config.execution.testAllCommand,
+  };
+  try {
+    fs.writeFileSync(
+      path.join(root, '.nightfoundry.json'),
+      JSON.stringify({ execution: { testCommand: 'nf-only' } }, null, 2) + '\n',
+      'utf8'
+    );
+
+    let threw = false;
+    try {
+      loadProjectConfig(root);
+    } catch {
+      threw = true;
+    }
+
+    assert('TC1: loadProjectConfig does not throw with only .nightfoundry.json present', threw === false);
+    assert("TC1: .nightfoundry.json alone applies its override — config.execution.testCommand === 'nf-only'",
+      config.execution.testCommand === 'nf-only');
+  } catch (err) {
+    assert(`(J TC1): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+    config.execution.testCommand = before.testCommand;
+    config.execution.testAllCommand = before.testAllCommand;
+  }
+}
+
+// TC2: a root holding only the legacy .cc-orch.json applies its override.
+function acJ_tc2_legacyOnlyApplies() {
+  console.log('\n=== (J) TC2 — legacy .cc-orch.json alone applies its override ===\n');
+  const root = makeTmpRoot();
+  const before = {
+    testCommand: config.execution.testCommand,
+    testAllCommand: config.execution.testAllCommand,
+  };
+  try {
+    fs.writeFileSync(
+      path.join(root, '.cc-orch.json'),
+      JSON.stringify({ execution: { testCommand: 'legacy-only' } }, null, 2) + '\n',
+      'utf8'
+    );
+
+    let threw = false;
+    try {
+      loadProjectConfig(root);
+    } catch {
+      threw = true;
+    }
+
+    assert('TC2: loadProjectConfig does not throw with only .cc-orch.json present', threw === false);
+    assert("TC2: legacy .cc-orch.json alone applies its override — config.execution.testCommand === 'legacy-only'",
+      config.execution.testCommand === 'legacy-only');
+  } catch (err) {
+    assert(`(J TC2): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+    config.execution.testCommand = before.testCommand;
+    config.execution.testAllCommand = before.testAllCommand;
+  }
+}
+
+// TC3: a root holding BOTH files resolves to the .nightfoundry.json value
+// and emits exactly one captured console line naming the shadowed
+// '.cc-orch.json', with loadProjectConfig not throwing.
+function acJ_tc3_bothPresentNightfoundryWinsOneWarning() {
+  console.log('\n=== (J) TC3 — both files present: .nightfoundry.json wins, one shadow warning ===\n');
+  const root = makeTmpRoot();
+  const before = {
+    testCommand: config.execution.testCommand,
+    testAllCommand: config.execution.testAllCommand,
+  };
+  try {
+    fs.writeFileSync(
+      path.join(root, '.nightfoundry.json'),
+      JSON.stringify({ execution: { testCommand: 'nf-wins' } }, null, 2) + '\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(root, '.cc-orch.json'),
+      JSON.stringify({ execution: { testCommand: 'legacy-shadowed' } }, null, 2) + '\n',
+      'utf8'
+    );
+
+    let threw = false;
+    const { warnLines } = withWarnCapture(() => {
+      try {
+        loadProjectConfig(root);
+      } catch {
+        threw = true;
+      }
+    });
+
+    assert('TC3: loadProjectConfig does not throw when both files are present', threw === false);
+    assert("TC3: .nightfoundry.json value wins — config.execution.testCommand === 'nf-wins'",
+      config.execution.testCommand === 'nf-wins');
+    assert('TC3: exactly one captured console line is emitted', warnLines.length === 1);
+    assert("TC3: the captured warning line names the shadowed '.cc-orch.json'",
+      warnLines.length === 1 && warnLines[0].includes('.cc-orch.json'));
+  } catch (err) {
+    assert(`(J TC3): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+    config.execution.testCommand = before.testCommand;
+    config.execution.testAllCommand = before.testAllCommand;
+  }
+}
+
+function acJ_dualReadPrecedence() {
+  console.log('\n=== (J) dual-read config precedence (.nightfoundry.json vs legacy .cc-orch.json) ===\n');
+  acJ_tc1_nightfoundryOnlyApplies();
+  acJ_tc2_legacyOnlyApplies();
+  acJ_tc3_bothPresentNightfoundryWinsOneWarning();
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -655,6 +985,8 @@ function main() {
   acH_optOutWithResidue();
   acH_bareHarness();
   acH_failSoftEISDIR();
+  acI_migrationLegs();
+  acJ_dualReadPrecedence();
 
   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
   process.exit(failCount > 0 ? 1 : 0);

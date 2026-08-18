@@ -1,7 +1,7 @@
 /**
- * test-operator-manual.js — Tests for the shipped cc-orch-operator skill
- * package (src/cli/skills/cc-orch-operator/) and its deployment via
- * `cc-orch init` (src/cli/commands/init.js).
+ * test-operator-manual.js — Tests for the shipped nightfoundry-operator
+ * skill package (src/cli/skills/nightfoundry-operator/) and its deployment
+ * via `nightfoundry init` (src/cli/commands/init.js).
  *
  * No Claude auth, no SDK, no network. Pure fs + temp directories
  * (fs.mkdtempSync fixture roots, realpathed immediately — mirrors
@@ -14,13 +14,13 @@
  *       src/cli/index.js (never hand-copied) and every verb is asserted to
  *       appear in references/commands.md.
  *   (2) Init deployment legs — byte-identical deploy of the skill package
- *       into a temp-root .claude/skills/cc-orch-operator/, a re-init
+ *       into a temp-root .claude/skills/nightfoundry-operator/, a re-init
  *       refresh, the sidecar {version, releaseChannel, hash} shape, an
  *       explicit-init-deploys-regardless-of-channel leg, and the absence of
  *       any '.claude' pattern in the managed .gitignore block.
  *   (3) Template pins — the four anchor sections (headings) and the
  *       section-(iv) deployed-skill pointer sentence in the shipped
- *       cc-orch-guidance.md template.
+ *       nightfoundry-guidance.md template.
  *   (4) Chapter pins — spec-authoring.md sections (a)-(g) (including the
  *       .claude/** target-files exclusion rule) and debugging.md flows
  *       (a)-(f).
@@ -130,15 +130,15 @@ function walkFiles(dir, baseDir = dir) {
 // ── shared paths ─────────────────────────────────────────────────────────
 
 const CLI_INDEX_PATH = path.resolve(__dirname, '../src/cli/index.js');
-const SKILL_SRC_DIR = path.resolve(__dirname, '../src/cli/skills/cc-orch-operator');
+const SKILL_SRC_DIR = path.resolve(__dirname, '../src/cli/skills/nightfoundry-operator');
 const SKILL_MD_PATH = path.join(SKILL_SRC_DIR, 'SKILL.md');
 const COMMANDS_MD_PATH = path.join(SKILL_SRC_DIR, 'references', 'commands.md');
 const SPEC_AUTHORING_PATH = path.join(SKILL_SRC_DIR, 'references', 'spec-authoring.md');
 const DEBUGGING_PATH = path.join(SKILL_SRC_DIR, 'references', 'debugging.md');
-const TEMPLATE_PATH = path.resolve(__dirname, '../src/cli/templates/cc-orch-guidance.md');
+const TEMPLATE_PATH = path.resolve(__dirname, '../src/cli/templates/nightfoundry-guidance.md');
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../package.json');
 
-const SKILL_DEPLOY_RELPATH = path.join('.claude', 'skills', 'cc-orch-operator');
+const SKILL_DEPLOY_RELPATH = path.join('.claude', 'skills', 'nightfoundry-operator');
 const SKILL_SIDECAR_FILENAME = '.cc-orch-skill.json';
 
 // ── (1) DRIFT — runtime-derived CLI verb list ⊆ commands.md ───────────────
@@ -170,8 +170,8 @@ function ac1_driftVerbList() {
 
   const commandsMd = fs.readFileSync(COMMANDS_MD_PATH, 'utf8');
   for (const verb of verbs) {
-    assert(`drift: verb '${verb}' documented in references/commands.md ('cc-orch ${verb}')`,
-      commandsMd.includes(`cc-orch ${verb}`));
+    assert(`drift: verb '${verb}' documented in references/commands.md ('nightfoundry ${verb}' or 'cc-orch ${verb}')`,
+      commandsMd.includes(`nightfoundry ${verb}`) || commandsMd.includes(`cc-orch ${verb}`));
   }
 }
 
@@ -252,7 +252,7 @@ function ac2_explicitInitDeploysRegardlessOfChannel() {
       sidecar.releaseChannel === null);
 
     assert('explicit init: a release-channel line was printed',
-      stdoutLines.some((l) => l.includes('cc-orch-operator skill release channel:')));
+      stdoutLines.some((l) => l.includes('nightfoundry-operator skill release channel:')));
   } catch (err) {
     assert(`(2 explicit init): unexpected exception — ${err && err.message}`, false);
   } finally {
@@ -263,13 +263,14 @@ function ac2_explicitInitDeploysRegardlessOfChannel() {
 // ── (3) template pins ────────────────────────────────────────────────────
 
 // Verbatim anchor sentences, one per heading, read from the shipped
-// template asset (src/cli/templates/cc-orch-guidance.md) at the time this
-// test was written. Section (iv) is the deployed-skill pointer sentence.
+// template asset (src/cli/templates/nightfoundry-guidance.md) at the time
+// this test was written. Section (iv) is the deployed-skill pointer
+// sentence.
 const TEMPLATE_ANCHOR_SENTENCES = [
-  'This file is machine-managed by cc-orch; re-running cc-orch init refreshes it.',
+  'This file is machine-managed by nightfoundry; re-running nightfoundry init refreshes it.',
   'Runs live under .harness/, pending work under queue/, delivered runs under archives/.',
   "Record this project's lessons, decisions, and TODOs in this project's own files.",
-  'This repo ships the cc-orch operator skill at .claude/skills/cc-orch-operator/ — your session loads project skills automatically; read references/spec-authoring.md before hand-writing a spec and references/debugging.md when a run stops.',
+  'This repo ships the nightfoundry operator skill at .claude/skills/nightfoundry-operator/ — your session loads project skills automatically; read references/spec-authoring.md before hand-writing a spec and references/debugging.md when a run stops.',
 ];
 
 function ac3_templatePins() {
@@ -357,12 +358,12 @@ function ac5_skillPins() {
     skillText.includes('6. **Respect read-only mode.**'));
   assert('SKILL: golden rule 6 reentrancy sentence present',
     skillText.includes(
-      "never invoke `cc-orch` from inside a session that `cc-orch` itself spawned — a live run stamps its child processes, and re-entering against the same project root can corrupt that run's state."
+      "never invoke the CLI — whether as `nightfoundry` or via its permanent `cc-orch` alias — from inside a session that it itself spawned — a live run stamps its child processes, and re-entering against the same project root can corrupt that run's state, no matter which invocation name you use."
     ));
 
   assert('SKILL: Intent-table row — hand-write-a-spec routes to spec-authoring.md',
     skillText.includes(
-      '| Hand-write a spec without brainstorm | [references/spec-authoring.md](references/spec-authoring.md) | `cc-orch dry-run <spec.md>` (validates it), then `cc-orch run <spec.md>` |'
+      '| Hand-write a spec without brainstorm | [references/spec-authoring.md](references/spec-authoring.md) | `nightfoundry dry-run <spec.md>` (validates it), then `nightfoundry run <spec.md>` |'
     ));
 }
 
@@ -382,7 +383,7 @@ function ac6_publicSafetySweep() {
       ...walkFiles(SKILL_SRC_DIR).map((rel) => path.join(SKILL_SRC_DIR, rel)),
       ...walkFiles(deployDir).map((rel) => path.join(deployDir, rel)),
       TEMPLATE_PATH,
-      path.join(root, 'cc-orch-guidance.md'),
+      path.join(root, 'nightfoundry-guidance.md'),
     ];
 
     for (const filePath of filesToSweep) {
@@ -419,7 +420,7 @@ function makeStaleGuidanceRoot() {
   // the canonical "stale" precondition for the channel-gate legs.
   const root = makeTmpRoot();
   withCapture(() => { init(root, undefined, { readChannel: () => undefined }); });
-  const guidancePath = path.join(root, 'cc-orch-guidance.md');
+  const guidancePath = path.join(root, 'nightfoundry-guidance.md');
   const original = fs.readFileSync(guidancePath, 'utf8');
   fs.writeFileSync(
     guidancePath,
@@ -477,7 +478,7 @@ function ac7_channelGate() {
 // ── main ─────────────────────────────────────────────────────────────────
 
 function main() {
-  console.log('=== operator-manual (cc-orch-operator skill package + init deployment) Tests ===\n');
+  console.log('=== operator-manual (nightfoundry-operator skill package + init deployment) Tests ===\n');
 
   ac1_driftVerbList();
   ac2_initDeploymentLegs();
