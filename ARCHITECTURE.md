@@ -3,6 +3,8 @@
 
 This document codifies the load-bearing architectural rules of nightfoundry. These are not style preferences — they are rules whose violation has caused real bugs during the project's dogfood runs, each traceable to the commits cited below.
 
+> **Note on commit references:** the SHAs cited throughout this file point to the project's internal development history from before the public release, which is not part of this repository's git history. They are kept as provenance labels — evidence that each rule was forced by a specific real failure — not as resolvable links.
+
 If you are about to do work that involves an agent-to-JS handoff or a convention rename, **read this file first**.
 
 ---
