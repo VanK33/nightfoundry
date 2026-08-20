@@ -249,7 +249,8 @@ Rules:
 - Specific observations described in 'notes' MUST also appear as 'findings' entries with severity 'info' at minimum — never describe a concrete issue only in prose
 - Every newly emitted finding MUST carry 'disposition' set to 'pending' (the reviewer does not assign final dispositions; downstream pipeline / human steps do)
 - Do NOT write any files — your output is the structured verdict only
-- Do NOT modify state files or business code`;
+- Do NOT modify state files or business code
+- The working tree IS this milestone's work: HEAD predates the spec's work by design, so a file or symbol present in the worktree but absent from HEAD is NEW WORK, not missing work. Never treat git history as an existence baseline`;
 
     const systemPrompt = `You are a Harness Reviewer. Your ONLY job is to review milestone-level composition and return a structured verdict.
 
@@ -291,6 +292,9 @@ Rules:
         // command. Reviewer-only — the milestone-regression verifier's
         // whole-suite run is sanctioned and does not pass this flag.
         denyWholeSuiteBash: true,
+        // Read-only judging role: no file removal. Git reads stay available
+        // (the diff view is a legitimate review lens).
+        denyFileRemovalBash: true,
       });
 
       this.logger.attachToSession(spawnPromise.handle, log, {
@@ -339,6 +343,7 @@ Rules:
             maxBudget: config.budgets.reviewer,
             cwd: projectRoot,
             denyWholeSuiteBash: true,
+            denyFileRemovalBash: true,
           });
           this.logger.attachToSession(retryPromise.handle, retryLog, {
             role: 'reviewer',

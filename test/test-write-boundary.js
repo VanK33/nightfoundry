@@ -307,6 +307,48 @@ await test('I2f: bare git restore/checkout forms are denied (no `--` required)',
   }
 });
 
+// I2h — spawn-level denyGitReadsBash (verifier): git history/status reads are
+// denied WITH the flag, allowed WITHOUT it; non-git commands unaffected.
+await test('I2h: denyGitReadsBash denies git history reads only when the flag is passed', () => {
+  const sm = new SessionManager();
+  const withFlag = sm._buildSdkOptions({ denyGitReadsBash: true });
+  const withoutFlag = sm._buildSdkOptions({});
+  const gitReads = [
+    'git show HEAD:src/foo.js',
+    'git diff HEAD',
+    'git status --short',
+    'git log --oneline -5',
+    'git ls-files',
+  ];
+  for (const cmd of gitReads) {
+    const denied = withFlag.canUseTool('Bash', { command: cmd });
+    assert.strictEqual(denied?.behavior, 'deny', `Expected DENY with flag for: ${cmd}`);
+    assert.ok(
+      /working tree/.test(denied.message),
+      `Deny message must carry the worktree contract; got: ${denied.message}`
+    );
+    const allowed = withoutFlag.canUseTool('Bash', { command: cmd });
+    assert.notStrictEqual(allowed?.behavior, 'deny', `Expected ALLOW without flag for: ${cmd}`);
+  }
+  const nonGit = withFlag.canUseTool('Bash', { command: 'grep -c foo src/x.js' });
+  assert.notStrictEqual(nonGit?.behavior, 'deny', 'Non-git commands must pass under the flag');
+});
+
+// I2i — spawn-level denyFileRemovalBash (read-only agents): any rm is denied
+// with the flag; a flagless single-file rm stays allowed without it (executor
+// legitimately deletes files).
+await test('I2i: denyFileRemovalBash denies rm only when the flag is passed', () => {
+  const sm = new SessionManager();
+  const withFlag = sm._buildSdkOptions({ denyFileRemovalBash: true });
+  const withoutFlag = sm._buildSdkOptions({});
+  for (const cmd of ['rm src/x.js', 'rm -f notes.txt', 'cd tmp && rm file']) {
+    const denied = withFlag.canUseTool('Bash', { command: cmd });
+    assert.strictEqual(denied?.behavior, 'deny', `Expected DENY with flag for: ${cmd}`);
+  }
+  const allowed = withoutFlag.canUseTool('Bash', { command: 'rm src/x.js' });
+  assert.notStrictEqual(allowed?.behavior, 'deny', 'Flagless single-file rm stays allowed without the flag');
+});
+
 // I2g — read-only git commands stay allowed: the widened pattern must not
 // catch inspection commands a verifier legitimately needs.
 await test('I2g: read-only git commands remain allowed after the pattern widening', () => {

@@ -329,7 +329,8 @@ Rules:
 - Return your analysis as a structured JSON object matching the session's jsonSchema
 - Do NOT write analysis files — the orchestrator persists the structured output
 - Do NOT write or modify business code
-- Do NOT update state.json`;
+- Do NOT update state.json
+- The working tree holds the run's in-flight work: HEAD predates it by design, so absence from git history is NEVER evidence that work was not done — judge from the files themselves`;
 
     const log = this.logger.createSessionLog(`analyzer-${opts.taskId}`);
 
@@ -341,6 +342,9 @@ Rules:
         model: config.execution.analyzerModel,
         agent: 'analyzer',
         tools: config.tools.verifier,
+        // Read-only judging role: no file removal. Git reads stay available
+        // (forensic analysis may legitimately consult history).
+        denyFileRemovalBash: true,
         jsonSchema: sessionSchema,
         maxBudget: config.budgets.analyzer,
         cwd: projectRoot,

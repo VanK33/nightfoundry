@@ -404,6 +404,11 @@ Rules:
         model: config.execution.verifierModel,
         agent: 'verifier',
         tools: config.tools.verifier,
+        // Structural halves of the prompt's git prohibition (verified
+        // 2026-08-20): history/status reads invite the HEAD-as-baseline
+        // false-FAILED; removal is never a judging role's business.
+        denyGitReadsBash: true,
+        denyFileRemovalBash: true,
         // regression-gate callers (verifyRegression) carry the findings-extended
         // schema so the remediation path receives structured {file, description}
         // entries. The escalation spawn below re-uses the same opts.jsonSchema,
@@ -477,6 +482,9 @@ Rules:
             model: config.execution.verifierEscalationModel,
             agent: 'verifier',
             tools: config.tools.verifier,
+            // Same structural denies as attempt 1 (see there).
+            denyGitReadsBash: true,
+            denyFileRemovalBash: true,
             // Same schema as attempt 1: per-task callers escalate under plain
             // verifierSchema, regression-gate callers under the findings-
             // extended regressionVerifierSchema the remediation path needs.

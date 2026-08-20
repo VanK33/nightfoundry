@@ -349,7 +349,8 @@ Rules:
 - Return your analysis as a structured JSON object matching the session's jsonSchema
 - Do NOT write analysis files — the orchestrator persists the structured output
 - Do NOT write or modify business code
-- Do NOT update state.json`;
+- Do NOT update state.json
+- The working tree holds the run's in-flight work: HEAD predates it by design, so absence from git history is NEVER evidence that work was not done — judge from the files themselves`;
 
 const RETRY_RULE_LINE = '- retry: if the failure looks transient (flaky test, network blip)';
 

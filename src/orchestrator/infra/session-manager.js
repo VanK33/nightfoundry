@@ -1070,6 +1070,30 @@ class SessionManager {
           message: 'Whole-suite commands are reserved for the final integration gate — sibling work may not have run yet. Judge composition from the diff and targeted checks instead.',
         };
       }
+      // Opt-in git-history/status read deny (spawn-level flag; the verifier
+      // passes it). A verifier judging an in-flight run against git history
+      // reads a tree that predates the work by design — the false-FAILED
+      // misjudgment vector verified 2026-08-20. The deny message carries the
+      // worktree contract so the model learns it at the moment of temptation.
+      if (options.denyGitReadsBash && toolName === 'Bash'
+          && /\bgit\s+(show|diff|log|status|ls-files|blame|reflog|cat-file|rev-parse|rev-list|describe|shortlog)\b/.test(toolInput?.command || '')) {
+        return {
+          behavior: 'deny',
+          message: 'Deliverables live in the uncommitted working tree — verify content by reading files directly. Git history/status is not a baseline here: HEAD predates this work by design, so anything judged against it reads as missing.',
+        };
+      }
+      // Opt-in file-removal deny (spawn-level flag; the read-only agents —
+      // verifier, reviewer, analyzer — pass it). A judging role has no
+      // legitimate reason to delete anything; a bare `rm <file>` slips the
+      // global dangerous-pattern list (which covers only -r/-rf and globs)
+      // and destroys uncommitted deliverables.
+      if (options.denyFileRemovalBash && toolName === 'Bash'
+          && /\brm\s/.test(toolInput?.command || '')) {
+        return {
+          behavior: 'deny',
+          message: 'File removal is not available to read-only judging roles — inspect and report; never alter the tree.',
+        };
+      }
       // Thread the session cwd through to the guard so the project-root
       // boundary check (D1) can enforce that every Edit/Write resolves
       // inside the session root. Pass options.cwd directly (not the
