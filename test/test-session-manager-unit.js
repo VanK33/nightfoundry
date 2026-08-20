@@ -140,8 +140,14 @@ await test('_dispatchEvent: non-assistant events do not affect _toolCallCount', 
 });
 
 // --- Test 4: spawn() sets handle.systemPromptTokens ---
+// NOTE: these four token-math cases inject makeInstantCloseQueryFn so no real
+// SDK entrypoint is reached — they previously built bare SessionManagers and
+// were the 4 live real-spawn leaks the hermeticity guard now blocks
+// (probe-verified 2026-08-20). The assertions are purely synchronous math and
+// are unaffected by the fake.
 await test('spawn() sets handle.systemPromptTokens synchronously before SDK call', () => {
   const sm = new SessionManager();
+  sm._queryFn = makeInstantCloseQueryFn();
   const systemPrompt = 'X'.repeat(400); // 400 chars → ceil(400/4) = 100 tokens
   const promise = sm.spawn({
     name: 'test-spawn-tokens',
@@ -156,13 +162,14 @@ await test('spawn() sets handle.systemPromptTokens synchronously before SDK call
     `Expected 100, got ${promise.handle.systemPromptTokens}`
   );
 
-  // Clean up: kill the session to avoid hanging
-  promise.handle.kill();
-  promise.catch(() => {}); // suppress unhandled rejection
+  // The instant-close fake settles the spawn on its own; kill() is not
+  // needed (and the fake carries no .close()). Await settlement.
+  return promise.catch(() => {});
 });
 
 await test('spawn() sets handle.systemPromptTokens to 0 when no systemPrompt', () => {
   const sm = new SessionManager();
+  sm._queryFn = makeInstantCloseQueryFn();
   const promise = sm.spawn({
     name: 'test-spawn-no-prompt',
     prompt: 'hello',
@@ -174,13 +181,13 @@ await test('spawn() sets handle.systemPromptTokens to 0 when no systemPrompt', (
     `Expected 0, got ${promise.handle.systemPromptTokens}`
   );
 
-  promise.handle.kill();
-  promise.catch(() => {});
+  return promise.catch(() => {});
 });
 
 // --- Test 5: spawnReusable() sets handle.systemPromptTokens ---
 await test('spawnReusable() sets handle.systemPromptTokens from computed value', () => {
   const sm = new SessionManager();
+  sm._queryFn = makeInstantCloseQueryFn();
   const systemPrompt = 'Y'.repeat(80); // 80 chars → ceil(80/4) = 20 tokens
   let session;
   try {
@@ -203,6 +210,7 @@ await test('spawnReusable() sets handle.systemPromptTokens from computed value',
 
 await test('spawnReusable() sets handle.systemPromptTokens to 0 when no systemPrompt', () => {
   const sm = new SessionManager();
+  sm._queryFn = makeInstantCloseQueryFn();
   let session;
   try {
     session = sm.spawnReusable({
@@ -218,6 +226,58 @@ await test('spawnReusable() sets handle.systemPromptTokens to 0 when no systemPr
     if (session) {
       session.close().catch(() => {});
     }
+  }
+});
+
+// --- Hermeticity guard: a bare (un-injected) SessionManager must refuse to
+// reach the real SDK under CC_ORCH_TEST=1 (spawn + reusable legs). Env is set
+// explicitly (saved/restored) so these cases exercise the guarded condition
+// even when the file runs directly outside the runner.
+await test('hermeticity guard: spawn() with real _queryFn throws under CC_ORCH_TEST=1', () => {
+  const savedTest = process.env.CC_ORCH_TEST;
+  const savedReal = process.env.CC_ORCH_REAL_SDK;
+  process.env.CC_ORCH_TEST = '1';
+  delete process.env.CC_ORCH_REAL_SDK;
+  try {
+    const sm = new SessionManager();
+    const promise = sm.spawn({ name: 'test-hermeticity-spawn', prompt: 'hello' });
+    let rejected = null;
+    return promise.then(
+      () => { throw new Error('Expected spawn() to reject under the hermeticity guard'); },
+      (err) => {
+        rejected = err;
+        assert.ok(
+          /Hermeticity guard/.test(err.message),
+          `Expected hermeticity-guard rejection, got: ${err.message}`
+        );
+      }
+    );
+  } finally {
+    if (savedTest === undefined) delete process.env.CC_ORCH_TEST; else process.env.CC_ORCH_TEST = savedTest;
+    if (savedReal === undefined) delete process.env.CC_ORCH_REAL_SDK; else process.env.CC_ORCH_REAL_SDK = savedReal;
+  }
+});
+
+await test('hermeticity guard: spawnReusable() with real _queryFn throws under CC_ORCH_TEST=1', () => {
+  const savedTest = process.env.CC_ORCH_TEST;
+  const savedReal = process.env.CC_ORCH_REAL_SDK;
+  process.env.CC_ORCH_TEST = '1';
+  delete process.env.CC_ORCH_REAL_SDK;
+  try {
+    const sm = new SessionManager();
+    assert.throws(
+      () => sm.spawnReusable({ name: 'test-hermeticity-reusable' }),
+      /Hermeticity guard/,
+      'Expected spawnReusable() to throw under the hermeticity guard'
+    );
+    assert.strictEqual(
+      sm.active().length,
+      0,
+      'Constructor unwind must not leak a handle in _active after the guard throw'
+    );
+  } finally {
+    if (savedTest === undefined) delete process.env.CC_ORCH_TEST; else process.env.CC_ORCH_TEST = savedTest;
+    if (savedReal === undefined) delete process.env.CC_ORCH_REAL_SDK; else process.env.CC_ORCH_REAL_SDK = savedReal;
   }
 });
 

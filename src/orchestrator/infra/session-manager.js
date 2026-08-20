@@ -174,6 +174,15 @@ class ReusableSession {
       const sdkOptions = sessionManager._buildSdkOptions(options, this.handle._readFiles);
       this.handle.systemPromptTokens = sdkOptions._approxSystemPromptTokens || 0;
 
+      // Hermeticity chokepoint — same contract as spawn()'s guard (see there).
+      // Sits inside the try so the constructor's clean-unwind path handles it.
+      if (sessionManager._queryFn === query && process.env.CC_ORCH_TEST === '1' && process.env.CC_ORCH_REAL_SDK !== '1') {
+        throw new Error(
+          `Hermeticity guard: refusing to spawn a real reusable SDK session '${this.handle.name}' under CC_ORCH_TEST=1 — ` +
+          `inject a fake via _queryFn, or set CC_ORCH_REAL_SDK=1 for the real-SDK lane`
+        );
+      }
+
       const q = sessionManager._queryFn({
         prompt: this._stream,
         options: sessionManager._toQueryOptions(sdkOptions),
@@ -824,6 +833,18 @@ class SessionManager {
       try {
         this._assertUnderRunCeiling(handle.name);
 
+        // Hermeticity chokepoint (archive-210 follow-through; the 4 live
+        // leaks this closes were probe-verified 2026-08-20): under the test
+        // runner (CC_ORCH_TEST=1) a session must never reach the real SDK
+        // unless the real-SDK lane is explicitly opted into. Identity check
+        // on _queryFn — injected fakes pass untouched.
+        if (this._queryFn === query && process.env.CC_ORCH_TEST === '1' && process.env.CC_ORCH_REAL_SDK !== '1') {
+          throw new Error(
+            `Hermeticity guard: refusing to spawn a real SDK session '${handle.name}' under CC_ORCH_TEST=1 — ` +
+            `inject a fake via _queryFn, or set CC_ORCH_REAL_SDK=1 for the real-SDK lane`
+          );
+        }
+
         const q = this._queryFn({
           prompt: options.prompt,
           options: this._toQueryOptions(sdkOptions),
@@ -1197,7 +1218,10 @@ class SessionManager {
     // (verifier) used the bare form to destroy in-flight deliverables before
     // the pattern was widened (cross-session report, 2026-08-17).
     /\bgit\s+(checkout|restore)\b/,
-    /\bgit\s+stash\s+drop\b/,
+    // Whole stash family: a bare `git stash` moves uncommitted deliverables
+    // out of the working tree — as destructive to an in-flight run as any
+    // revert (adversarial probe finding, 2026-08-20). Subsumes `stash drop`.
+    /\bgit\s+stash\b/,
     /\bgit\s+branch\s+-[dD]\b/,
     /\bgit\s+tag\s+-d\b/,
     /\bgit\s+clean\b/,

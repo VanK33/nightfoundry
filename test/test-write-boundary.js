@@ -297,6 +297,9 @@ await test('I2f: bare git restore/checkout forms are denied (no `--` required)',
     'git checkout -b feature-x',
     'git checkout -- src/foo.js',
     'git restore --staged src/foo.js',
+    'git stash',
+    'git stash push -u -m wip',
+    'git stash pop',
   ];
   for (const cmd of denied) {
     const result = sm._guardToolUse('Bash', { command: cmd }, undefined);
@@ -313,7 +316,6 @@ await test('I2g: read-only git commands remain allowed after the pattern widenin
     'git diff HEAD',
     'git show HEAD:src/foo.js',
     'git log --oneline -5',
-    'git stash list',
     'git rev-parse HEAD',
   ];
   for (const cmd of allowed) {
