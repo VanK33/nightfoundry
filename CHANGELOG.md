@@ -1,3 +1,15 @@
+## [0.2.19] - 2026-08-20 — Operationalize replay with classification and golden corpus
+
+### New features
+- Add divergence classification layer marking fs-leg shape (status: invalidated→complete) as known-excluded-fs; all other divergences marked unexplained
+- Add terminal-outcome comparison to replay driver; recorded vs replayed terminal states compared coarsely (halted/clean); hard infrastructure errors re-throw
+- Add --golden mode to replay script for replaying pinned golden corpus manifests; includes aggregate summary and per-entry status reporting
+- Commit golden corpus manifest (scripts/replay-golden.json) with 3 proven entries spanning multiple engine states and 1 excluded entry with RecordingExhausted reason
+- Add npm scripts replay and replay:golden for ergonomic access to replay tooling
+
+### Bug fixes
+- Change replay exit code: exit 0 only when zero unexplained divergences (previously any divergence caused non-zero exit)
+
 ## [0.2.18] - 2026-08-18 — Brand-surface rename: nightfoundry as primary, cc-orch alias
 
 ### New features

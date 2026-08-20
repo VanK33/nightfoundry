@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "dir": "archives/230-brand-surface-rename-spec",
+      "why": "Proven anchor: replayed clean under the new zero-unexplained-divergences contract — `node scripts/replay-archive.js archives/230-brand-surface-rename-spec` exits 0 with 10 divergence(s): 0 unexplained, 10 known-excluded(fs-leg) (all fs-invalidation-leg status:'invalidated'->'complete' mismatches), no RecordingExhaustedError, no terminal-outcome mismatch."
+    },
+    {
+      "dir": "archives/failed-227-park-disposition-cleanup-spec",
+      "why": "Measured under the completed driver: `node scripts/replay-archive.js archives/failed-227-park-disposition-cleanup-spec` exits 0 with a fully clean replay — zero divergence lines printed at all (0 unexplained, 0 known-excluded), including a matching recorded-vs-replayed terminal outcome (reviewer FAILED -> analyzer 'human' recommendation halt reproduced identically). Qualifies as a terminal MATCH."
+    },
+    {
+      "dir": "archives/failed-224-demo-grade-ui-spec",
+      "why": "Measured under the completed driver: `node scripts/replay-archive.js archives/failed-224-demo-grade-ui-spec` exits 0 with 2 divergence(s): 0 unexplained, 2 known-excluded(fs-leg) — both are the known-excluded fs-invalidation-leg status:'invalidated'->'complete' shape (mission 001-002 revalidation legs); the re_plan remediation retry (mid-run needs_revalidation + one remediation task) replays byte-for-byte from the recorded plan-lint/reusable-planner sessions with no unexplained drift."
+    }
+  ],
+  "freshness": "Rolling rule: after each engine delivery that changes core call sequences (planner/executor/verifier/reviewer/analyzer prompt shapes, session identity-key ordering, or the Pipeline phases that drive them), re-measure this manifest's entries against the updated driver and replace the OLDEST entry with the newest archive that replays clean (zero unexplained divergences, i.e. a terminal MATCH or a divergence report containing only known-excluded(fs-leg) entries) under the new engine. archives/230-brand-surface-rename-spec, as the original proven anchor, is only ever rotated out if a newer archive is strictly more representative of the current engine's call sequences AND at least one anchor-shaped entry (multi-milestone, reviewer-gate-exercising) remains in the manifest. The manifest is capped at a small, deliberately curated set (currently 3 entries) — growth happens by rotation, not by unbounded accumulation.",
+  "excluded": [
+    {
+      "dir": "archives/228-failed-archive-parity-spec",
+      "reason": "RecordingExhaustedError on identity key 'planner:reusable' during mission 001-002 planning — a batch-leg (multi-mission milestone) call-sequence drift where mission 001-001's plan-lint corrective retry consumes an extra reusable-planner turn, leaving no recorded turn for mission 001-002."
+    }
+  ]
+}

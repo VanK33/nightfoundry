@@ -24,29 +24,43 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { EventEmitter } from 'events';
+import { fileURLToPath } from 'url';
 
 import {
   createFakeSessionManager,
   loadArchiveBundle,
   loadSessionRecordings,
   readRecordedOutcomes,
+  readRecordedTerminalState,
   compareReplay,
+  classifyDivergence,
+  classifyDivergences,
+  summarizeClassification,
   MissingExitStructuredOutputError,
   RecordingExhaustedError,
 } from './replay-lib.js';
 import { Pipeline } from '../src/orchestrator/core/pipeline.js';
 
-const USAGE = [
+export const USAGE = [
   'Usage:',
-  '  node scripts/replay-archive.js <archiveDir>        # replay a single archive',
-  '  node scripts/replay-archive.js --probe <corpusDir> # probe every archive in a corpus dir',
+  '  node scripts/replay-archive.js <archiveDir>          # replay a single archive',
+  '  node scripts/replay-archive.js --probe <corpusDir>   # probe every archive in a corpus dir',
+  '  node scripts/replay-archive.js --golden [manifest]   # replay the golden corpus manifest',
 ].join('\n');
+
+// This script's own directory and the repo root it lives under (one level
+// up from scripts/) — used to resolve the default golden manifest path and
+// to resolve each golden manifest entry's `dir` repo-relatively, regardless
+// of the caller's current working directory.
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
+const DEFAULT_GOLDEN_MANIFEST_PATH = path.join(SCRIPT_DIR, 'replay-golden.json');
 
 /**
  * Parses CLI arguments into a mode descriptor.
  *
  * @param {string[]} argv - arguments (excluding node/script path, i.e. process.argv.slice(2))
- * @returns {{mode:'replay', archiveDir:string}|{mode:'probe', corpusDir:string}|{mode:'usage', error?:string}}
+ * @returns {{mode:'replay', archiveDir:string}|{mode:'probe', corpusDir:string}|{mode:'golden', manifestPath:string|null}|{mode:'usage', error?:string}}
  */
 export function parseArgs(argv) {
   if (!Array.isArray(argv) || argv.length === 0) {
@@ -64,11 +78,38 @@ export function parseArgs(argv) {
     return { mode: 'probe', corpusDir };
   }
 
+  if (argv[0] === '--golden') {
+    if (argv.length > 2) {
+      return { mode: 'usage', error: `Unrecognized extra arguments: ${argv.slice(2).join(' ')}` };
+    }
+    return { mode: 'golden', manifestPath: argv.length === 2 ? argv[1] : null };
+  }
+
   if (argv.length === 1 && !argv[0].startsWith('--')) {
     return { mode: 'replay', archiveDir: argv[0] };
   }
 
   return { mode: 'usage', error: `Unrecognized arguments: ${argv.join(' ')}` };
+}
+
+/**
+ * Reads and parses the golden corpus manifest JSON, defaulting to
+ * `scripts/replay-golden.json` (resolved relative to THIS script's own
+ * directory, not the caller's cwd) when `manifestPath` is null/falsy — the
+ * explicit-path form exists so hermetic tests can point this at a temp
+ * manifest fixture instead of the real committed one.
+ *
+ * Never catches: a missing file or malformed JSON propagates as a loud
+ * `fs.readFileSync`/`JSON.parse` throw, consistent with this module's
+ * "loud failure over silent corruption" philosophy for ground-truth data.
+ *
+ * @param {string|null} manifestPath - explicit manifest path, or null to use the default
+ * @returns {object} the parsed manifest JSON
+ */
+export function loadGoldenManifest(manifestPath) {
+  const resolvedPath = manifestPath || DEFAULT_GOLDEN_MANIFEST_PATH;
+  const raw = fs.readFileSync(resolvedPath, 'utf8');
+  return JSON.parse(raw);
 }
 
 /**
@@ -681,6 +722,51 @@ export function buildReplayDeps(bundle) {
 }
 
 /**
+ * Compares the archive's RECORDED terminal state (readRecordedTerminalState,
+ * see replay-lib.js) against the replayed run's own terminal outcome — i.e.
+ * whether the wrapped `pipeline.run(...)` call in replayArchive halted with
+ * a terminal pipeline exception (e.g. a replayed reviewer hard stop raising
+ * CircuitBreakerError) or completed cleanly.
+ *
+ * Reports a green MATCH (an empty array) when both sides halted, or both
+ * sides completed cleanly. Any other combination — recorded clean but the
+ * replay threw, or recorded halted but the replay completed cleanly —
+ * yields exactly ONE divergence report entry, shaped like a compareReplay()
+ * entry so it can be concatenated with a compareReplay() report and run
+ * through the SAME classifier/summarizer. That entry's `field` ('terminal')
+ * never matches the one known-excluded fs-invalidation shape (field:
+ * 'status', expected: 'invalidated', actual: 'complete'), so
+ * classifyDivergence always tags it 'unexplained' — this function builds no
+ * error-class taxonomy or haltReason-to-exception mapping of its own; only
+ * the two sides' halted/clean booleans are ever compared.
+ *
+ * @param {{halted:boolean, haltReason:string|null}} recordedTerminalState -
+ *   readRecordedTerminalState(archiveDir)'s result
+ * @param {{halted:boolean}} replayedTerminalOutcome - whether the replayed
+ *   pipeline.run() call halted with a terminal exception (true) or
+ *   completed cleanly (false)
+ * @param {string|null} [archiveId] - stamped onto a divergence entry's
+ *   `archive` field, matching compareReplay()'s report entry shape
+ * @returns {Array<{archive:string|null, identity:string, field:string,
+ *   expected:boolean, actual:boolean}>} empty on match; exactly one entry
+ *   otherwise
+ */
+export function compareTerminalOutcome(recordedTerminalState, replayedTerminalOutcome, archiveId = null) {
+  const recordedHalted = !!(recordedTerminalState && recordedTerminalState.halted);
+  const replayedHalted = !!(replayedTerminalOutcome && replayedTerminalOutcome.halted);
+
+  if (recordedHalted === replayedHalted) return [];
+
+  return [{
+    archive: archiveId,
+    identity: 'terminal',
+    field: 'terminal',
+    expected: recordedHalted,
+    actual: replayedHalted,
+  }];
+}
+
+/**
  * Replays a single archive end-to-end through the REAL Pipeline (with every
  * spawn/shell/filesystem/TTY seam replaced by buildReplayDeps(bundle)) and
  * compares the replayed run's outcomes against the archive's recorded
@@ -690,17 +776,43 @@ export function buildReplayDeps(bundle) {
  * temp project (materializeReplayProject), and a real Pipeline is
  * constructed against that temp project root with buildReplayDeps(bundle)
  * as its options. pipeline.run(goal, { prdPath: specPath }) drives the full
- * orchestration flow purely from recorded data. Once the run settles, the
+ * orchestration flow purely from recorded data.
+ *
+ * The `pipeline.run(...)` call itself is wrapped: a terminal pipeline
+ * exception (e.g. CircuitBreakerError from a replayed reviewer hard stop)
+ * is caught and folded into the replayed run's terminal outcome (`{halted:
+ * true}`) instead of propagating out of replayArchive and killing the
+ * replay — that outcome is then compared against the archive's own RECORDED
+ * terminal state via compareTerminalOutcome (see above). RecordingExhaustedError
+ * — and any other replay-infrastructure error — is NOT a terminal pipeline
+ * outcome to compare against; it means the replay itself is broken (e.g. an
+ * archive whose recordings don't cover the run), so it is re-thrown
+ * unchanged and propagates out of replayArchive so the run fails loudly.
+ *
+ * Once the run settles (cleanly or via a caught terminal exception), the
  * replayed outcomes are read back out of the run's own harness directory
  * (pipeline.harnessDir, which run() repoints to the per-run harness dir)
  * via readRecordedOutcomes, and diffed against the archive's own recorded
- * outcomes via compareReplay.
+ * outcomes via compareReplay. The terminal-outcome comparison's result (zero
+ * or one entry) is appended to that same divergence report before
+ * classification, so a terminal mismatch is folded into the same
+ * unexplained count and summary line as every other divergence.
  *
  * The temp project directory is always removed in a finally block, so a
- * throwing replay still cleans up before the rejection propagates.
+ * throwing replay (including a re-thrown RecordingExhaustedError) still
+ * cleans up before the rejection propagates.
+ *
+ * Once the combined divergence report is computed, it is run through
+ * replay-lib.js's v0 divergence classifier (classifyDivergences /
+ * summarizeClassification) so callers get both the raw report (for existing
+ * consumers of `divergences`) and the classified breakdown in one place —
+ * the only v0 known-excluded shape is the fs-invalidation leg's
+ * status:'invalidated'→'complete' mismatch; every other divergence
+ * (including a terminal-outcome mismatch) is 'unexplained'.
  *
  * @param {string} archiveDir
- * @returns {Promise<{ archiveId: string, divergences: Array }>}
+ * @returns {Promise<{ archiveId: string, divergences: Array,
+ *   classified: Array, unexplainedCount: number, knownExcludedCount: number }>}
  */
 export async function replayArchive(archiveDir) {
   const bundle = loadArchiveBundle(archiveDir);
@@ -708,19 +820,44 @@ export async function replayArchive(archiveDir) {
 
   try {
     const pipeline = new Pipeline(projectRoot, buildReplayDeps(bundle));
-    await pipeline.run(`Implement the spec at ${specPath}`, { prdPath: specPath });
+
+    let replayedTerminalOutcome;
+    try {
+      await pipeline.run(`Implement the spec at ${specPath}`, { prdPath: specPath });
+      replayedTerminalOutcome = { halted: false };
+    } catch (err) {
+      // RecordingExhaustedError (and any other replay-infrastructure error)
+      // means the replay itself is broken, not that the replayed pipeline
+      // reached a genuine terminal halt — re-throw it unchanged rather than
+      // folding it into the terminal comparison below.
+      if (err instanceof RecordingExhaustedError) throw err;
+      replayedTerminalOutcome = { halted: true };
+    }
 
     const replayedOutcomes = readRecordedOutcomes(pipeline.harnessDir);
     // compareReplay resolves each report entry's `archive` field from the
     // bundle's archiveId; bundle.outcomes is a bare four-Map object that
     // carries none, so pass it explicitly or every divergence line reports
     // its origin as `[null]` — unusable when probing a whole corpus.
-    const divergences = compareReplay(
+    const outcomeDivergences = compareReplay(
       replayedOutcomes,
       { ...bundle.outcomes, archiveId: bundle.archiveId }
     );
 
-    return { archiveId: bundle.archiveId, divergences };
+    const recordedTerminalState = readRecordedTerminalState(bundle.archiveDir);
+    const terminalDivergences = compareTerminalOutcome(
+      recordedTerminalState,
+      replayedTerminalOutcome,
+      bundle.archiveId
+    );
+
+    const divergences = [...outcomeDivergences, ...terminalDivergences];
+
+    const classified = classifyDivergences(divergences);
+    const { unexplained: unexplainedCount, knownExcludedFs: knownExcludedCount } =
+      summarizeClassification(divergences);
+
+    return { archiveId: bundle.archiveId, divergences, classified, unexplainedCount, knownExcludedCount };
   } finally {
     cleanup();
   }
@@ -730,7 +867,11 @@ export async function replayArchive(archiveDir) {
  * Formats a single divergence report entry (as produced by compareReplay)
  * into one human-readable line naming the archive, the session/task
  * identity (including the sequence index when the entry carries one), the
- * differing field, and the expected vs actual values.
+ * differing field, the expected vs actual values, and the entry's v0
+ * classification tag (replay-lib.js's classifyDivergence): 'unexplained' for
+ * everything outside the v0 known-excluded shape, or
+ * 'known-excluded(fs-leg)' for the fs-invalidation leg's
+ * status:'invalidated'→'complete' mismatch.
  *
  * @param {{archive:string|null, identity:string, sequence?:number,
  *   field:string, expected:*, actual:*}} entry - a compareReplay() report entry
@@ -739,7 +880,69 @@ export async function replayArchive(archiveDir) {
 export function formatDivergence(entry) {
   const { archive, identity, sequence, field, expected, actual } = entry || {};
   const identityPart = sequence !== undefined ? `${identity} [sequence ${sequence}]` : identity;
-  return `[${archive}] ${identityPart}: ${field} expected=${JSON.stringify(expected)} actual=${JSON.stringify(actual)}`;
+  const tag = classifyDivergence(entry) === 'known-excluded-fs' ? 'known-excluded(fs-leg)' : 'unexplained';
+  return `[${archive}] ${identityPart}: ${field} expected=${JSON.stringify(expected)} actual=${JSON.stringify(actual)} [${tag}]`;
+}
+
+/**
+ * Formats a compareReplay() report's classification breakdown into a single
+ * summary line.
+ *
+ * @param {Array} report - a raw (unclassified) compareReplay() report
+ * @returns {string} exactly `N divergence(s): X unexplained, Y known-excluded(fs-leg)`
+ */
+export function formatSummaryLine(report) {
+  const { total, unexplained, knownExcludedFs } = summarizeClassification(report);
+  return `${total} divergence(s): ${unexplained} unexplained, ${knownExcludedFs} known-excluded(fs-leg)`;
+}
+
+/**
+ * Replays every entry in the golden corpus manifest (see loadGoldenManifest)
+ * — the pinned baseline archives that must stay green under this engine —
+ * printing one per-entry line naming the entry's directory alongside its
+ * unexplained and known-excluded divergence counts, followed by a single
+ * aggregate summary line across every entry.
+ *
+ * Each entry's `dir` is resolved repo-relative (relative to THIS script's
+ * own repo root, i.e. `path.dirname(scripts/)` — not the caller's cwd), so
+ * the manifest's committed dir strings (e.g.
+ * `archives/230-brand-surface-rename-spec`) resolve the same way regardless
+ * of where `node scripts/replay-archive.js --golden` is invoked from.
+ *
+ * A manifest entry whose resolved directory does not exist on this machine
+ * is a hard, loud error naming the offending entry — a stale manifest is
+ * never silently skipped; it fails the whole golden run.
+ *
+ * @param {string|null} manifestPath - explicit manifest path, or null to use
+ *   the default (see loadGoldenManifest)
+ * @returns {Promise<{ entryCount: number, unexplainedCount: number,
+ *   knownExcludedCount: number }>} aggregate counts across every entry —
+ *   `unexplainedCount === 0` is the green condition (a terminal MATCH, i.e.
+ *   zero unexplained divergences for an entry, counts as green)
+ */
+export async function runGolden(manifestPath) {
+  const manifest = loadGoldenManifest(manifestPath);
+  const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+
+  let totalUnexplained = 0;
+  let totalKnownExcluded = 0;
+
+  for (const entry of entries) {
+    const entryDir = path.resolve(REPO_ROOT, entry.dir);
+    if (!fs.existsSync(entryDir)) {
+      throw new Error(`runGolden: golden manifest entry directory does not exist: ${entry.dir}`);
+    }
+
+    const { unexplainedCount, knownExcludedCount } = await replayArchive(entryDir);
+    totalUnexplained += unexplainedCount;
+    totalKnownExcluded += knownExcludedCount;
+
+    console.log(`[${unexplainedCount === 0 ? 'MATCH' : 'DIVERGE'}] ${entry.dir}: ${unexplainedCount} unexplained, ${knownExcludedCount} known-excluded(fs-leg)`);
+  }
+
+  console.log(`Golden summary: ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, ${totalUnexplained} unexplained, ${totalKnownExcluded} known-excluded(fs-leg)`);
+
+  return { entryCount: entries.length, unexplainedCount: totalUnexplained, knownExcludedCount: totalKnownExcluded };
 }
 
 export async function main() {
@@ -753,17 +956,29 @@ export async function main() {
   }
 
   if (parsed.mode === 'replay') {
-    const { divergences } = await replayArchive(parsed.archiveDir);
-    for (const divergence of divergences) {
-      console.log(formatDivergence(divergence));
+    const { divergences, classified, unexplainedCount } = await replayArchive(parsed.archiveDir);
+    for (const entry of classified) {
+      console.log(formatDivergence(entry));
     }
-    process.exit(divergences.length > 0 ? 1 : 0);
+    // Only print the summary line when there's something to summarize — a
+    // clean, zero-divergence replay prints no line matching /divergence/i at
+    // all, matching this driver's original no-noise-on-a-clean-run contract.
+    if (divergences.length > 0) {
+      console.log(formatSummaryLine(divergences));
+    }
+    process.exit(unexplainedCount === 0 ? 0 : 1);
     return;
   }
 
   if (parsed.mode === 'probe') {
     runProbe(parsed.corpusDir);
     process.exit(0);
+    return;
+  }
+
+  if (parsed.mode === 'golden') {
+    const { unexplainedCount } = await runGolden(parsed.manifestPath);
+    process.exit(unexplainedCount === 0 ? 0 : 1);
     return;
   }
 }

@@ -8,6 +8,7 @@
  *   readSpecPair(archiveDir) → { md, json }
  *   reconstructPlansFromArchive(archiveDir) → Map<missionId, decomp>
  *   readRecordedOutcomes(archiveDir) → { taskStatuses, verdicts, review, regression }
+ *   readRecordedTerminalState(archiveDir) → { halted, haltReason }
  *   parseRecordingIdentity(filename) → { timestamp, role, scopeId, key }
  *   loadSessionRecordings(archiveDir) → Map<key, recording[]>
  *   loadArchiveBundle(archiveDir) → { archiveId, archiveDir, spec, plans, recordings, outcomes }
@@ -16,6 +17,11 @@
  *   RecordingExhaustedError — thrown by the fake SessionManager
  *   normalizeForComparison(value) → value with non-whitelisted fields stripped
  *   compareReplay(replayed, groundTruth) → divergence report (empty array = match)
+ *   classifyDivergence(entry) → 'known-excluded-fs' | 'unexplained'
+ *   classifyDivergences(report) → report entries with an added `classification` field
+ *   summarizeClassification(report) → { total, unexplained, knownExcludedFs }
+ *   isHardReplayError(err) → true for RecordingExhaustedError/MissingExitStructuredOutputError
+ *   compareTerminalOutcome(recorded, replayed, archiveId) → divergence entry|null (coarse v0 terminal-outcome comparison)
  */
 import fs from 'fs';
 import path from 'path';
@@ -162,6 +168,33 @@ export function readRecordedOutcomes(archiveDir) {
   }
 
   return { taskStatuses, verdicts, review, regression };
+}
+
+/**
+ * Read the RECORDED terminal state of an archive from
+ * <archiveDir>/manifest.json. When the manifest exists, parses, and has a
+ * `haltReason` key, the run is recorded halted and that value is returned.
+ * When the manifest exists and parses but has no `haltReason` key, the run
+ * is recorded clean. When manifest.json is absent, unreadable, or not valid
+ * JSON, this also resolves to the clean shape — this function never throws.
+ *
+ * @param {string} archiveDir
+ * @returns {{ halted: boolean, haltReason: string|null }}
+ */
+export function readRecordedTerminalState(archiveDir) {
+  const manifestPath = path.join(archiveDir, 'manifest.json');
+  try {
+    if (!fs.existsSync(manifestPath)) {
+      return { halted: false, haltReason: null };
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (manifest && Object.prototype.hasOwnProperty.call(manifest, 'haltReason')) {
+      return { halted: true, haltReason: manifest.haltReason };
+    }
+    return { halted: false, haltReason: null };
+  } catch {
+    return { halted: false, haltReason: null };
+  }
 }
 
 /**
@@ -804,4 +837,138 @@ export function compareReplay(replayed, groundTruth) {
   compareByIdentity(report, archive, replayedRegression, groundTruthRegression, extractResult, 'result');
 
   return report;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Divergence classifier (v0)
+//
+// Classifies each compareReplay() report entry as either a known, benign
+// exclusion or an unexplained divergence. The only known exclusion in v0 is
+// the "fs leg" shape: a task's recorded ground-truth status of 'invalidated'
+// (set by the fs-invalidation leg re-running a task after replay) versus a
+// replayed status of 'complete'. No other shape is excluded, and there is no
+// configuration/options surface — this is a fixed, single rule.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Classify a single compareReplay() report entry as either the one known,
+ * benign exclusion (the fs-invalidation leg's expected↔actual status shape)
+ * or unexplained.
+ *
+ * @param {{ field?: string, expected?: *, actual?: * }} entry
+ * @returns {'known-excluded-fs'|'unexplained'}
+ */
+export function classifyDivergence(entry) {
+  if (
+    entry
+    && entry.field === 'status'
+    && entry.expected === 'invalidated'
+    && entry.actual === 'complete'
+  ) {
+    return 'known-excluded-fs';
+  }
+  return 'unexplained';
+}
+
+/**
+ * Classify every entry in a compareReplay() report, returning a NEW array
+ * of NEW entry objects — each carrying all of the input entry's own fields
+ * plus an additive `classification` field. Neither the input array nor any
+ * input entry is mutated.
+ *
+ * @param {Array} report
+ * @returns {Array<{ classification: 'known-excluded-fs'|'unexplained' }>}
+ */
+export function classifyDivergences(report) {
+  if (!report) return [];
+  return report.map((entry) => ({ ...entry, classification: classifyDivergence(entry) }));
+}
+
+/**
+ * Summarize a compareReplay() report's classification breakdown.
+ *
+ * @param {Array} report
+ * @returns {{ total: number, unexplained: number, knownExcludedFs: number }}
+ */
+export function summarizeClassification(report) {
+  const entries = report || [];
+  const total = entries.length;
+  let knownExcludedFs = 0;
+  for (const entry of entries) {
+    if (classifyDivergence(entry) === 'known-excluded-fs') knownExcludedFs += 1;
+  }
+  return { total, unexplained: total - knownExcludedFs, knownExcludedFs };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Terminal-outcome comparator (v0, coarse)
+//
+// A separate, deliberately coarse comparison of a run's terminal outcome —
+// did the run halt, or complete cleanly — against an archive's recorded
+// terminal state (see readRecordedTerminalState). This is halted↔halted /
+// clean↔clean only: there is no error-class taxonomy and no
+// haltReason→exception mapping table in v0.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Determine whether an error is a replay-INFRASTRUCTURE failure (as opposed
+ * to a genuine terminal-outcome divergence): a RecordingExhaustedError or a
+ * MissingExitStructuredOutputError. These are HARD errors — they indicate
+ * the replay tooling itself couldn't reconstruct a session, not that the
+ * replayed run's outcome actually diverged from the recorded one — so they
+ * are never converted into a comparison result.
+ *
+ * @param {*} err
+ * @returns {boolean} true for RecordingExhaustedError/MissingExitStructuredOutputError, false otherwise (including null/undefined)
+ */
+export function isHardReplayError(err) {
+  return err instanceof RecordingExhaustedError || err instanceof MissingExitStructuredOutputError;
+}
+
+/**
+ * Compare a run's terminal outcome against an archive's recorded terminal
+ * state, coarsely: only whether each side halted or completed cleanly.
+ *
+ * If `replayed.error` is a hard replay-infrastructure error (see
+ * isHardReplayError), it is re-thrown unchanged — it is never converted into
+ * a comparison result. Otherwise, when `recorded.halted` and
+ * `replayed.halted` agree (both true or both false), returns null (terminal
+ * MATCH). When they disagree, returns a single divergence entry shaped like
+ * a compareReplay() report entry, with `identity` and `field` both fixed to
+ * 'terminal' and `expected`/`actual` set to 'halted' or 'clean'.
+ *
+ * This comparison is coarse by design: halted↔halted / clean↔clean only —
+ * no error-class taxonomy, no haltReason→exception mapping table.
+ *
+ * @param {{ halted: boolean, haltReason?: string|null }} recorded - a
+ *   readRecordedTerminalState()-shaped recorded terminal state
+ * @param {{ halted: boolean, error?: * }} replayed - the replayed run's
+ *   terminal outcome; `error` is the thrown terminal error, or null/absent
+ *   for a clean completion
+ * @param {string} [archiveId] - archive identifier to stamp onto the
+ *   divergence entry's `archive` field (defaults to null when omitted)
+ * @returns {{ archive: string|null, identity: 'terminal', field: 'terminal',
+ *   expected: 'halted'|'clean', actual: 'halted'|'clean',
+ *   classification: 'unexplained' }|null} null on terminal MATCH, one
+ *   divergence entry otherwise
+ * @throws {*} the replayed terminal error, unchanged, when it is a hard
+ *   replay-infrastructure error (see isHardReplayError)
+ */
+export function compareTerminalOutcome(recorded, replayed, archiveId) {
+  if (isHardReplayError(replayed?.error)) {
+    throw replayed.error;
+  }
+
+  if (Boolean(recorded?.halted) === Boolean(replayed?.halted)) {
+    return null;
+  }
+
+  return {
+    archive: archiveId ?? null,
+    identity: 'terminal',
+    field: 'terminal',
+    expected: recorded?.halted ? 'halted' : 'clean',
+    actual: replayed?.halted ? 'halted' : 'clean',
+    classification: 'unexplained',
+  };
 }

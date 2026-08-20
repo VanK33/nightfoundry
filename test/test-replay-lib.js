@@ -15,11 +15,17 @@ import {
   readSpecPair,
   reconstructPlansFromArchive,
   readRecordedOutcomes,
+  readRecordedTerminalState,
   loadSessionRecordings,
   loadArchiveBundle,
   createFakeSessionManager,
   RecordingExhaustedError,
   compareReplay,
+  classifyDivergence,
+  classifyDivergences,
+  summarizeClassification,
+  compareTerminalOutcome,
+  isHardReplayError,
 } from '../scripts/replay-lib.js';
 
 let passCount = 0;
@@ -887,6 +893,224 @@ await test('TC-C4 compareReplay pairs per-session verdicts by sequence and repor
   assert.strictEqual(entry.sequence, 1, `Expected the divergence to be reported at sequence position 1 (the second verdict), got ${entry.sequence}`);
   assert.strictEqual(entry.expected, 'PASSED', `Expected entry.expected='PASSED', got '${entry.expected}'`);
   assert.strictEqual(entry.actual, 'FAILED', `Expected entry.actual='FAILED', got '${entry.actual}'`);
+});
+
+// ---------- TC-K1: classifyDivergence — known-excluded-fs shape ----------
+await test('TC-K1 classifyDivergence classifies the fs-invalidation leg shape as known-excluded-fs', () => {
+  const entry = { archive: 'a', identity: 't1', field: 'status', expected: 'invalidated', actual: 'complete' };
+
+  const classification = classifyDivergence(entry);
+
+  assert.strictEqual(classification, 'known-excluded-fs', `Expected classification='known-excluded-fs', got '${classification}'`);
+});
+
+// ---------- TC-K2: classifyDivergence — other status expected/actual pair ----------
+await test('TC-K2 classifyDivergence classifies a status divergence with a different expected/actual pair as unexplained', () => {
+  const entry = { archive: 'a', identity: 't1', field: 'status', expected: 'complete', actual: 'failed' };
+
+  const classification = classifyDivergence(entry);
+
+  assert.strictEqual(classification, 'unexplained', `Expected classification='unexplained', got '${classification}'`);
+});
+
+// ---------- TC-K3: classifyDivergence — per-session verdict divergence ----------
+await test('TC-K3 classifyDivergence classifies a per-session verdict result divergence as unexplained', () => {
+  const entry = { archive: 'a', identity: 'verifier:001-001-001-001', field: 'result', sequence: 0, expected: 'PASSED', actual: 'FAILED' };
+
+  const classification = classifyDivergence(entry);
+
+  assert.strictEqual(classification, 'unexplained', `Expected classification='unexplained', got '${classification}'`);
+});
+
+// ---------- TC-K4: classifyDivergence — review divergence ----------
+await test('TC-K4 classifyDivergence classifies a review result divergence as unexplained', () => {
+  const entry = { archive: 'a', identity: '001', field: 'result', expected: 'PASSED', actual: 'FAILED' };
+
+  const classification = classifyDivergence(entry);
+
+  assert.strictEqual(classification, 'unexplained', `Expected classification='unexplained', got '${classification}'`);
+});
+
+// ---------- TC-K5: classifyDivergence — regression divergence ----------
+await test('TC-K5 classifyDivergence classifies a regression result divergence as unexplained', () => {
+  const entry = { archive: 'a', identity: '001-001', field: 'result', expected: 'PASSED', actual: 'FAILED' };
+
+  const classification = classifyDivergence(entry);
+
+  assert.strictEqual(classification, 'unexplained', `Expected classification='unexplained', got '${classification}'`);
+});
+
+// ---------- TC-K6: classifyDivergences — non-mutating, new array ----------
+await test('TC-K6 classifyDivergences returns a new array with classification added, leaving the input report untouched', () => {
+  const report = [
+    { archive: 'a', identity: 't1', field: 'status', expected: 'invalidated', actual: 'complete' },
+    { archive: 'a', identity: '001', field: 'result', expected: 'PASSED', actual: 'FAILED' },
+  ];
+  const snapshot = JSON.parse(JSON.stringify(report));
+
+  const classified = classifyDivergences(report);
+
+  assert.notStrictEqual(classified, report, 'Expected classifyDivergences to return a different array reference than the input report');
+  assert.strictEqual(classified.length, 2, `Expected 2 classified entries, got ${classified.length}`);
+  assert.strictEqual(classified[0].classification, 'known-excluded-fs', `Expected classified[0].classification='known-excluded-fs', got '${classified[0].classification}'`);
+  assert.strictEqual(classified[1].classification, 'unexplained', `Expected classified[1].classification='unexplained', got '${classified[1].classification}'`);
+
+  for (const entry of report) {
+    assert.ok(!Object.prototype.hasOwnProperty.call(entry, 'classification'), `Expected original report entry to have no 'classification' own property, got: ${JSON.stringify(entry)}`);
+  }
+  assert.deepStrictEqual(report, snapshot, 'Expected the original report to deep-equal its pre-call snapshot (non-mutating)');
+});
+
+// ---------- TC-K7: summarizeClassification ----------
+await test('TC-K7 summarizeClassification returns {total:3, unexplained:2, knownExcludedFs:1} for a mixed report', () => {
+  const report = [
+    { archive: 'a', identity: 't1', field: 'status', expected: 'invalidated', actual: 'complete' },
+    { archive: 'a', identity: '001', field: 'result', expected: 'PASSED', actual: 'FAILED' },
+    { archive: 'a', identity: '001-001', field: 'result', expected: 'PASSED', actual: 'FAILED' },
+  ];
+
+  const summary = summarizeClassification(report);
+
+  assert.deepStrictEqual(summary, { total: 3, unexplained: 2, knownExcludedFs: 1 }, `Expected {total:3, unexplained:2, knownExcludedFs:1}, got ${JSON.stringify(summary)}`);
+});
+
+// ---------- Terminal-outcome fixture helper ----------
+// Builds a fresh throwaway directory (never the repo's archives/ tree) and,
+// unless manifestContents===null, writes manifest.json into it. Passing a
+// string for manifestContents writes it verbatim (for the malformed-JSON
+// case); any other non-null value is JSON.stringify'd.
+function makeManifestFixture(manifestContents) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-lib-manifest-'));
+  if (manifestContents !== null) {
+    const content = typeof manifestContents === 'string' ? manifestContents : JSON.stringify(manifestContents, null, 2);
+    fs.writeFileSync(path.join(dir, 'manifest.json'), content);
+  }
+  return dir;
+}
+
+// ---------- TC-T1: readRecordedTerminalState — haltReason present ----------
+await test("TC-T1 readRecordedTerminalState returns { halted: true, haltReason: 'circuit-breaker' } for a manifest.json with haltReason", () => {
+  const dir = makeManifestFixture({ haltReason: 'circuit-breaker', haltTaskId: '001-001-001-001' });
+  try {
+    const result = readRecordedTerminalState(dir);
+    assert.deepStrictEqual(
+      result,
+      { halted: true, haltReason: 'circuit-breaker' },
+      `Expected { halted: true, haltReason: 'circuit-breaker' }, got ${JSON.stringify(result)}`
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------- TC-T2: readRecordedTerminalState — no haltReason / missing / malformed manifest ----------
+await test('TC-T2 readRecordedTerminalState returns the clean shape without throwing for manifests lacking haltReason, missing manifests, and malformed JSON', () => {
+  // No haltReason key at all — clean run shape.
+  const cleanDir = makeManifestFixture({ archiveId: 'archive-clean' });
+  try {
+    const result = readRecordedTerminalState(cleanDir);
+    assert.deepStrictEqual(
+      result,
+      { halted: false, haltReason: null },
+      `Expected clean shape for a manifest with no haltReason key, got ${JSON.stringify(result)}`
+    );
+  } finally {
+    fs.rmSync(cleanDir, { recursive: true });
+  }
+
+  // No manifest.json file at all.
+  const noManifestDir = makeManifestFixture(null);
+  try {
+    const result = readRecordedTerminalState(noManifestDir);
+    assert.deepStrictEqual(
+      result,
+      { halted: false, haltReason: null },
+      `Expected clean shape when manifest.json is absent, got ${JSON.stringify(result)}`
+    );
+  } finally {
+    fs.rmSync(noManifestDir, { recursive: true });
+  }
+
+  // Malformed JSON in manifest.json.
+  const malformedDir = makeManifestFixture('{ this is not valid JSON');
+  try {
+    const result = readRecordedTerminalState(malformedDir);
+    assert.deepStrictEqual(
+      result,
+      { halted: false, haltReason: null },
+      `Expected clean shape for malformed manifest.json, got ${JSON.stringify(result)}`
+    );
+  } finally {
+    fs.rmSync(malformedDir, { recursive: true });
+  }
+});
+
+// ---------- TC-T3: compareTerminalOutcome — halted/halted is a terminal match ----------
+await test('TC-T3 compareTerminalOutcome returns null when both recorded and replayed are halted', () => {
+  const result = compareTerminalOutcome(
+    { halted: true, haltReason: 'reviewer-stop' },
+    { halted: true, error: new Error('halted') },
+    'archive-t3'
+  );
+  assert.strictEqual(result, null, `Expected null for a halted/halted terminal match, got ${JSON.stringify(result)}`);
+});
+
+// ---------- TC-T4: compareTerminalOutcome — clean/clean is a terminal match ----------
+await test('TC-T4 compareTerminalOutcome returns null when both recorded and replayed are clean', () => {
+  const result = compareTerminalOutcome(
+    { halted: false, haltReason: null },
+    { halted: false },
+    'archive-t4'
+  );
+  assert.strictEqual(result, null, `Expected null for a clean/clean terminal match, got ${JSON.stringify(result)}`);
+});
+
+// ---------- TC-T5: compareTerminalOutcome — recorded clean, replayed halted ----------
+await test("TC-T5 compareTerminalOutcome reports one unexplained entry when recorded is clean and replayed halted", () => {
+  const result = compareTerminalOutcome(
+    { halted: false, haltReason: null },
+    { halted: true, error: new Error('unexpected halt') },
+    'archive-t5'
+  );
+  assert.ok(result && typeof result === 'object', `Expected a single divergence entry object, got ${JSON.stringify(result)}`);
+  assert.strictEqual(result.field, 'terminal', `Expected field='terminal', got '${result.field}'`);
+  assert.strictEqual(result.expected, 'clean', `Expected expected='clean', got '${result.expected}'`);
+  assert.strictEqual(result.actual, 'halted', `Expected actual='halted', got '${result.actual}'`);
+  assert.strictEqual(result.classification, 'unexplained', `Expected classification='unexplained', got '${result.classification}'`);
+});
+
+// ---------- TC-T6: compareTerminalOutcome — recorded halted, replayed clean ----------
+await test('TC-T6 compareTerminalOutcome reports one unexplained entry when recorded is halted and replayed completes cleanly', () => {
+  const result = compareTerminalOutcome(
+    { halted: true, haltReason: 'circuit-breaker' },
+    { halted: false },
+    'archive-t6'
+  );
+  assert.ok(result && typeof result === 'object', `Expected a single divergence entry object, got ${JSON.stringify(result)}`);
+  assert.strictEqual(result.expected, 'halted', `Expected expected='halted', got '${result.expected}'`);
+  assert.strictEqual(result.actual, 'clean', `Expected actual='clean', got '${result.actual}'`);
+  assert.strictEqual(result.classification, 'unexplained', `Expected classification='unexplained', got '${result.classification}'`);
+});
+
+// ---------- TC-T7: compareTerminalOutcome — RecordingExhaustedError is re-thrown, never compared ----------
+await test('TC-T7 compareTerminalOutcome re-throws a RecordingExhaustedError carried by the replayed terminal instead of returning a comparison entry, and isHardReplayError classifies it correctly', () => {
+  const hardError = new RecordingExhaustedError('executor:001-001-001-001');
+
+  assert.throws(
+    () => compareTerminalOutcome(
+      { halted: false, haltReason: null },
+      { halted: false, error: hardError },
+      'archive-t7'
+    ),
+    (err) => {
+      assert.strictEqual(err.name, 'RecordingExhaustedError', `Expected err.name='RecordingExhaustedError', got '${err.name}'`);
+      assert.strictEqual(err, hardError, 'Expected the exact same error instance to be re-thrown');
+      return true;
+    }
+  );
+
+  assert.strictEqual(isHardReplayError(hardError), true, 'Expected isHardReplayError(RecordingExhaustedError) to be true');
+  assert.strictEqual(isHardReplayError(new Error('plain')), false, 'Expected isHardReplayError(plain Error) to be false');
 });
 
 // ---------- Summary ----------

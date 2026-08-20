@@ -945,6 +945,530 @@ await test('TC4 the report includes the replayable-format rate', () => {
   }
 });
 
+// ---------- TC-verdict-excluded / TC-verdict-unexplained: exit-code and
+// summary-line semantics driven by replay-lib.js's v0 divergence classifier
+// (classifyDivergence/summarizeClassification) as surfaced through
+// scripts/replay-archive.js's formatDivergence/formatSummaryLine and the
+// CLI's exit code (`unexplainedCount === 0 ? 0 : 1`). Both cases spawn the
+// real CLI as a child process, exactly like the TC2-divergence/TC4 cases
+// above.
+
+// ---------- TC-verdict-excluded: a single fs-leg-shaped divergence (ground
+// truth 'invalidated' vs replayed 'complete') is the ONLY known-excluded
+// shape (replay-lib.js's classifyDivergence) — it must not fail the run. ----------
+await test('TC-verdict-excluded a lone fs-leg status divergence (recorded invalidated vs replayed complete) makes the driver exit 0 and report it as known-excluded(fs-leg)', () => {
+  // Default reviewResult ('PASSED') keeps every OTHER recorded outcome
+  // consistent with its own ground truth, so the only source of divergence
+  // is the task-status tamper applied below.
+  const archiveDir = buildMiniArchive(os.tmpdir());
+  try {
+    // Mutate the archive's own recorded ground truth (state/mission-*.json)
+    // so one task's committed status reads 'invalidated' while everything
+    // needed to drive that same task to 'complete' on replay (its executor/
+    // verifier recordings, its verification/task-*.json sidecar) is left
+    // untouched — reconstructInitialPlansFromArchive never reads task.status
+    // (see replay-archive.js), so this mutation cannot alter the replayed
+    // run's own behavior, only the ground-truth value it is diffed against.
+    const missionStatePath = path.join(archiveDir, 'state', 'mission-001-001.json');
+    const missionState = JSON.parse(fs.readFileSync(missionStatePath, 'utf8'));
+    const tamperedTask = missionState.subMissions['001-001-001'].tasks['001-001-001-002'];
+    assert.strictEqual(tamperedTask.status, 'complete', "Expected the fixture's recorded task status to be 'complete' before tampering");
+    tamperedTask.status = 'invalidated';
+    fs.writeFileSync(missionStatePath, JSON.stringify(missionState, null, 2));
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, archiveDir], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 0,
+      `Expected exit status 0 for an only-excluded divergence, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    const divergenceLine = combined.split('\n').find((l) => l.includes('status expected='));
+    assert.ok(
+      divergenceLine,
+      `Expected a divergence line reporting the fs-leg status mismatch, got:\n${combined}`
+    );
+    assert.ok(
+      divergenceLine.includes('001-001-001-002: status expected="invalidated" actual="complete"'),
+      `Expected the divergence line to name the tampered task and the invalidated->complete shape, got: ${divergenceLine}`
+    );
+    assert.ok(
+      divergenceLine.includes('[known-excluded(fs-leg)]'),
+      `Expected the divergence line to carry the known-excluded(fs-leg) tag, got: ${divergenceLine}`
+    );
+    assert.ok(
+      combined.includes('1 divergence(s): 0 unexplained, 1 known-excluded(fs-leg)'),
+      `Expected the summary line "1 divergence(s): 0 unexplained, 1 known-excluded(fs-leg)", got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-verdict-unexplained: reuses the tampered-reviewer fixture
+// (buildMiniArchive({reviewResult: 'FAILED'}) plus the reviewer recording's
+// exit verdict tampered FAILED -> PASSED, the same tamper the
+// TC2-divergence case above applies) to assert the unexplained-tag and
+// summary-line contract specifically, alongside the exit code. ----------
+await test('TC-verdict-unexplained a tampered reviewer verdict divergence makes the driver exit 1 and report it as unexplained', () => {
+  const archiveDir = buildMiniArchive(os.tmpdir(), { reviewResult: 'FAILED' });
+  try {
+    const logsDir = path.join(archiveDir, 'logs');
+    const reviewerLog = fs.readdirSync(logsDir).find((f) => /-reviewer-001\.jsonl$/.test(f));
+    assert.ok(reviewerLog, 'Expected a reviewer recording in the fixture');
+    const reviewerLogPath = path.join(logsDir, reviewerLog);
+    const lines = fs.readFileSync(reviewerLogPath, 'utf8').trim().split('\n');
+    const tampered = lines.map((line) => {
+      const event = JSON.parse(line);
+      if (event.type !== 'exit') return line;
+      assert.strictEqual(
+        event.data.result.structured_output.result, 'FAILED',
+        'Expected the recorded reviewer exit verdict to be FAILED before tampering'
+      );
+      event.data.result.structured_output.result = 'PASSED';
+      return JSON.stringify(event);
+    });
+    fs.writeFileSync(reviewerLogPath, tampered.join('\n') + '\n');
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, archiveDir], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 1,
+      `Expected exit status 1 for an unexplained divergence, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    const divergenceLine = combined.split('\n').find((l) => l.includes('result expected='));
+    assert.ok(
+      divergenceLine,
+      `Expected a divergence line reporting the tampered reviewer verdict, got:\n${combined}`
+    );
+    assert.ok(
+      divergenceLine.includes('001: result expected="FAILED" actual="PASSED"'),
+      `Expected a divergence line naming identity 001 and field result, got: ${divergenceLine}`
+    );
+    assert.ok(
+      divergenceLine.includes('[unexplained]'),
+      `Expected the divergence line to carry the unexplained tag, got: ${divergenceLine}`
+    );
+    assert.ok(
+      combined.includes('1 divergence(s): 1 unexplained, 0 known-excluded(fs-leg)'),
+      `Expected the summary line "1 divergence(s): 1 unexplained, 0 known-excluded(fs-leg)", got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-terminal-*: terminal-outcome comparator (manifest.json's
+// haltReason vs the replayed run's own terminal exception) exit-code and
+// summary-line semantics, exercised through the SAME real CLI
+// (scripts/replay-archive.js) as the TC-verdict-* cases above. Every fixture
+// below is built under fs.mkdtempSync via buildMiniArchive plus a
+// manifest.json this file writes directly (readRecordedTerminalState's only
+// input — see replay-lib.js).
+
+/**
+ * Builds a buildMiniArchive fixture (reviewResult: 'FAILED') whose replay
+ * ALWAYS halts via a genuine pipeline terminal exception rather than
+ * RecordingExhaustedError: the recorded reviewer exit verdict carries
+ * exactly one severity:'warning' finding (REVIEW_MILESTONE_001 /
+ * REVIEWER_LOG_CONTENT — no severity:'critical' finding), so pipeline.js's
+ * reviewer-gate branch computes zero criticalFindings from it and throws
+ * its "warnings only — no actionable (critical) findings" CircuitBreakerError
+ * immediately after the (recorded) analyzer call — before ever reaching the
+ * remediation planner/executor recordings this fixture does not provide for
+ * a new task.
+ *
+ * The milestone-level regression gate is never reached on this path (the
+ * reviewer gate throws first), so this also deletes the milestone-regression
+ * ground-truth sidecar (task-regression-milestone-001.json) buildMiniArchive
+ * writes by default — a real run halted at the review gate never produces
+ * that file either, so leaving the recorded ground truth in place would
+ * introduce a second, unrelated divergence and defeat these tests'
+ * single-(terminal)-divergence assertions.
+ *
+ * @param {string} rootDir
+ * @returns {string} archiveDir
+ */
+function buildReviewerHaltArchive(rootDir) {
+  const archiveDir = buildMiniArchive(rootDir, { reviewResult: 'FAILED' });
+  fs.rmSync(path.join(archiveDir, 'verification', 'task-regression-milestone-001.json'));
+  return archiveDir;
+}
+
+/**
+ * Writes <archiveDir>/manifest.json with a `haltReason` key so
+ * readRecordedTerminalState(archiveDir) resolves to a RECORDED-halted
+ * terminal state — the same shape src/cli/commands/archive.js's
+ * buildManifest writes for a real halted run (haltReason/haltTaskId).
+ *
+ * @param {string} archiveDir
+ * @param {string} [haltReason]
+ */
+function writeHaltManifest(archiveDir, haltReason = 'reviewer-stop') {
+  fs.writeFileSync(
+    path.join(archiveDir, 'manifest.json'),
+    JSON.stringify({ haltReason, haltTaskId: null }, null, 2)
+  );
+}
+
+// ---------- TC-terminal-match: recorded-halt fixture + replayed pipeline terminal error ⇒ exit 0 with a terminal MATCH line ----------
+await test('TC-terminal-match a recorded-halt fixture whose replay raises a genuine pipeline terminal error exits 0 with a terminal MATCH line', () => {
+  const archiveDir = buildReviewerHaltArchive(os.tmpdir());
+  const manifestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-driver-golden-manifest-'));
+  try {
+    writeHaltManifest(archiveDir, 'reviewer-stop');
+
+    // --golden mode is the CLI surface that prints a per-entry
+    // '[MATCH]'/'[DIVERGE]' line (see runGolden in replay-archive.js) — the
+    // plain single-archive `replay` mode never prints that literal tag, only
+    // per-divergence lines and (when there's at least one divergence) a
+    // summary line.
+    const goldenManifestPath = path.join(manifestDir, 'golden.json');
+    fs.writeFileSync(
+      goldenManifestPath,
+      JSON.stringify({ entries: [{ dir: archiveDir, name: 'terminal-match-fixture' }] }, null, 2)
+    );
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--golden', goldenManifestPath], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 0,
+      `Expected exit status 0 for a terminal MATCH, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    assert.ok(
+      /\[MATCH\][^\n]*0 unexplained/.test(combined),
+      `Expected a terminal MATCH line reporting 0 unexplained, got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDir, { recursive: true, force: true });
+    fs.rmSync(manifestDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-terminal-clean-vs-throw: recorded-clean fixture + replayed throw ⇒ exit 1, terminal divergence counted unexplained ----------
+await test('TC-terminal-clean-vs-throw a recorded-clean fixture whose replay throws a terminal error exits 1 and counts the terminal divergence as unexplained', () => {
+  const archiveDir = buildReviewerHaltArchive(os.tmpdir());
+  try {
+    // No manifest.json is written for this fixture — readRecordedTerminalState
+    // resolves to { halted: false, haltReason: null } (recorded CLEAN) when
+    // the file is absent, per its own documented contract.
+    assert.ok(
+      !fs.existsSync(path.join(archiveDir, 'manifest.json')),
+      'Expected this fixture to carry no manifest.json (recorded clean)'
+    );
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, archiveDir], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 1,
+      `Expected exit status 1 for a clean-vs-halted terminal divergence, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    const divergenceLine = combined.split('\n').find((l) => l.includes('terminal expected='));
+    assert.ok(
+      divergenceLine,
+      `Expected a divergence line reporting the terminal mismatch, got:\n${combined}`
+    );
+    assert.ok(
+      divergenceLine.includes('terminal expected=false actual=true'),
+      `Expected the terminal divergence to read recorded-clean (expected=false) vs replayed-halted (actual=true), got: ${divergenceLine}`
+    );
+    assert.ok(
+      divergenceLine.includes('[unexplained]'),
+      `Expected the terminal divergence to carry the unexplained tag, got: ${divergenceLine}`
+    );
+    assert.ok(
+      combined.includes('1 divergence(s): 1 unexplained, 0 known-excluded(fs-leg)'),
+      `Expected the summary line "1 divergence(s): 1 unexplained, 0 known-excluded(fs-leg)", got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-terminal-halt-vs-clean: recorded-halt fixture + clean replay completion ⇒ exit 1, terminal divergence counted unexplained ----------
+await test('TC-terminal-halt-vs-clean a recorded-halt fixture whose replay completes cleanly exits 1 and counts the terminal divergence as unexplained', () => {
+  const archiveDir = buildMiniArchive(os.tmpdir());
+  try {
+    writeHaltManifest(archiveDir, 'circuit-breaker');
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, archiveDir], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 1,
+      `Expected exit status 1 for a halted-vs-clean terminal divergence, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    const divergenceLine = combined.split('\n').find((l) => l.includes('terminal expected='));
+    assert.ok(
+      divergenceLine,
+      `Expected a divergence line reporting the terminal mismatch, got:\n${combined}`
+    );
+    assert.ok(
+      divergenceLine.includes('terminal expected=true actual=false'),
+      `Expected the terminal divergence to read recorded-halted (expected=true) vs replayed-clean (actual=false), got: ${divergenceLine}`
+    );
+    assert.ok(
+      divergenceLine.includes('[unexplained]'),
+      `Expected the terminal divergence to carry the unexplained tag, got: ${divergenceLine}`
+    );
+    assert.ok(
+      combined.includes('1 divergence(s): 1 unexplained, 0 known-excluded(fs-leg)'),
+      `Expected the summary line "1 divergence(s): 1 unexplained, 0 known-excluded(fs-leg)", got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-terminal-infra-error: missing-recording fixture ⇒ RecordingExhaustedError named in stderr, no terminal comparison / divergence summary ----------
+await test('TC-terminal-infra-error a fixture missing a required recording fails loudly with RecordingExhaustedError and is never folded into a terminal comparison or divergence summary', () => {
+  const archiveDir = buildMiniArchive(os.tmpdir());
+  try {
+    // Delete the SECOND task's verifier recording — the replayed run reaches
+    // it only after task 001's executor/verifier pair (and task 002's own
+    // executor) have already replayed successfully, so the missing recording
+    // is discovered mid-run rather than on the very first turn.
+    const logsDir = path.join(archiveDir, 'logs');
+    const verifier2LogPath = path.join(logsDir, VERIFIER2_LOG_NAME);
+    assert.ok(
+      fs.existsSync(verifier2LogPath),
+      "Expected the fixture to carry the second task's verifier recording before deleting it"
+    );
+    fs.rmSync(verifier2LogPath);
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, archiveDir], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 1,
+      `Expected exit status 1 for a missing-recording replay-infrastructure failure, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    assert.ok(
+      (child.stderr || '').includes('RecordingExhaustedError'),
+      `Expected 'RecordingExhaustedError' to be named in stderr, got stderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    assert.ok(
+      !/terminal expected=/.test(combined),
+      `Expected NO terminal comparison to be reported for a replay-infrastructure failure, got:\n${combined}`
+    );
+    assert.ok(
+      !/divergence\(s\):/.test(combined),
+      `Expected NO divergence summary line to be printed for a replay-infrastructure failure, got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-golden-*: `--golden <tempManifestPath>` mode end-to-end,
+// exercised against a manifest THIS FILE writes itself under
+// fs.mkdtempSync — never scripts/replay-golden.json, never the real,
+// committed archives tree (see loadGoldenManifest's docstring: the
+// explicit-path form exists exactly so hermetic tests can point --golden at
+// a temp manifest fixture instead).
+
+/**
+ * Builds a temp manifest JSON file (under fs.mkdtempSync) listing the given
+ * archive directories as golden entries, and returns its path alongside the
+ * directory it was written into (so callers can clean both up).
+ *
+ * @param {string[]} archiveDirs
+ * @returns {{manifestPath:string, manifestDir:string}}
+ */
+function buildGoldenManifest(archiveDirs) {
+  const manifestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-driver-golden-manifest-'));
+  const manifestPath = path.join(manifestDir, 'golden.json');
+  fs.writeFileSync(
+    manifestPath,
+    JSON.stringify({ entries: archiveDirs.map((dir) => ({ dir })) }, null, 2)
+  );
+  return { manifestPath, manifestDir };
+}
+
+// ---------- TC-golden-green: two clean fixture archives ⇒ exit 0, aggregate summary reports 0 unexplained ----------
+await test('TC-golden-green a temp manifest listing two clean fixture archives exits 0 with 0 unexplained in the aggregate summary', () => {
+  const archiveDirA = buildMiniArchive(os.tmpdir());
+  const archiveDirB = buildMiniArchive(os.tmpdir());
+  const { manifestPath, manifestDir } = buildGoldenManifest([archiveDirA, archiveDirB]);
+  try {
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--golden', manifestPath], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 0,
+      `Expected exit status 0 for two clean golden entries, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    assert.ok(
+      combined.includes('Golden summary: 2 entries, 0 unexplained, 0 known-excluded(fs-leg)'),
+      `Expected the aggregate summary line to report 0 unexplained across both entries, got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDirA, { recursive: true, force: true });
+    fs.rmSync(archiveDirB, { recursive: true, force: true });
+    fs.rmSync(manifestDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-golden-unexplained: one tampered entry ⇒ exit 1, the failing entry named in the output ----------
+await test('TC-golden-unexplained a manifest with one tampered entry exits 1 and names the failing entry in the output', () => {
+  const archiveDirClean = buildMiniArchive(os.tmpdir());
+  // FAILED-review fixture: the only tamper direction that still reaches
+  // compareReplay is FAILED -> PASSED (see buildMiniArchive's docstring and
+  // the TC2-divergence case above).
+  const archiveDirTampered = buildMiniArchive(os.tmpdir(), { reviewResult: 'FAILED' });
+  const logsDir = path.join(archiveDirTampered, 'logs');
+  const reviewerLog = fs.readdirSync(logsDir).find((f) => /-reviewer-001\.jsonl$/.test(f));
+  assert.ok(reviewerLog, 'Expected a reviewer recording in the tampered fixture');
+  const reviewerLogPath = path.join(logsDir, reviewerLog);
+  const lines = fs.readFileSync(reviewerLogPath, 'utf8').trim().split('\n');
+  const tampered = lines.map((line) => {
+    const event = JSON.parse(line);
+    if (event.type !== 'exit') return line;
+    assert.strictEqual(
+      event.data.result.structured_output.result, 'FAILED',
+      'Expected the recorded reviewer exit verdict to be FAILED before tampering'
+    );
+    event.data.result.structured_output.result = 'PASSED';
+    return JSON.stringify(event);
+  });
+  fs.writeFileSync(reviewerLogPath, tampered.join('\n') + '\n');
+
+  const { manifestPath, manifestDir } = buildGoldenManifest([archiveDirClean, archiveDirTampered]);
+  try {
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--golden', manifestPath], { encoding: 'utf8' });
+
+    assert.strictEqual(
+      child.status, 1,
+      `Expected exit status 1 for a manifest with one unexplained divergence, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    const divergeLine = combined.split('\n').find((l) => l.startsWith('[DIVERGE]'));
+    assert.ok(
+      divergeLine,
+      `Expected a [DIVERGE] line naming the failing entry, got:\n${combined}`
+    );
+    assert.ok(
+      divergeLine.includes(archiveDirTampered),
+      `Expected the [DIVERGE] line to name the tampered entry's directory (${archiveDirTampered}), got: ${divergeLine}`
+    );
+    assert.ok(
+      !divergeLine.includes(archiveDirClean),
+      `Expected the [DIVERGE] line to name only the tampered entry, not the clean one, got: ${divergeLine}`
+    );
+    assert.ok(
+      combined.includes(`[MATCH] ${archiveDirClean}: 0 unexplained`),
+      `Expected a [MATCH] line for the clean entry, got:\n${combined}`
+    );
+    assert.ok(
+      /Golden summary: 2 entries, 1 unexplained/.test(combined),
+      `Expected the aggregate summary line to report exactly 1 unexplained divergence across both entries, got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(archiveDirClean, { recursive: true, force: true });
+    fs.rmSync(archiveDirTampered, { recursive: true, force: true });
+    fs.rmSync(manifestDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-golden-missing-dir: a manifest entry pointing at a directory that does not exist ⇒ non-zero exit, output names that entry's dir (a stale manifest is an error, never a skip) ----------
+await test('TC-golden-missing-dir a manifest entry pointing at a missing directory exits non-zero and names that entry dir in the output', () => {
+  const missingDirsParent = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-driver-golden-missing-'));
+  // Never created on disk — this is the point of the test.
+  const missingDir = path.join(missingDirsParent, 'does-not-exist-archive');
+  const { manifestPath, manifestDir } = buildGoldenManifest([missingDir]);
+  try {
+    assert.ok(!fs.existsSync(missingDir), 'Expected the manifest entry directory to not exist before running the CLI');
+
+    const child = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--golden', manifestPath], { encoding: 'utf8' });
+
+    assert.notStrictEqual(
+      child.status, 0,
+      `Expected a non-zero exit status for a manifest entry pointing at a missing directory, got ${child.status}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`
+    );
+    const combined = `${child.stdout}\n${child.stderr}`;
+    assert.ok(
+      combined.includes(missingDir),
+      `Expected the output to name the missing entry's directory (${missingDir}), got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(missingDirsParent, { recursive: true, force: true });
+    fs.rmSync(manifestDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-probe-unchanged: --probe over the existing 1-of-2 corpus
+// fixture is untouched by the --golden contract added alongside it — same
+// exit code, same per-directory REPLAYABLE/NOT REPLAYABLE lines, same
+// Summary line, and (unlike the --golden/single-archive divergence paths)
+// no 'divergence(s):' verdict summary line at all. ----------
+await test('TC-probe-unchanged --probe over the 1-of-2 corpus still exits 0 and prints the unchanged per-directory + Summary lines', () => {
+  const corpusDir = buildOneOfTwoCorpus();
+  try {
+    const result = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--probe', corpusDir], {
+      encoding: 'utf8',
+    });
+    assert.strictEqual(
+      result.status,
+      0,
+      `Expected --probe over the 1-of-2 corpus to still exit 0, got status=${result.status}, stderr=${result.stderr}`
+    );
+    const stdout = result.stdout || '';
+    assert.ok(
+      /\bREPLAYABLE\b/.test(stdout) && /\bNOT REPLAYABLE\b/.test(stdout),
+      `Expected the report to still print both a REPLAYABLE and a NOT REPLAYABLE per-directory line, got stdout: ${stdout}`
+    );
+    assert.ok(
+      stdout.includes('Summary: 1/2 replayable (rate=50.0%)'),
+      `Expected the report to still print 'Summary: 1/2 replayable (rate=50.0%)', got stdout: ${stdout}`
+    );
+  } finally {
+    fs.rmSync(corpusDir, { recursive: true, force: true });
+  }
+});
+
+await test('TC-probe-unchanged --probe output contains no divergence(s): summary line', () => {
+  const corpusDir = buildOneOfTwoCorpus();
+  try {
+    const result = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--probe', corpusDir], {
+      encoding: 'utf8',
+    });
+    const combined = `${result.stdout || ''}${result.stderr || ''}`;
+    assert.ok(
+      !combined.includes('divergence(s):'),
+      `Expected --probe output to contain no 'divergence(s):' verdict summary line (probe semantics are untouched by the --golden contract), got:\n${combined}`
+    );
+  } finally {
+    fs.rmSync(corpusDir, { recursive: true, force: true });
+  }
+});
+
+// ---------- TC-usage-error: an unrecognized flag exits 1 and prints the
+// USAGE text (including the new --golden line) to stderr. ----------
+await test("TC-usage-error '--bogus' exits 1 and prints the USAGE text (including the --golden line) to stderr", () => {
+  const result = spawnSync(process.execPath, [REPLAY_ARCHIVE_SCRIPT, '--bogus'], { encoding: 'utf8' });
+  assert.strictEqual(
+    result.status,
+    1,
+    `Expected an unrecognized flag to exit 1, got status=${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+  );
+  const stderr = result.stderr || '';
+  assert.ok(
+    stderr.includes('Usage:'),
+    `Expected stderr to contain the USAGE text, got stderr:\n${stderr}`
+  );
+  assert.ok(
+    stderr.includes('node scripts/replay-archive.js --probe <corpusDir>'),
+    `Expected stderr to contain the --probe usage line, got stderr:\n${stderr}`
+  );
+  assert.ok(
+    stderr.includes('node scripts/replay-archive.js --golden [manifest]'),
+    `Expected stderr to contain the new --golden usage line, got stderr:\n${stderr}`
+  );
+});
+
 // ---------- Summary ----------
 console.log(`\n${passCount} passed, ${failCount} failed`);
 process.exit(failCount > 0 ? 1 : 0);
