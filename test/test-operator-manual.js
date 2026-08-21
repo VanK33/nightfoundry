@@ -182,8 +182,8 @@ function ac2_initDeploymentLegs() {
   const root = makeTmpRoot();
   try {
     const srcRelPaths = walkFiles(SKILL_SRC_DIR);
-    assert(`deployment: shipped skill package has six files (got ${srcRelPaths.length})`,
-      srcRelPaths.length === 6);
+    assert(`deployment: shipped skill package has seven files (got ${srcRelPaths.length})`,
+      srcRelPaths.length === 7);
 
     init(root);
 
