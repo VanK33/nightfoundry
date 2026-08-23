@@ -96,7 +96,7 @@ export function renderUsage(name = displayName()) {
     ${name} queue retry <slug>           Reset a queue entry's status to pending for resume --batch
     ${name} park list                    List parked / halted-review / halted-analyzer queue entries
     ${name} park show <slug>             Show a parked entry's scene and spec paths
-    ${name} park resolve <slug> --requeue|--waive|--reject [--note <text>]   Resolve a parked entry
+    ${name} park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]   Resolve a parked entry
 
   Warnings ledger:
     ${name} warnings list [--all]        List open/deferred reviewer warnings (--all includes waived/done)
@@ -333,12 +333,12 @@ async function main() {
         return parkShow(projectRoot, positional[2]);
       } else if (sub === 'resolve') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject [--note <text>]');
+          console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]');
           process.exit(1);
         }
         return parkResolve(projectRoot, positional[2], flags);
       } else {
-        console.error('Usage: cc-orch park list|show <slug>|resolve <slug> --requeue|--waive|--reject [--note <text>]');
+        console.error('Usage: cc-orch park list|show <slug>|resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]');
         process.exit(1);
       }
       break;
@@ -560,6 +560,7 @@ const KNOWN_LONG_FLAGS = new Set([
   'requeue',
   'waive',
   'reject',
+  'approve',
   'defer',
   'done',
   // (4) legacy FLAG_TO_COMMAND keys from suggest.js, without leading dashes

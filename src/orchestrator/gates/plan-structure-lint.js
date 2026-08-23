@@ -132,6 +132,33 @@ export class PlanLintError extends Error {
 }
 
 /**
+ * Scope-excursion flavor of PlanLintError carrying the structured proposal
+ * data (all offending {taskId, path} pairs + the lint arms that had not yet
+ * run when the excursion threw). Defined HERE, next to its superclass, so
+ * the load-time `extends` never evaluates an imported binding — defining it
+ * in plan-scope-lint.js put the `extends PlanLintError` inside the
+ * pre-existing planner↔lint module cycle and threw a TDZ ReferenceError at
+ * module load (45-suite cascade, analyzer-diagnosed 2026-08-23).
+ * plan-scope-lint.js re-exports it, so consumers keep importing from there.
+ *
+ * `violations` array keeps its `{ruleId, taskId, offending}` element shape.
+ */
+export class ScopeExcursionError extends PlanLintError {
+  /**
+   * @param {string} message - First violation's message text.
+   * @param {Array<{ ruleId: string, taskId: (string|null), offending: string }>} violations
+   * @param {Array<{ taskId: (string|null), path: string }>} excursions
+   * @param {string[]} lintArmsPending
+   */
+  constructor(message, violations, excursions, lintArmsPending) {
+    super(message, 'scope-excursion', violations);
+    this.name = 'ScopeExcursionError';
+    this.excursions = Array.isArray(excursions) ? excursions : [];
+    this.lintArmsPending = Array.isArray(lintArmsPending) ? lintArmsPending : [];
+  }
+}
+
+/**
  * Path-equivalence wrapper — re-derived locally (normative definition;
  * plan-scope-lint.js's own `_pathsEquivalent` stays private and is NOT
  * imported). Two paths are equivalent when they are the exact same

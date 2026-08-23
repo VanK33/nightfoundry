@@ -14,6 +14,8 @@
  *   TC6 — removeQueueEntry on non-existent slug does not throw
  *   TC7 — writeQueueEntry overwrites existing entry cleanly
  *   TC8 — writeQueueEntry + readQueueEntry round-trip preserves status='failed-execution'
+ *   queue-status-vocabulary — VALID_QUEUE_STATUSES includes 'halted-scope' and
+ *     preserves the baseline nine statuses in their relative order
  */
 
 import fs from 'fs';
@@ -290,6 +292,43 @@ function main() {
   assert(
     'TC11: legacy assumptionResults surfaced from object',
     read11 !== null && Array.isArray(read11.assumptionResults) && read11.assumptionResults[0]?.name === 'legacy',
+  );
+
+  // ── queue-status-vocabulary: VALID_QUEUE_STATUSES includes 'halted-scope'
+  //    and preserves the baseline nine statuses in relative order ──────────
+  console.log("\nqueue-status-vocabulary: VALID_QUEUE_STATUSES includes 'halted-scope' and preserves baseline order");
+
+  assert(
+    "queue-status-vocabulary: VALID_QUEUE_STATUSES includes 'halted-scope'",
+    Array.isArray(VALID_QUEUE_STATUSES) && VALID_QUEUE_STATUSES.includes('halted-scope'),
+  );
+
+  const baselineStatuses = [
+    'pending',
+    'failed-validation',
+    'failed-execution',
+    'failed-test-gate',
+    'failed-criteria',
+    'parked',
+    'halted-review',
+    'halted-analyzer',
+    'rejected',
+  ];
+  const baselineIndexes = baselineStatuses.map((status) => VALID_QUEUE_STATUSES.indexOf(status));
+  assert(
+    'queue-status-vocabulary: all nine baseline statuses are present',
+    baselineIndexes.every((idx) => idx !== -1),
+  );
+  let baselineInOrder = true;
+  for (let i = 1; i < baselineIndexes.length; i++) {
+    if (baselineIndexes[i] <= baselineIndexes[i - 1]) {
+      baselineInOrder = false;
+      break;
+    }
+  }
+  assert(
+    'queue-status-vocabulary: baseline statuses appear in the listed relative order',
+    baselineInOrder,
   );
 
   // ── Summary ───────────────────────────────────────────────────────────────

@@ -92,6 +92,8 @@ import { normalizeUncertains, persistUncertainsToState, extractSpecSection, getS
 import { runTestRegistrationGate, recordGateOverride, applyHardCheckGate, formatBannerLines, writeVerificationSummary, parseVerificationSidecar, logVerifierPassCounts, writeElapsedToSidecar } from './verification-helpers.js';
 import { enumerateSymbolConsumers, readChangedSymbols } from '../gates/blast-radius.js';
 import { expandCoupledTargets } from './coupled-files.js';
+import { buildDeclaredSet, lintPlanScope } from '../gates/plan-scope-lint.js';
+import { lintPlanStructure, lintTaskCheckShapes } from '../gates/plan-structure-lint.js';
 
 // Re-export for external importers/tests that reference deriveSpecJsonPath
 // from pipeline.js (the function now lives in spec-paths.js, a pure module
@@ -280,6 +282,17 @@ class Pipeline {
     // record remains readable for the rest of that entry's iteration,
     // including its failure paths.
     this._activeEntryParkResume = null;
+
+    // Approved-scope-proposal promotion: batchResume's recognition step
+    // (see the "Approved scope-proposal promotion" block near the park-
+    // resolution consumption section) holds each approved scene's
+    // candidatePlan + lintArmsPending here, keyed by the scene's
+    // missionId, for _planAndApproveMission to consume in place of
+    // invoking the planner. Populated ONLY by batchResume — run() and
+    // resume() never write to this map, so it stays empty for those entry
+    // points and _planAndApproveMission always takes its normal planning
+    // path there.
+    this._promotedScopePlans = {};
 
     const userOnLog = opts.onLog || console.log;
     const userOnConfirm = opts.onConfirm || (() => true);
@@ -1719,6 +1732,57 @@ class Pipeline {
         //           the queue copy so round 1 verifies fresh content.
         const priorScene = readParkScene(this.projectRoot, entry.slug);
         const priorResolution = priorScene?.resolution ?? null;
+
+        // ── Approved scope-proposal promotion (recognition only) ──────────
+        // A scope-proposal scene (parked by the SCOPE-PROPOSAL DETOUR
+        // below) that a human resolved with --approve is a candidate for
+        // promotion: the candidate plan it already produced is reused
+        // verbatim instead of re-invoking the planner. This block only
+        // RECOGNIZES the approval and HOLDS the plan (keyed by the scene's
+        // missionId, alongside its lintArmsPending) on this Pipeline
+        // instance — this._promotedScopePlans — for _planAndApproveMission
+        // to consume when it reaches that mission; it never plans,
+        // schedules, or executes anything itself. Recognition runs ONLY
+        // from batchResume — run() and resume() never populate
+        // this._promotedScopePlans, so a single-run resume of the same
+        // approved entry always takes the normal planning path.
+        //
+        // "Approve what you saw" identity check: recomputes the persisted
+        // candidatePlan's digest and compares it against candidatePlanDigest
+        // — the digest stamped into the scene at park time (see the
+        // SCOPE-PROPOSAL DETOUR below). A mismatch means the on-disk
+        // candidatePlan diverged (a hand-edit, a corrupted rewrite, …)
+        // from what the human actually approved, so promotion is refused
+        // and the entry is re-parked as a FRESH, unresolved scope-proposal
+        // scene through the same halted-scope park path the original
+        // excursion detour uses, rather than silently trusting stale
+        // content.
+        if (priorScene?.kind === 'scope-proposal' && priorResolution?.action === 'approve') {
+          const recomputedDigest = this._candidatePlanDigest(priorScene.candidatePlan);
+          if (recomputedDigest === priorScene.candidatePlanDigest) {
+            this._promotedScopePlans[priorScene.missionId] = {
+              candidatePlan: priorScene.candidatePlan,
+              lintArmsPending: Array.isArray(priorScene.lintArmsPending) ? priorScene.lintArmsPending : [],
+            };
+            this.onLog(`  Approved scope proposal for '${entry.slug}' recognized — candidate plan for mission ${priorScene.missionId} held for promotion (planner will not be re-invoked).`);
+          } else {
+            this.onLog(`  Approved scope proposal for '${entry.slug}' invalidated: the persisted candidatePlan no longer matches the plan recorded at park time (digest mismatch) — re-parking as a fresh scope proposal for review.`);
+            this._parkEntry(entry, {
+              site: priorScene.site ?? 'plan-scope-lint',
+              kind: 'scope-proposal',
+              parkedAt: new Date().toISOString(),
+              proposedFiles: priorScene.proposedFiles,
+              candidatePlan: priorScene.candidatePlan,
+              candidatePlanDigest: recomputedDigest,
+              missionId: priorScene.missionId ?? null,
+              lintArmsPending: Array.isArray(priorScene.lintArmsPending) ? priorScene.lintArmsPending : [],
+              proposedBy: priorScene.proposedBy ?? null,
+            }, { status: 'halted-scope' });
+            parkCount++;
+            continue;
+          }
+        }
+
         let waived = false;
         if (priorResolution?.action === 'waive' && !priorResolution.consumedAt) {
           waived = true;
@@ -2046,16 +2110,82 @@ class Pipeline {
           // generic failed-execution arm byte-identically (mirrors
           // _assertBatchTreeClean's porcelain probe pattern).
           if (err.planPhase === true) {
-            let planTreeClean = false;
-            try {
-              const planPorcelain = execSync('git status --porcelain', { cwd: this.projectRoot, encoding: 'utf8', stdio: 'pipe' }).trim();
-              planTreeClean = planPorcelain.length === 0;
-            } catch (probeErr) {
-              // A failing/throwing git status is NOT-clean for this leg's
-              // purposes — fail-safe fall-through to the generic arm.
-              planTreeClean = false;
+            // Non-git root: same philosophy as this method's own top-of-loop
+            // isGitRepo probe ("a non-repo has no working tree to protect —
+            // treat as 'no guard'") — there is nothing for a dirty-tree probe
+            // to protect, so it is unconditionally treated as clean rather
+            // than fail-closed to the generic arm. A real git repo keeps its
+            // existing fail-safe probe (a throwing/failing `git status` OR a
+            // dirty tree both fall through to the generic arm unchanged).
+            let planTreeClean = !isGitRepo;
+            if (isGitRepo) {
+              try {
+                const planPorcelain = execSync('git status --porcelain', { cwd: this.projectRoot, encoding: 'utf8', stdio: 'pipe' }).trim();
+                planTreeClean = planPorcelain.length === 0;
+              } catch (probeErr) {
+                // A failing/throwing git status is NOT-clean for this leg's
+                // purposes — fail-safe fall-through to the generic arm.
+                planTreeClean = false;
+              }
             }
             if (planTreeClean) {
+              // SCOPE-PROPOSAL DETOUR: an excursion-classified planning
+              // failure (err.ruleId === 'scope-excursion', from
+              // plan-scope-lint.js's ScopeExcursionError) that carries a
+              // candidate plan is a proposed scope change, not a dead plan
+              // — planner.js stamps err.candidatePlan / err.proposedBy at
+              // its throw site specifically so this leg can offer it to a
+              // human instead of discarding it via the failed-plan leg
+              // below. Every other planning failure (uncovered-token,
+              // structure-cap, task-check-shapes, or a scope-excursion
+              // error with no candidatePlan) falls through unchanged to
+              // today's failed-plan leg.
+              if (err.ruleId === 'scope-excursion' && err.candidatePlan) {
+                // Collect-all, one entry per DISTINCT offending path: every
+                // excursion hit (in err.excursions' scan order) against the
+                // same path folds into that path's taskIds list, deduped
+                // and order-preserving.
+                const proposedFilesByPath = new Map();
+                for (const hit of (Array.isArray(err.excursions) ? err.excursions : [])) {
+                  if (!hit || typeof hit.path !== 'string' || hit.path.length === 0) continue;
+                  let fileEntry = proposedFilesByPath.get(hit.path);
+                  if (!fileEntry) {
+                    fileEntry = {
+                      path: hit.path,
+                      reason: `"${hit.path}" is outside the spec-declared scope set`,
+                      taskIds: [],
+                    };
+                    proposedFilesByPath.set(hit.path, fileEntry);
+                  }
+                  if (typeof hit.taskId === 'string' && hit.taskId.length > 0 && !fileEntry.taskIds.includes(hit.taskId)) {
+                    fileEntry.taskIds.push(hit.taskId);
+                  }
+                }
+                this._parkEntry(entry, {
+                  site: 'plan-scope-lint',
+                  kind: 'scope-proposal',
+                  parkedAt: new Date().toISOString(),
+                  proposedFiles: Array.from(proposedFilesByPath.values()),
+                  // candidatePlan / missionId / lintArmsPending / proposedBy
+                  // are read from the error, never written as literals here
+                  // — planner.js (candidatePlan, proposedBy) and this file's
+                  // own planPhase-tagging catch (missionId) are the sole
+                  // producing sites.
+                  candidatePlan: err.candidatePlan,
+                  // candidatePlanDigest is the "approve what you saw" stamp:
+                  // batchResume's approved-scope-proposal recognition step
+                  // recomputes this digest off the persisted candidatePlan
+                  // and refuses promotion (re-parking instead) when it no
+                  // longer matches this stamp.
+                  candidatePlanDigest: this._candidatePlanDigest(err.candidatePlan),
+                  missionId: err.missionId ?? null,
+                  lintArmsPending: Array.isArray(err.lintArmsPending) ? err.lintArmsPending : [],
+                  proposedBy: err.proposedBy ?? null,
+                }, { status: 'halted-scope' });
+                parkCount++;
+                if (isGitRepo) this._assertBatchTreeClean(entry.slug);
+                continue;
+              }
               try {
                 const planFailurePath = path.join(this.projectRoot, 'queue', entry.slug, 'plan-failure.txt');
                 fs.writeFileSync(planFailurePath, `${err.message}\n${err.stack || ''}\n`);
@@ -2672,6 +2802,24 @@ class Pipeline {
     const parkedSuffix = parkCount > 0 ? `, ${parkCount} parked` : '';
     this.onLog(`Batch complete. ${archiveCount} archived, ${failCount} failed${parkedSuffix}.`);
     return { archived: archiveCount, failed: failCount, parked: parkCount };
+  }
+
+  /**
+   * _candidatePlanDigest(candidatePlan) — Stable sha256 content digest of a
+   * scope-proposal's candidate plan. Stamped into a scope-proposal scene's
+   * candidatePlanDigest field at park time (see the SCOPE-PROPOSAL DETOUR
+   * in batchResume's failed-plan handling) and recomputed by batchResume's
+   * approved-scope-proposal recognition step to validate ("approve what
+   * you saw") the persisted candidatePlan against that stamp before
+   * promoting it. Pure JSON.stringify + sha256 — any content edit to
+   * candidatePlan (a hand-edit, a corrupted rewrite, …) changes the digest.
+   * Never throws for a serializable plan object.
+   *
+   * @param {object} candidatePlan
+   * @returns {string}
+   */
+  _candidatePlanDigest(candidatePlan) {
+    return crypto.createHash('sha256').update(JSON.stringify(candidatePlan)).digest('hex');
   }
 
   /**
@@ -4884,85 +5032,160 @@ class Pipeline {
     }
 
     if (!missionDecomp) {
-      this.onLog(`  Planning mission ${miId} (lazy DFS)...`);
-      const _planMissionStart1 = Date.now();
-      this.statusBar.updateAgent('planner', { role: 'planner', status: 'active', startedAt: _planMissionStart1, cost: this.tokenTracker.getUsageByType('planner').totalCostUsd });
-      this.statusBar.setPhase(`planning mission ${miId}`);
-      // TAG-AND-RETHROW: this is a plan-phase call site — it runs BEFORE the
-      // scheduler ever dispatches a task for this mission (Phase A of
-      // _executeMilestoneParallel, ahead of Phase B's scheduler.runMilestone).
-      // Any error thrown by planMission itself, or by the plan-validation
-      // that immediately follows it (applySpecHardChecks), is tagged
-      // err.planPhase = true and rethrown so batchResume's failed-execution
-      // catch can route it to the failed-plan leg. planPhase is set ONLY
-      // here — never inferred from error type or message elsewhere.
-
-      // Fail-soft: gather already-planned task targetFiles from this
-      // mission's same-milestone siblings (mission-<id>.json state files
-      // written by an earlier Phase-A planMission call), keyed by sibling
-      // mission id, so the planner can warn on cross-mission targetFile
-      // duplication. Any read/parse failure — or a milestone with no
-      // sibling state yet — degrades to {} rather than failing planning.
-      let siblingMissionTaskTargets = {};
-      try {
-        const milestoneMissions = this._currentMsState?.missions || {};
-        const targetsByMission = {};
-        for (const smId of Object.keys(milestoneMissions)) {
-          if (smId === miId) continue;
-          const siblingStateFile = path.join(this.harnessDir, 'state', `mission-${smId}.json`);
-          if (!fs.existsSync(siblingStateFile)) continue;
-          const siblingState = JSON.parse(fs.readFileSync(siblingStateFile, 'utf8'));
-          const targets = [];
-          for (const sm of Object.values(siblingState.subMissions || {})) {
-            for (const task of Object.values(sm.tasks || {})) {
-              for (const tf of (task.targetFiles || [])) targets.push(tf);
-            }
-          }
-          if (targets.length > 0) targetsByMission[smId] = targets;
-        }
-        siblingMissionTaskTargets = targetsByMission;
-      } catch {
-        siblingMissionTaskTargets = {};
-      }
-
-      try {
+      // PROMOTION LEG: batchResume's approved-scope-proposal recognition
+      // (the "Approved scope-proposal promotion" block near the park-
+      // resolution consumption section) holds an already-validated
+      // candidatePlan on this._promotedScopePlans, keyed by missionId, for
+      // exactly this mission to consume in place of invoking the planner.
+      // Only batchResume ever populates this._promotedScopePlans — run()
+      // and resume() leave it empty, so they always fall through to the
+      // normal planning leg below.
+      const promoted = this._promotedScopePlans[miId];
+      if (promoted) {
+        missionDecomp = promoted.candidatePlan;
+        this.onLog(`  Promoting approved scope proposal for mission ${miId} — reusing the persisted candidate plan (the planner is not invoked).`);
         try {
-          missionDecomp = await this.planner.planMission(miId, this.projectRoot, {
-            missionPlan,
-            maxTasksPerSubMission: config.execution.maxTasksPerSubMission,
-            mode: this._mode,
-            specTargetFiles: this._getSpecTargetFiles(),
-            specConstraints: this._getSpecConstraints(),
-            specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
-            scopeMapping: readState(this.harnessDir).projectMeta?.scopeMapping || [],
-            scopeItems: readState(this.harnessDir).projectMeta?.scopeItems || [],
-            siblingMissionTaskTargets,
-            priorMissionDigest: this._renderPriorMissionDigest(this._buildPriorMissionDigest(miId)),
-          });
-        } finally {
-          this.statusBar.updateAgent('planner', null);
-          try {
-            const rotationEvents = this.planner.drainRotationEvents?.() || [];
-            if (rotationEvents.length > 0) {
-              appendWarnings(this.projectRoot, rotationEvents.map((ev) => ({
-                milestone: miId,
-                severity: 'warning',
-                category: 'planner-rotation',
-                description: `Planner rotation event (${ev.type}) for mission ${ev.missionId}: contextTokens=${ev.contextTokens}, missionCount=${ev.missionCount}`,
-              })));
-            }
-          } catch {
-            // fail-soft: drain/append failures must not mask the planMission outcome
+          // Re-run the lint arms that had not yet run when the original
+          // scope-excursion threw (per the scene's lintArmsPending), PLUS
+          // an unconditional scope-excursion/uncovered-token re-check via
+          // lintPlanScope: the declared set may have grown since park time
+          // (the --approve writeback appends the proposed paths to
+          // spec.json's target_files), so a promoted plan must be
+          // re-validated against what's declared NOW, and any path the
+          // approval never actually covered must surface as a fresh
+          // excursion rather than being silently promoted.
+          const pendingArms = Array.isArray(promoted.lintArmsPending) ? promoted.lintArmsPending : [];
+          for (const armId of pendingArms) {
+            this.onLog(`  Re-running lint arm '${armId}' for promoted mission ${miId}...`);
           }
-        }
-        this._recordScopeMappingWarnings(miId, missionDecomp.scopeWarnings);
-        this.onLog(`  planMission completed in ${this._formatElapsed(Date.now() - _planMissionStart1)}`);
+          const declaredSet = buildDeclaredSet(this._getSpecTargetFiles(), this._getSpecAcceptanceCriteria());
+          if (declaredSet.size > 0) {
+            lintPlanScope(missionDecomp, declaredSet, {
+              projectRoot: this.projectRoot,
+              specTargetFiles: this._getSpecTargetFiles(),
+              specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
+            });
+          }
+          if (pendingArms.includes('structure-cap')) {
+            lintPlanStructure(missionDecomp, this._getSpecPlanStructure(), { projectRoot: this.projectRoot });
+          }
+          if (pendingArms.includes('task-check-shapes')) {
+            lintTaskCheckShapes(missionDecomp, { projectRoot: this.projectRoot });
+          }
 
-        // Validate task dependencies and merge spec.json hard checks before persisting state.
-        applySpecHardChecks(missionDecomp, this.projectRoot, this.harnessDir, miId);
-      } catch (planPhaseErr) {
-        planPhaseErr.planPhase = true;
-        throw planPhaseErr;
+          // Validate task dependencies and merge spec.json hard checks before persisting state.
+          applySpecHardChecks(missionDecomp, this.projectRoot, this.harnessDir, miId);
+        } catch (planPhaseErr) {
+          planPhaseErr.planPhase = true;
+          // missionId is stamped here — same producing site as the normal
+          // planning leg below — so batchResume's scope-proposal park (the
+          // excursion-with-candidatePlan leg of the failed-plan handling)
+          // can read it off the error rather than re-deriving it from
+          // queue-entry state.
+          planPhaseErr.missionId = miId;
+          // A fresh scope-excursion discovered while re-checking a
+          // promoted plan is itself a new proposal — stamp candidatePlan /
+          // proposedBy exactly as planner.js's own scope-excursion catch
+          // does (agents/planner.js), so batchResume's existing
+          // SCOPE-PROPOSAL DETOUR re-parks it unchanged rather than
+          // treating it as a dead plan.
+          if (planPhaseErr.ruleId === 'scope-excursion') {
+            planPhaseErr.candidatePlan = missionDecomp;
+            planPhaseErr.proposedBy = 'planner-excursion';
+          }
+          throw planPhaseErr;
+        } finally {
+          // One-shot: consumed (successfully or not) exactly once per
+          // mission — never left around to leak into a later resume of
+          // this same Pipeline instance.
+          delete this._promotedScopePlans[miId];
+        }
+      } else {
+        this.onLog(`  Planning mission ${miId} (lazy DFS)...`);
+        const _planMissionStart1 = Date.now();
+        this.statusBar.updateAgent('planner', { role: 'planner', status: 'active', startedAt: _planMissionStart1, cost: this.tokenTracker.getUsageByType('planner').totalCostUsd });
+        this.statusBar.setPhase(`planning mission ${miId}`);
+        // TAG-AND-RETHROW: this is a plan-phase call site — it runs BEFORE the
+        // scheduler ever dispatches a task for this mission (Phase A of
+        // _executeMilestoneParallel, ahead of Phase B's scheduler.runMilestone).
+        // Any error thrown by planMission itself, or by the plan-validation
+        // that immediately follows it (applySpecHardChecks), is tagged
+        // err.planPhase = true and rethrown so batchResume's failed-execution
+        // catch can route it to the failed-plan leg. planPhase is set ONLY
+        // here — never inferred from error type or message elsewhere.
+
+        // Fail-soft: gather already-planned task targetFiles from this
+        // mission's same-milestone siblings (mission-<id>.json state files
+        // written by an earlier Phase-A planMission call), keyed by sibling
+        // mission id, so the planner can warn on cross-mission targetFile
+        // duplication. Any read/parse failure — or a milestone with no
+        // sibling state yet — degrades to {} rather than failing planning.
+        let siblingMissionTaskTargets = {};
+        try {
+          const milestoneMissions = this._currentMsState?.missions || {};
+          const targetsByMission = {};
+          for (const smId of Object.keys(milestoneMissions)) {
+            if (smId === miId) continue;
+            const siblingStateFile = path.join(this.harnessDir, 'state', `mission-${smId}.json`);
+            if (!fs.existsSync(siblingStateFile)) continue;
+            const siblingState = JSON.parse(fs.readFileSync(siblingStateFile, 'utf8'));
+            const targets = [];
+            for (const sm of Object.values(siblingState.subMissions || {})) {
+              for (const task of Object.values(sm.tasks || {})) {
+                for (const tf of (task.targetFiles || [])) targets.push(tf);
+              }
+            }
+            if (targets.length > 0) targetsByMission[smId] = targets;
+          }
+          siblingMissionTaskTargets = targetsByMission;
+        } catch {
+          siblingMissionTaskTargets = {};
+        }
+
+        try {
+          try {
+            missionDecomp = await this.planner.planMission(miId, this.projectRoot, {
+              missionPlan,
+              maxTasksPerSubMission: config.execution.maxTasksPerSubMission,
+              mode: this._mode,
+              specTargetFiles: this._getSpecTargetFiles(),
+              specConstraints: this._getSpecConstraints(),
+              specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
+              scopeMapping: readState(this.harnessDir).projectMeta?.scopeMapping || [],
+              scopeItems: readState(this.harnessDir).projectMeta?.scopeItems || [],
+              siblingMissionTaskTargets,
+              priorMissionDigest: this._renderPriorMissionDigest(this._buildPriorMissionDigest(miId)),
+            });
+          } finally {
+            this.statusBar.updateAgent('planner', null);
+            try {
+              const rotationEvents = this.planner.drainRotationEvents?.() || [];
+              if (rotationEvents.length > 0) {
+                appendWarnings(this.projectRoot, rotationEvents.map((ev) => ({
+                  milestone: miId,
+                  severity: 'warning',
+                  category: 'planner-rotation',
+                  description: `Planner rotation event (${ev.type}) for mission ${ev.missionId}: contextTokens=${ev.contextTokens}, missionCount=${ev.missionCount}`,
+                })));
+              }
+            } catch {
+              // fail-soft: drain/append failures must not mask the planMission outcome
+            }
+          }
+          this._recordScopeMappingWarnings(miId, missionDecomp.scopeWarnings);
+          this.onLog(`  planMission completed in ${this._formatElapsed(Date.now() - _planMissionStart1)}`);
+
+          // Validate task dependencies and merge spec.json hard checks before persisting state.
+          applySpecHardChecks(missionDecomp, this.projectRoot, this.harnessDir, miId);
+        } catch (planPhaseErr) {
+          planPhaseErr.planPhase = true;
+          // missionId is stamped here — the sole producing site — so
+          // batchResume's scope-proposal park (the excursion-with-
+          // candidatePlan leg of the failed-plan handling) can read it off
+          // the error rather than re-deriving it from queue-entry state.
+          planPhaseErr.missionId = miId;
+          throw planPhaseErr;
+        }
       }
 
       // Serialize concurrent run-tests.js registration: auto-declare the shared

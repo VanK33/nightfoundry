@@ -39,6 +39,19 @@
  * TC9: checkScopeMappingConsistency shape warnings — inconsistent /
  *      malformed / empty / undefined mappings return warning objects
  *      and never throw.
+ * TC-SE1: lintPlanScope on a plan with three excursion hits (one in
+ *      subMissions[].tasks, one in replacementTasks, one in newTasks)
+ *      throws a ScopeExcursionError whose `excursions` array holds a
+ *      {taskId, path} entry for every hit and whose ruleId is
+ *      'scope-excursion'.
+ * TC-SE2: the thrown excursion error's `message` reads the exact
+ *      first-violation text, and its `lintArmsPending` equals
+ *      ['uncovered-token','structure-cap','task-check-shapes'].
+ * TC-SE3: an uncovered-token violation throws a PlanLintError that is NOT
+ *      a ScopeExcursionError with ruleId 'uncovered-token', and
+ *      lintGlobalPlanScope throws with ruleId 'global-uncovered-token'.
+ * TC-SE4: pendingLintArms returns the arm ids strictly after a given id,
+ *      and returns [] for the last arm, an unknown id, and a non-string id.
  *
  * Run: node test/test-plan-scope-lint.js
  */
@@ -51,13 +64,24 @@
 delete process.env.CC_ORCH_ACTIVE_RUN;
 
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { execSync } from 'node:child_process';
 import {
   buildDeclaredSet,
   lintPlanScope,
   lintGlobalPlanScope,
   checkScopeMappingConsistency,
+  pendingLintArms,
+  ScopeExcursionError,
 } from '../src/orchestrator/gates/plan-scope-lint.js';
 import { extractPathTokens } from '../src/orchestrator/agents/planner.js';
+import { PlanLintError } from '../src/orchestrator/gates/plan-structure-lint.js';
+import { Pipeline } from '../src/orchestrator/core/pipeline.js';
+import { writeQueueEntry, readQueueEntry, readParkScene } from '../src/orchestrator/core/state.js';
+import { activeHarnessDir } from '../src/orchestrator/core/run-context.js';
+import { candidatesLedgerPath } from '../src/orchestrator/core/candidates-ledger.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -892,6 +916,576 @@ await test('TC18: NEGATIVE (h) — the same ".venv/bin/python" string occupies B
     'the identical ".venv/bin/python" string is exempt at argv[0] but the SAME string ' +
     'reappearing as a trailing argument is a distinct, non-exempt occurrence that must still throw',
   );
+});
+
+// ── TC-SE1: ScopeExcursionError.excursions carries a {taskId, path} entry ──
+// ── for every hit across the three plan shapes ──────────────────────────────
+
+await test('TC-SE1: ScopeExcursionError.excursions holds a {taskId, path} entry per hit across all three plan shapes', async () => {
+  const declaredSet = new Set(['src/known.js']);
+  const plan = {
+    subMissions: [
+      {
+        id: 'sm-001',
+        tasks: [
+          { id: 'task-sm', targetFiles: ['src/rogue-sm.js'], dependencies: [] },
+        ],
+      },
+    ],
+    replacementTasks: [
+      { id: 'task-repl', targetFiles: ['src/rogue-repl.js'], dependencies: [] },
+    ],
+    newTasks: [
+      { id: 'task-new', targetFiles: ['src/rogue-new.js'], dependencies: [] },
+    ],
+  };
+
+  assert.throws(
+    () => lintPlanScope(plan, declaredSet),
+    (err) => {
+      assert.ok(err instanceof ScopeExcursionError, 'should be a ScopeExcursionError instance');
+      assert.strictEqual(err.ruleId, 'scope-excursion', 'ruleId should be "scope-excursion"');
+      assert.ok(Array.isArray(err.excursions), 'excursions should be an array');
+      assert.strictEqual(
+        err.excursions.length,
+        3,
+        `excursions should hold exactly 3 entries (one per plan shape), got: ${JSON.stringify(err.excursions)}`,
+      );
+      const expected = [
+        { taskId: 'task-sm', path: 'src/rogue-sm.js' },
+        { taskId: 'task-repl', path: 'src/rogue-repl.js' },
+        { taskId: 'task-new', path: 'src/rogue-new.js' },
+      ];
+      for (const entry of expected) {
+        assert.ok(
+          err.excursions.some((e) => e.taskId === entry.taskId && e.path === entry.path),
+          `excursions should contain {taskId: "${entry.taskId}", path: "${entry.path}"}, ` +
+          `got: ${JSON.stringify(err.excursions)}`,
+        );
+      }
+      return true;
+    },
+    'lintPlanScope should throw a ScopeExcursionError naming all three excursion hits',
+  );
+});
+
+// ── TC-SE2: exact first-violation message text + lintArmsPending ──────────
+
+await test('TC-SE2: ScopeExcursionError.message is the exact first-violation text; lintArmsPending names the remaining arms', async () => {
+  const declaredSet = new Set(['src/known.js']);
+  const plan = {
+    subMissions: [
+      {
+        id: 'sm-001',
+        tasks: [
+          { id: 'task-sm', targetFiles: ['src/rogue-sm.js'], dependencies: [] },
+        ],
+      },
+    ],
+    replacementTasks: [
+      { id: 'task-repl', targetFiles: ['src/rogue-repl.js'], dependencies: [] },
+    ],
+    newTasks: [
+      { id: 'task-new', targetFiles: ['src/rogue-new.js'], dependencies: [] },
+    ],
+  };
+
+  assert.throws(
+    () => lintPlanScope(plan, declaredSet),
+    (err) => {
+      assert.strictEqual(
+        err.message,
+        '[plan-scope-lint] scope excursion: task "task-sm" targets "src/rogue-sm.js" ' +
+        'which is outside the spec-declared scope set',
+        `message should be the exact first-violation text, got: ${err.message}`,
+      );
+      assert.deepStrictEqual(
+        err.lintArmsPending,
+        ['uncovered-token', 'structure-cap', 'task-check-shapes'],
+        `lintArmsPending should name the arms after "scope-excursion", got: ${JSON.stringify(err.lintArmsPending)}`,
+      );
+      return true;
+    },
+    'lintPlanScope should throw with the exact first-violation message and the pending lint arms',
+  );
+});
+
+// ── TC-SE3: uncovered-token / global-uncovered-token ruleIds, neither a ────
+// ── ScopeExcursionError ─────────────────────────────────────────────────────
+
+await test('TC-SE3: uncovered-token and global-uncovered-token throw PlanLintErrors (not ScopeExcursionError) with their respective ruleIds', async () => {
+  // lintPlanScope: scoped multi-token acceptance command with an uncovered
+  // token (same fixture shape as TC6) — ruleId 'uncovered-token'.
+  const specTargetFiles = ['test/a.js', 'src/b.js'];
+  const specAcceptanceCriteria = [
+    {
+      description: 'run a with b',
+      verification: { kind: 'command', command: 'node test/a.js --fixture src/b.js' },
+    },
+  ];
+  const declaredSet = buildDeclaredSet(specTargetFiles, specAcceptanceCriteria);
+  const planUncovered = {
+    subMissions: [
+      {
+        id: 'sm-001',
+        tasks: [
+          { id: 'task-uncov', targetFiles: ['test/a.js'], dependencies: [] },
+        ],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => lintPlanScope(planUncovered, declaredSet, { specTargetFiles, specAcceptanceCriteria }),
+    (err) => {
+      assert.ok(err instanceof PlanLintError, 'should be a PlanLintError instance');
+      assert.ok(
+        !(err instanceof ScopeExcursionError),
+        'an uncovered-token violation must NOT be a ScopeExcursionError',
+      );
+      assert.strictEqual(err.ruleId, 'uncovered-token', 'ruleId should be "uncovered-token"');
+      return true;
+    },
+    'lintPlanScope should throw a plain PlanLintError with ruleId "uncovered-token"',
+  );
+
+  // lintGlobalPlanScope: pure-omission uncovered command — ruleId
+  // 'global-uncovered-token'.
+  const globalSpecTargetFiles = ['src/foo.js', 'test/x.js'];
+  const globalSpecAcceptanceCriteria = [
+    {
+      description: 'the x test',
+      verification: { kind: 'command', command: 'node test/x.js' },
+    },
+  ];
+  const globalPlanUncovered = {
+    milestones: [
+      {
+        id: '001',
+        missions: [
+          { id: '001-001', targetFiles: ['src/foo.js'] },
+        ],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => lintGlobalPlanScope(globalPlanUncovered, globalSpecTargetFiles, globalSpecAcceptanceCriteria),
+    (err) => {
+      assert.ok(err instanceof PlanLintError, 'should be a PlanLintError instance');
+      assert.ok(
+        !(err instanceof ScopeExcursionError),
+        'a global-uncovered-token violation must NOT be a ScopeExcursionError',
+      );
+      assert.strictEqual(err.ruleId, 'global-uncovered-token', 'ruleId should be "global-uncovered-token"');
+      return true;
+    },
+    'lintGlobalPlanScope should throw a plain PlanLintError with ruleId "global-uncovered-token"',
+  );
+});
+
+// ── TC-SE4: pendingLintArms ─────────────────────────────────────────────────
+
+await test('TC-SE4: pendingLintArms returns the arms strictly after a given id, and [] for the last arm, an unknown id, and a non-string id', async () => {
+  assert.deepStrictEqual(
+    pendingLintArms('scope-excursion'),
+    ['uncovered-token', 'structure-cap', 'task-check-shapes'],
+    'pendingLintArms("scope-excursion") should return the three following arms',
+  );
+  assert.deepStrictEqual(
+    pendingLintArms('task-check-shapes'),
+    [],
+    'pendingLintArms of the last arm in the order should return []',
+  );
+  assert.deepStrictEqual(
+    pendingLintArms('nope'),
+    [],
+    'pendingLintArms of an unknown id should return []',
+  );
+  assert.deepStrictEqual(
+    pendingLintArms(null),
+    [],
+    'pendingLintArms of a non-string id should return []',
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TC-SP1..TC-SP4 — batchResume integration: the parking half of AC1.
+//
+// These drive the REAL Pipeline.prototype.batchResume against a temp git
+// project root (mirroring test-batch-test-gate-park-snapshot.js), with only
+// planner.planMission stubbed to raise a lint failure. planMission's stub
+// itself calls the REAL lintPlanScope (this file's own exports under test)
+// against small in-memory fixtures, so the exact ScopeExcursionError /
+// PlanLintError shapes handled by pipeline.js's failed-plan leg
+// (src/orchestrator/core/pipeline.js) are genuine, not hand-rolled mocks.
+//
+// TC-SP1/TC-SP2 exercise the scope-proposal detour (err.ruleId ===
+// 'scope-excursion' && err.candidatePlan): the entry parks 'halted-scope'
+// with a scope-proposal park.json scene, and gains a candidates.jsonl line.
+// TC-SP3 exercises the plain failed-plan leg (an uncovered-token
+// PlanLintError, which has no candidatePlan): status 'failed-plan',
+// plan-failure.txt, a ledger line, and no park.json.
+// TC-SP4 pins that batchResume continues past a parked entry to process a
+// second pending entry in the same call.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Create a temporary git repo with a baseline commit and a .gitignore that
+ * ignores .harness/ and queue/ (so `git status --porcelain` is clean at
+ * batch start) while leaving archives/ trackable. Mirrors
+ * test-batch-test-gate-park-snapshot.js's makeTmpGitRoot. */
+function spMakeTmpGitRoot() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-plan-scope-lint-batch-'));
+  execSync('git init', { cwd: dir, stdio: 'pipe' });
+  execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
+  execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
+  fs.writeFileSync(
+    path.join(dir, '.gitignore'),
+    '.harness/\nqueue/\n# cc-orch ephemeral inputs\nspec-*.md\n*.spec.md\n',
+  );
+  fs.writeFileSync(path.join(dir, 'README.md'), '# baseline\n');
+  execSync('git add .gitignore README.md', { cwd: dir, stdio: 'pipe' });
+  execSync('git commit -m "baseline"', { cwd: dir, stdio: 'pipe' });
+  return dir;
+}
+
+function spCleanup(root) {
+  try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
+/** Remove the process signal listeners the Pipeline constructor registers,
+ * mirroring test-plan-scope-lint-wiring.js's teardownPipeline. */
+function spTeardownPipeline(pipeline) {
+  const h = pipeline._signalHandlers || {};
+  if (h.SIGINT) process.removeListener('SIGINT', h.SIGINT);
+  if (h.SIGTERM) process.removeListener('SIGTERM', h.SIGTERM);
+  if (h.exit) process.removeListener('exit', h.exit);
+  if (h.uncaughtException) process.removeListener('uncaughtException', h.uncaughtException);
+  if (pipeline.statusBar && typeof pipeline.statusBar.destroy === 'function') {
+    try { pipeline.statusBar.destroy(); } catch { /* ignore */ }
+  }
+}
+
+/** Seed one pending queue entry with a minimal spec + a one-milestone,
+ * one-mission plan (enough for writeGlobalPlan to materialize a single
+ * mission that _planAndApproveMission will plan). `validatedAt` is
+ * caller-supplied so ordering across multiple seeded entries is explicit
+ * (listQueue sorts by validatedAt). */
+function spSeedQueueEntry(root, slug, { missionId = '001-001', validatedAt } = {}) {
+  writeQueueEntry(root, slug, {
+    spec: `# Spec for ${slug}\n\nMinimal spec content for testing.\n`,
+    plan: {
+      milestones: [
+        {
+          id: '001',
+          description: `milestone for ${slug}`,
+          missions: [{ id: missionId, description: `mission for ${slug}` }],
+        },
+      ],
+      assumptions: [],
+    },
+    validatedAt: validatedAt ?? new Date().toISOString(),
+    status: 'pending',
+  });
+}
+
+/** The exact plan fixture the excursion stub feeds to lintPlanScope: two
+ * tasks excursion-hit the SAME path (src/rogue.js) and a third hits a
+ * DISTINCT path (src/other-rogue.js) — so the pipeline's collect-all
+ * proposedFiles-by-path folding is genuinely exercised (2 excursions
+ * collapse into 1 entry with 2 taskIds; the third stays a separate entry). */
+function spBuildExcursionPlan() {
+  return {
+    subMissions: [
+      {
+        id: 'sm-excursion',
+        tasks: [
+          { id: 'task-rogue-a', targetFiles: ['src/rogue.js'], dependencies: [] },
+          { id: 'task-rogue-b', targetFiles: ['src/rogue.js'], dependencies: [] },
+          { id: 'task-other-rogue', targetFiles: ['src/other-rogue.js'], dependencies: [] },
+        ],
+      },
+    ],
+  };
+}
+
+/** Runs the REAL lintPlanScope against spBuildExcursionPlan() and a
+ * declaredSet that excludes both rogue paths, then stamps candidatePlan /
+ * proposedBy on the thrown ScopeExcursionError exactly as
+ * src/orchestrator/agents/planner.js does at its own throw site (see
+ * planner.js's `if (err?.ruleId === 'scope-excursion')` block). Returns the
+ * enriched error for planMission's stub to throw. */
+function spBuildExcursionError() {
+  const plan = spBuildExcursionPlan();
+  const declaredSet = new Set(['src/allowed.js']);
+  try {
+    lintPlanScope(plan, declaredSet);
+  } catch (err) {
+    err.candidatePlan = plan;
+    err.proposedBy = 'planner-excursion';
+    return err;
+  }
+  throw new Error('expected lintPlanScope to throw for the excursion fixture — test bug');
+}
+
+/** Runs the REAL lintPlanScope against a per-scoped-check coverage-miss
+ * fixture (mirrors this file's own TC6) so planMission's stub raises a
+ * genuine 'uncovered-token' PlanLintError — NOT a ScopeExcursionError, and
+ * carrying no candidatePlan — so the pipeline's scope-proposal detour
+ * (which requires both err.ruleId === 'scope-excursion' AND
+ * err.candidatePlan) never engages for this failure. */
+function spBuildUncoveredTokenError() {
+  const specTargetFiles = ['test/a.js', 'src/b.js'];
+  const specAcceptanceCriteria = [
+    {
+      description: 'run a with b',
+      verification: { kind: 'command', command: 'node test/a.js --fixture src/b.js' },
+    },
+  ];
+  const declaredSet = buildDeclaredSet(specTargetFiles, specAcceptanceCriteria);
+  const plan = {
+    subMissions: [
+      {
+        id: 'sm-uncovered',
+        tasks: [
+          { id: 'task-uncov', targetFiles: ['test/a.js'], dependencies: [] },
+        ],
+      },
+    ],
+  };
+  try {
+    lintPlanScope(plan, declaredSet, { specTargetFiles, specAcceptanceCriteria });
+  } catch (err) {
+    return err;
+  }
+  throw new Error('expected lintPlanScope to throw an uncovered-token error for the fixture — test bug');
+}
+
+/** Reads the slug of the queue entry currently claimed as the active run,
+ * by matching state.projectMeta.prdPath against queue/<slug>/spec.md.
+ * Mirrors test-batch-test-gate-park-snapshot.js's inline slug-recovery
+ * technique — by the time planMission runs, bootstrap(force) has already
+ * repointed the harness to this entry's per-run state.json. */
+function spCurrentSlug(root) {
+  const stateJsonPath = path.join(activeHarnessDir(root), 'state.json');
+  try {
+    const raw = fs.readFileSync(stateJsonPath, 'utf8');
+    const state = JSON.parse(raw);
+    const prdPath = state.projectMeta?.prdPath || '';
+    const match = prdPath.match(/queue\/([^/]+)\/spec\.md$/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Build a Pipeline driving the REAL Pipeline.prototype.batchResume against
+ * `root`, with planner.planMission stubbed per-slug via `behaviorsBySlug`
+ * (slug -> 'excursion' | 'uncovered'). No assumptions are seeded (plan.assumptions
+ * is always []), so planner.verifyAssumptions is stubbed only for API-shape
+ * safety, never actually driving a verification round. The coverage gate is
+ * skipped so the fixture's minimal plan never needs real scope-file data. */
+function spMakeBatchPipeline(root, behaviorsBySlug) {
+  const logs = [];
+  const pipeline = new Pipeline(root, {
+    skipWorktreeCreation: true,
+    statusBar: false,
+    onLog: (m) => logs.push(m),
+    onConfirm: async () => true,
+  });
+  pipeline.planner.verifyAssumptions = async () => [];
+  pipeline.planner.closeReusableSession = async () => {};
+  pipeline._skipCoverageGate = true;
+  pipeline.planner.planMission = async (_missionId, _root, _opts) => {
+    const slug = spCurrentSlug(root);
+    const behavior = behaviorsBySlug[slug];
+    if (behavior === 'excursion') throw spBuildExcursionError();
+    if (behavior === 'uncovered') throw spBuildUncoveredTokenError();
+    throw new Error(`spMakeBatchPipeline: no stubbed planMission behavior for slug '${slug}'`);
+  };
+  return { pipeline, logs };
+}
+
+function spReadCandidatesLedger(root) {
+  const ledgerPath = candidatesLedgerPath(root);
+  if (!fs.existsSync(ledgerPath)) return [];
+  return fs.readFileSync(ledgerPath, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+// ── TC-SP1 ───────────────────────────────────────────────────────────────
+
+await test('TC-SP1: batchResume parks an excursion-classified plan failure as a de-duplicated scope-proposal scene, status halted-scope', async () => {
+  const root = spMakeTmpGitRoot();
+  let pipeline;
+  try {
+    spSeedQueueEntry(root, 'sp1-excursion', { missionId: '001-001' });
+    ({ pipeline } = spMakeBatchPipeline(root, { 'sp1-excursion': 'excursion' }));
+
+    await pipeline.batchResume({ autonomous: true });
+
+    const entry = readQueueEntry(root, 'sp1-excursion');
+    assert.ok(entry, "queue entry 'sp1-excursion' should still exist");
+    assert.strictEqual(entry.status, 'halted-scope', `expected status 'halted-scope', got '${entry.status}'`);
+
+    const scene = readParkScene(root, 'sp1-excursion');
+    assert.ok(scene, 'expected a queue/sp1-excursion/park.json scene');
+    assert.strictEqual(scene.kind, 'scope-proposal', `expected scene.kind 'scope-proposal', got '${scene.kind}'`);
+
+    const expectedProposedFiles = [
+      {
+        path: 'src/rogue.js',
+        reason: '"src/rogue.js" is outside the spec-declared scope set',
+        taskIds: ['task-rogue-a', 'task-rogue-b'],
+      },
+      {
+        path: 'src/other-rogue.js',
+        reason: '"src/other-rogue.js" is outside the spec-declared scope set',
+        taskIds: ['task-other-rogue'],
+      },
+    ];
+    assert.deepStrictEqual(
+      scene.proposedFiles,
+      expectedProposedFiles,
+      `expected de-duplicated proposedFiles (one entry per distinct path, repeated hits folded into ` +
+      `one entry's taskIds), got: ${JSON.stringify(scene.proposedFiles)}`,
+    );
+
+    assert.deepStrictEqual(
+      scene.candidatePlan,
+      spBuildExcursionPlan(),
+      `expected scene.candidatePlan to equal the linted plan, got: ${JSON.stringify(scene.candidatePlan)}`,
+    );
+    assert.strictEqual(scene.missionId, '001-001', `expected scene.missionId '001-001', got '${scene.missionId}'`);
+    assert.deepStrictEqual(
+      scene.lintArmsPending,
+      ['uncovered-token', 'structure-cap', 'task-check-shapes'],
+      `expected scene.lintArmsPending to name the arms after scope-excursion, got: ${JSON.stringify(scene.lintArmsPending)}`,
+    );
+    assert.strictEqual(
+      scene.proposedBy,
+      'planner-excursion',
+      `expected scene.proposedBy 'planner-excursion', got '${scene.proposedBy}'`,
+    );
+  } finally {
+    if (pipeline) spTeardownPipeline(pipeline);
+    spCleanup(root);
+  }
+});
+
+// ── TC-SP2 ───────────────────────────────────────────────────────────────
+
+await test('TC-SP2: batchResume appends a candidates.jsonl line with signature.phase halted-scope on the scope-proposal park', async () => {
+  const root = spMakeTmpGitRoot();
+  let pipeline;
+  try {
+    spSeedQueueEntry(root, 'sp2-excursion', { missionId: '001-001' });
+    ({ pipeline } = spMakeBatchPipeline(root, { 'sp2-excursion': 'excursion' }));
+
+    await pipeline.batchResume({ autonomous: true });
+
+    const entry = readQueueEntry(root, 'sp2-excursion');
+    assert.strictEqual(entry.status, 'halted-scope', `expected status 'halted-scope', got '${entry?.status}'`);
+
+    const ledgerLines = spReadCandidatesLedger(root);
+    const haltedScopeLines = ledgerLines.filter(
+      (l) => l.slug === 'sp2-excursion' && l.signature?.phase === 'halted-scope',
+    );
+    assert.ok(
+      haltedScopeLines.length >= 1,
+      `expected a candidates.jsonl line for 'sp2-excursion' with signature.phase 'halted-scope', ` +
+      `got lines: ${JSON.stringify(ledgerLines)}`,
+    );
+  } finally {
+    if (pipeline) spTeardownPipeline(pipeline);
+    spCleanup(root);
+  }
+});
+
+// ── TC-SP3 ───────────────────────────────────────────────────────────────
+
+await test('TC-SP3: batchResume fails an uncovered-token plan failure as failed-plan, with plan-failure.txt, a failed-plan ledger line, and no park.json', async () => {
+  const root = spMakeTmpGitRoot();
+  let pipeline;
+  try {
+    spSeedQueueEntry(root, 'sp3-uncovered', { missionId: '001-001' });
+    ({ pipeline } = spMakeBatchPipeline(root, { 'sp3-uncovered': 'uncovered' }));
+
+    await pipeline.batchResume({ autonomous: true });
+
+    const entry = readQueueEntry(root, 'sp3-uncovered');
+    assert.ok(entry, "queue entry 'sp3-uncovered' should still exist");
+    assert.strictEqual(entry.status, 'failed-plan', `expected status 'failed-plan', got '${entry.status}'`);
+
+    const planFailurePath = path.join(root, 'queue', 'sp3-uncovered', 'plan-failure.txt');
+    assert.ok(fs.existsSync(planFailurePath), 'expected queue/sp3-uncovered/plan-failure.txt to be written');
+    const planFailureContent = fs.readFileSync(planFailurePath, 'utf8');
+    assert.ok(
+      /uncovered/i.test(planFailureContent) || planFailureContent.length > 0,
+      `expected plan-failure.txt to carry the lint error detail, got: ${planFailureContent}`,
+    );
+
+    const ledgerLines = spReadCandidatesLedger(root);
+    const failedPlanLines = ledgerLines.filter(
+      (l) => l.slug === 'sp3-uncovered' && l.signature?.phase === 'failed-plan',
+    );
+    assert.ok(
+      failedPlanLines.length >= 1,
+      `expected a candidates.jsonl line for 'sp3-uncovered' with signature.phase 'failed-plan', ` +
+      `got lines: ${JSON.stringify(ledgerLines)}`,
+    );
+
+    const parkJsonPath = path.join(root, 'queue', 'sp3-uncovered', 'park.json');
+    assert.ok(!fs.existsSync(parkJsonPath), 'an uncovered-token failure must NOT write park.json');
+    assert.strictEqual(
+      readParkScene(root, 'sp3-uncovered'),
+      null,
+      'readParkScene should return null for an uncovered-token failed-plan entry',
+    );
+  } finally {
+    if (pipeline) spTeardownPipeline(pipeline);
+    spCleanup(root);
+  }
+});
+
+// ── TC-SP4 ───────────────────────────────────────────────────────────────
+
+await test('TC-SP4: batchResume continues past a parked scope-proposal entry to bring a second queued entry to a terminal status in the same call', async () => {
+  const root = spMakeTmpGitRoot();
+  let pipeline;
+  try {
+    const t0 = new Date();
+    const t1 = new Date(t0.getTime() + 1000);
+    spSeedQueueEntry(root, 'sp4-a-excursion', { missionId: '001-001', validatedAt: t0.toISOString() });
+    spSeedQueueEntry(root, 'sp4-b-uncovered', { missionId: '001-001', validatedAt: t1.toISOString() });
+    ({ pipeline } = spMakeBatchPipeline(root, {
+      'sp4-a-excursion': 'excursion',
+      'sp4-b-uncovered': 'uncovered',
+    }));
+
+    const result = await pipeline.batchResume({ autonomous: true });
+
+    const entryA = readQueueEntry(root, 'sp4-a-excursion');
+    assert.ok(entryA, "queue entry 'sp4-a-excursion' should still exist");
+    assert.strictEqual(entryA.status, 'halted-scope', `expected 'sp4-a-excursion' status 'halted-scope', got '${entryA.status}'`);
+
+    const entryB = readQueueEntry(root, 'sp4-b-uncovered');
+    assert.ok(entryB, "queue entry 'sp4-b-uncovered' should still exist");
+    assert.strictEqual(
+      entryB.status,
+      'failed-plan',
+      `expected the second queued entry 'sp4-b-uncovered' to reach a terminal status ('failed-plan') ` +
+      `in the SAME batchResume call, got '${entryB.status}'`,
+    );
+
+    assert.strictEqual(result.parked, 1, `expected parked:1, got ${result.parked}`);
+    assert.strictEqual(result.failed, 1, `expected failed:1, got ${result.failed}`);
+  } finally {
+    if (pipeline) spTeardownPipeline(pipeline);
+    spCleanup(root);
+  }
 });
 
 // ── Summary ─────────────────────────────────────────────────────────

@@ -94,6 +94,7 @@ Queue `status` values:
 | `parked` | halted at an operator gate |
 | `halted-review` | halted awaiting human review |
 | `halted-analyzer` | halted awaiting analyzer escalation |
+| `halted-scope` | halted with a pending scope proposal awaiting human approve/reject; the batch continues past it |
 
 ## archives
 
@@ -113,6 +114,18 @@ Archive ids prefixed `failed-` are forensic records of failed runs (spec + state
 `refs/park/<slug>/`:
 - `scene.json` — the snapshot at halt time (spec/plan/state), so `park show` can reconstruct why it stopped.
 - `park.json` — park metadata + operator notes.
+
+`scene.json` carries a scene `kind`. The existing scene kinds for `parked` / `halted-review` / `halted-analyzer` are unchanged; `scope-proposal` is additive.
+
+Scene kind `scope-proposal` (used with queue status `halted-scope`) carries:
+
+- `proposedFiles` — the offending files, each with a per-file `reason` and the proposing task ids.
+- `candidatePlan` — the exact lint-rejected mission plan, persisted so promotion executes it unmodified; any mutation between park and promotion invalidates the proposal and re-parks it.
+- `missionId` — the mission the proposal belongs to.
+- `lintArmsPending` — the lint arms that had not yet run when the excursion threw, re-run deterministically at promotion.
+- `proposedBy` — the producer of the proposal (`'planner-excursion'` today); the field carries the proposer so nothing hardcodes it.
+
+Approval extends only that queue entry's spec — project-wide promotion is out of scope and no project config is involved.
 
 ## brainstorm drafts
 

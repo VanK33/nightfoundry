@@ -19,8 +19,129 @@ import {
 } from '../../orchestrator/core/run-context.js';
 
 /** Resolve verbs and the queue statuses each one may act on. */
-const RESOLVE_ACTIONS = ['requeue', 'waive', 'reject'];
-const RESOLVABLE_STATUSES = ['parked', 'halted-review', 'halted-analyzer'];
+const RESOLVE_ACTIONS = ['requeue', 'waive', 'reject', 'approve'];
+const RESOLVABLE_STATUSES = ['parked', 'halted-review', 'halted-analyzer', 'halted-scope'];
+
+/** Matches "#{1,6} Heading text" markdown headings. */
+const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/;
+/** Matches a heading whose text starts with "Scope" (e.g. "Scope", "Scope — in"). */
+const SCOPE_HEADING_RE = /^scope\b/i;
+
+/**
+ * Approve-only scope-proposal writeback (see the --approve leg of
+ * parkResolve below). Applies an approved scope proposal's `proposedFiles`
+ * to a queue entry's spec pair:
+ *
+ *  - spec.json: every `proposedFiles[].path` not already present in
+ *    `target_files` is appended to that array. Every other top-level
+ *    key/value (goal, acceptance_criteria, constraints, plan_structure, …)
+ *    is left exactly as read — this is a read → mutate target_files →
+ *    re-serialize, never a rewrite of the object.
+ *  - spec.md: one provenance-annotated bullet is appended per entry in
+ *    `proposedFiles` (every proposed file, regardless of whether its path
+ *    was already declared in target_files) to the relevant scope section —
+ *    the first heading (any level 1-6) whose text starts with "Scope"
+ *    (matches both a plain "## Scope" and "## Scope — in").
+ *
+ * Both files are read and validated FIRST — spec.json must parse to an
+ * object, and spec.md must contain a locatable scope heading — before
+ * either is written, so a thrown error here (missing/corrupt spec.json,
+ * unreadable spec.md, no scope section) never leaves a half-written spec
+ * pair. Callers are expected to treat a thrown error as fatal and abort
+ * the resolve BEFORE mutating the scene/status (see the --approve call
+ * site), so a failed writeback leaves the entry fully 'halted-scope'
+ * rather than half-advanced.
+ *
+ * @param {string} projectRoot
+ * @param {string} slug
+ * @param {Array<{path: string}>} proposedFiles - the scene's proposed files
+ * @param {string} resolvedAt - ISO timestamp used in the provenance annotation
+ */
+function applyScopeProposalWriteback(projectRoot, slug, proposedFiles, resolvedAt) {
+  const entryDir = path.join(projectRoot, 'queue', slug);
+  const jsonPath = path.join(entryDir, 'spec.json');
+  const mdPath = path.join(entryDir, 'spec.md');
+
+  const files = (Array.isArray(proposedFiles) ? proposedFiles : []).filter(
+    (f) => f && typeof f.path === 'string' && f.path.length > 0
+  );
+
+  let specJson;
+  try {
+    specJson = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`could not read/parse queue/${slug}/spec.json (${err.message})`);
+  }
+  if (!specJson || typeof specJson !== 'object' || Array.isArray(specJson)) {
+    throw new Error(`queue/${slug}/spec.json did not parse to an object`);
+  }
+
+  const targetFiles = Array.isArray(specJson.target_files) ? specJson.target_files : [];
+  const seen = new Set(targetFiles);
+  const newTargetFiles = [...targetFiles];
+  for (const f of files) {
+    if (!seen.has(f.path)) {
+      newTargetFiles.push(f.path);
+      seen.add(f.path);
+    }
+  }
+
+  let mdContent;
+  try {
+    mdContent = fs.readFileSync(mdPath, 'utf8');
+  } catch (err) {
+    throw new Error(`could not read queue/${slug}/spec.md (${err.message})`);
+  }
+
+  const lines = mdContent.split('\n');
+  let headingIdx = -1;
+  let headingLevel = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(HEADING_RE);
+    if (m && SCOPE_HEADING_RE.test(m[2])) {
+      headingIdx = i;
+      headingLevel = m[1].length;
+      break;
+    }
+  }
+  if (headingIdx === -1) {
+    throw new Error(
+      `could not locate a scope section in queue/${slug}/spec.md ` +
+      `(no heading matching '#{1,6} Scope ...' was found)`
+    );
+  }
+
+  let sectionEndIdx = lines.length;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    const m = lines[i].match(HEADING_RE);
+    if (m && m[1].length <= headingLevel) {
+      sectionEndIdx = i;
+      break;
+    }
+  }
+
+  // Insert right after the section's last non-blank line (skipping any
+  // trailing blank lines that separate it from the next heading), so the
+  // new bullets land inside the scope section rather than butting straight
+  // up against whatever follows it.
+  let insertIdx = sectionEndIdx;
+  while (insertIdx > headingIdx + 1 && lines[insertIdx - 1].trim() === '') {
+    insertIdx--;
+  }
+
+  const bulletLines = files.map(
+    (f) => `- ${f.path} (approved via scope proposal, resolved ${resolvedAt})`
+  );
+  lines.splice(insertIdx, 0, ...bulletLines);
+  const newMdContent = lines.join('\n');
+
+  specJson.target_files = newTargetFiles;
+
+  // Both writes happen only after every validation above has already
+  // succeeded, so a thrown error above never leaves a half-written pair.
+  fs.writeFileSync(jsonPath, JSON.stringify(specJson, null, 2));
+  fs.writeFileSync(mdPath, newMdContent);
+}
 
 /**
  * spec.md/spec.json divergence check: warns when spec.md was edited after
@@ -216,6 +337,31 @@ export function parkShow(projectRoot, slug) {
     return;
   }
 
+  if (scene.kind === 'scope-proposal') {
+    console.log('\nScope proposal:');
+    console.log(`Proposed by:        ${scene.proposedBy ?? '(unknown)'}`);
+    console.log(`Mission:            ${scene.missionId ?? '(unknown)'}`);
+    console.log(
+      `Lint arms pending:  ${
+        Array.isArray(scene.lintArmsPending) && scene.lintArmsPending.length > 0
+          ? scene.lintArmsPending.join(', ')
+          : '(none)'
+      }`
+    );
+    const proposedFiles = Array.isArray(scene.proposedFiles) ? scene.proposedFiles : [];
+    if (proposedFiles.length === 0) {
+      console.log('Proposed files:     (none recorded)');
+    } else {
+      console.log('Proposed files:');
+      for (const f of proposedFiles) {
+        const taskIds = Array.isArray(f?.taskIds) ? f.taskIds.join(', ') : '(none)';
+        console.log(`  - ${f?.path ?? '(unknown path)'}`);
+        console.log(`      reason:   ${f?.reason ?? '(no reason recorded)'}`);
+        console.log(`      taskIds:  ${taskIds}`);
+      }
+    }
+  }
+
   console.log('\nPark scene:');
   console.log(JSON.stringify(scene, null, 2));
 
@@ -239,34 +385,41 @@ export function parkShow(projectRoot, slug) {
 }
 
 /**
- * Resolve a parked/halted-review entry with exactly one of
- * --requeue|--waive|--reject (optional --note).
+ * Resolve a parked/halted-review/halted-analyzer/halted-scope entry with
+ * exactly one of --requeue|--waive|--reject|--approve (optional --note).
  *
  * Writes the resolution into the scene (never touches previousResolutions —
  * that field is pipeline-owned), then transitions status via the state.js
- * queue helpers: requeue/waive → 'pending', reject → 'rejected'.
+ * queue helpers: requeue/waive/approve → 'pending', reject → 'rejected'
+ * (or 'failed-plan' for a halted-scope entry — see below).
  *
- * Legal targets: 'parked' accepts all three verbs; 'halted-review' and
+ * Legal targets: 'parked' accepts requeue/waive/reject; 'halted-review' and
  * 'halted-analyzer' accept --requeue (the WIP was preserved at the halt —
  * requeue RE-ATTACHES it onto the current tree) and --reject, but not --waive
- * (there is no assumption uncertainty to accept). Any other status is an
- * illegal transition. A target without a readable scene is refused rather than
- * inventing one.
+ * (there is no assumption uncertainty to accept). 'halted-scope' is a scope
+ * proposal awaiting a human decision — it is approve/reject only: --approve
+ * marks the candidate plan for promotion (consumed by a later batchResume),
+ * and --reject sends the entry to 'failed-plan' (the proposal is rejected,
+ * not the entry itself — same terminal status a normal plan failure would
+ * reach). --requeue and --waive are illegal for a scope-proposal scene.
+ * --approve is illegal for any status other than 'halted-scope'. Any other
+ * status is an illegal transition. A target without a readable scene is
+ * refused rather than inventing one.
  *
  * @param {string} projectRoot
  * @param {string} slug
- * @param {{ requeue?: boolean, waive?: boolean, reject?: boolean, note?: string }} flags
+ * @param {{ requeue?: boolean, waive?: boolean, reject?: boolean, approve?: boolean, note?: string }} flags
  */
 export function parkResolve(projectRoot, slug, flags = {}) {
   if (!slug) {
-    console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject [--note <text>]');
+    console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]');
     process.exitCode = 1;
     return;
   }
 
   const actions = RESOLVE_ACTIONS.filter((a) => flags[a]);
   if (actions.length !== 1) {
-    console.error('park resolve requires exactly one of --requeue, --waive, --reject.');
+    console.error('park resolve requires exactly one of --requeue, --waive, --reject, --approve.');
     process.exitCode = 1;
     return;
   }
@@ -293,7 +446,15 @@ export function parkResolve(projectRoot, slug, flags = {}) {
   if (!RESOLVABLE_STATUSES.includes(entry.status)) {
     console.error(
       `Illegal transition: entry '${slug}' has status '${entry.status}' — ` +
-      `only parked, halted-review, or halted-analyzer entries can be resolved.`
+      `only parked, halted-review, halted-analyzer, or halted-scope entries can be resolved.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (action === 'approve' && entry.status !== 'halted-scope') {
+    console.error(
+      `--approve is not valid for entry '${slug}': it has status '${entry.status}', ` +
+      `not 'halted-scope'. --approve only applies to a scope proposal awaiting review.`
     );
     process.exitCode = 1;
     return;
@@ -323,6 +484,15 @@ export function parkResolve(projectRoot, slug, flags = {}) {
       `Refusing to resolve '${slug}': no readable park scene (queue/${slug}/park.json ` +
       `is missing or corrupt). Inspect the entry directory manually, or remove it with ` +
       `cc-orch queue remove ${slug}.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (scene.kind === 'scope-proposal' && (action === 'requeue' || action === 'waive')) {
+    console.error(
+      `--${action} is not valid for entry '${slug}': it is a scope proposal awaiting ` +
+      `review, which is --approve or --reject only. Use --approve to promote the ` +
+      `candidate plan, or --reject to send it to 'failed-plan'.`
     );
     process.exitCode = 1;
     return;
@@ -388,11 +558,35 @@ export function parkResolve(projectRoot, slug, flags = {}) {
     }
   }
 
+  const resolvedAt = new Date().toISOString();
+
+  // Scope-proposal writeback: --approve promotes every scene.proposedFiles
+  // path into the queue spec pair (spec.json's target_files array plus a
+  // provenance-annotated bullet per file in spec.md's scope section). Done
+  // BEFORE the scene write + status flip below — same ordering discipline as
+  // the park-snapshot reattach above — so a failed writeback leaves the
+  // entry fully 'halted-scope' (scene + status untouched) rather than
+  // half-advanced. --reject and the other verbs never reach this branch, so
+  // they perform no writeback.
+  if (action === 'approve') {
+    try {
+      applyScopeProposalWriteback(projectRoot, slug, scene.proposedFiles, resolvedAt);
+    } catch (err) {
+      console.error(
+        `Refusing to approve '${slug}': writing the approved scope proposal's files into ` +
+        `queue/${slug}/spec.json and spec.md failed, so the entry stays 'halted-scope' ` +
+        `(nothing was advanced).\n${err.message}`
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   // Scene first, then the status flip (the status is the commit point —
   // same ordering discipline as parking itself).
   scene.resolution = {
     action,
-    at: new Date().toISOString(),
+    at: resolvedAt,
     note: flags.note ?? null,
     consumedAt: null,
   };
@@ -402,7 +596,16 @@ export function parkResolve(projectRoot, slug, flags = {}) {
   // design: rewriting the whole entry would stomp the spec.md/spec.json
   // mtimes (breaking the divergence warning for a later re-park) and
   // re-persist content this process holds in memory.
-  const newStatus = action === 'reject' ? 'rejected' : 'pending';
+  // A rejected halted-scope entry (a rejected scope proposal) lands on
+  // 'failed-plan' — the same terminal status a normal plan failure reaches —
+  // rather than 'rejected', which is reserved for the parked/halted-review/
+  // halted-analyzer reject path.
+  let newStatus;
+  if (action === 'reject') {
+    newStatus = entry.status === 'halted-scope' ? 'failed-plan' : 'rejected';
+  } else {
+    newStatus = 'pending';
+  }
   updateQueueEntryStatus(projectRoot, slug, newStatus);
 
   // Leftover harness dir cleanup for the parked run. Done AFTER the scene
@@ -410,7 +613,7 @@ export function parkResolve(projectRoot, slug, flags = {}) {
   // below) so an aborted resolve never removes anything. Keyed strictly on
   // the recorded runId — no slug-matching — and skipped entirely when the
   // runId is the active run's pointer target.
-  // Every resolve verb (requeue/waive/reject) settles this run, so the
+  // Every resolve verb (requeue/waive/reject/approve) settles this run, so the
   // active-run pointer must be cleared too — but strictly only when it still
   // names THIS run (never clobber a pointer some other run has since claimed).
   // ORDER MATTERS (W-361): the clear must happen BEFORE

@@ -37,6 +37,13 @@
  *   AC3b — the project-root spec.json is NEVER copied into a queue entry nor
  *          unlinked for a non-.md input (a real root spec.json is staged and
  *          asserted to survive byte-identically and unreferenced).
+ *   AC4  — positive behavioral pin (mission's final task): a planning
+ *          failure carrying ruleId 'uncovered-token' (NOT 'scope-excursion')
+ *          drives the entry to queue status 'failed-plan' at the batch
+ *          failure boundary — the same failed-plan leg AC1/AC2 exercise via
+ *          untagged/CircuitBreakerError failures, now pinned for the
+ *          ruleId-bearing planning-lint case that must fall through rather
+ *          than detour to the halted-scope scope-proposal leg.
  *
  * Run: node test/test-batch-failure-input-boundary.js
  *
@@ -57,6 +64,7 @@ import { Pipeline } from '../src/orchestrator/core/pipeline.js';
 import { writeQueueEntry, readQueueEntry } from '../src/orchestrator/core/state.js';
 import { Analyzer } from '../src/orchestrator/agents/analyzer.js';
 import { readAnalysisHistory } from '../src/orchestrator/agents/analyzer.js';
+import { PlanLintError } from '../src/orchestrator/gates/plan-structure-lint.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -672,6 +680,55 @@ async function runRegressionBackfillProbe(_parentRoot) {
     cleanup(projectRoot);
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// AC4 — positive behavioral pin: an 'uncovered-token' planning failure drives
+//       the entry to 'failed-plan' at the batch failure boundary (distinct
+//       from a 'scope-excursion' ruleId, which detours to halted-scope).
+// ─────────────────────────────────────────────────────────────────────────
+
+await test("AC4: a planning failure carrying ruleId 'uncovered-token' drives the entry to queue status 'failed-plan'", async () => {
+  const root = makeGitRoot();
+  try {
+    const slug = 'uncovered-token-fail';
+    createQueueEntry(root, slug, { plan: MILESTONE_PLAN, validatedAt: '2026-06-01T00:00:00.000Z' });
+
+    const pipeline = new Pipeline(root, {
+      skipWorktreeCreation: true,
+      statusBar: false,
+      onLog: () => {},
+      onConfirm: async () => true,
+    });
+    pipeline.planner.verifyAssumptions = async () => [];
+    pipeline.planner.closeReusableSession = async () => {};
+    pipeline._reviewGate = async () => {};
+    // Restore the REAL _executeAllMilestones so the real entry-processing
+    // path — bootstrap → writeGlobalPlan → _executeAllMilestones →
+    // _executeMilestone → _executeMilestoneParallel → _planAndApproveMission
+    // — reaches the tag-and-rethrow plan-phase call site (planMission).
+    pipeline._executeAllMilestones = Pipeline.prototype._executeAllMilestones;
+    pipeline.planner.planMission = async () => {
+      throw new PlanLintError('uncovered token: some-token', 'uncovered-token', [
+        { ruleId: 'uncovered-token', taskId: '001-001-001-001', offending: 'some-token' },
+      ]);
+    };
+
+    const result = await pipeline.batchResume({});
+
+    assert.strictEqual(result.failed, 1, `expected failed:1, got ${result.failed}`);
+    const entry = readQueueEntry(root, slug);
+    assert.ok(entry, `entry '${slug}' must still exist in the queue`);
+    assert.strictEqual(entry.status, 'failed-plan',
+      `an 'uncovered-token' planning failure must land the entry at 'failed-plan' (got '${entry.status}') — it is NOT a scope-excursion, so no halted-scope detour applies`);
+
+    const planFailurePath = path.join(root, 'queue', slug, 'plan-failure.txt');
+    assert.ok(fs.existsSync(planFailurePath), 'plan-failure.txt must be written for the failed-plan leg');
+    assert.ok(fs.readFileSync(planFailurePath, 'utf8').includes('uncovered token'),
+      'plan-failure.txt must contain the thrown message');
+  } finally {
+    cleanup(root);
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────
 // AC3 — a non-.md dry-run input must be rejected and must NOT steal the

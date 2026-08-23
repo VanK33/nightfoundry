@@ -38,6 +38,15 @@
  * Assertions derive from the SPEC behavior, not the implementation; conflict /
  * preservation are checked by observable git/queue state.
  *
+ * Coexistence pin (added by the mission's final task): `_parkEntry` is the
+ * single leg-selection primitive behind every park/halt disposition — its
+ * `status` option ('parked' default, 'halted-review', 'halted-analyzer', or
+ * 'halted-scope' for a scope-proposal scene) is the ONLY thing that decides
+ * which on-disk leg an entry lands on. A third test case below drives
+ * `_parkEntry` directly (no batchResume, no git fixture needed) across all
+ * four scenes and asserts each resolves to its OWN distinct on-disk status —
+ * i.e. the four dispositions coexist without collision.
+ *
  * Run: node test/test-park-leg-selection.js
  */
 
@@ -254,6 +263,76 @@ await test('leg-selection: a true-failure halt DISCARDS the WIP — no refs/park
       'the tracked modification must be reverted to HEAD on the true-failure leg (WIP discarded)');
     assert.ok(!fs.existsSync(path.join(root, 'wip-new.js')),
       'the untracked new file must be removed on the true-failure leg (WIP discarded)');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── (c) Coexistence: four scenes each select their OWN distinct leg ─────────
+
+await test('leg-selection coexistence: a parked, a halted-review, a halted-analyzer and a scope-proposal scene each select their own distinct on-disk leg via _parkEntry', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-leg-coexist-'));
+  try {
+    const pipeline = new Pipeline(root, { onLog: () => {}, onConfirm: async () => true, statusBar: false });
+
+    const legs = [
+      {
+        slug: 'leg-parked',
+        opts: {},
+        scene: { site: 'analyzer-human', parkedAt: new Date().toISOString(), questions: ['Q'] },
+        expected: 'parked',
+      },
+      {
+        slug: 'leg-halted-review',
+        opts: { status: 'halted-review' },
+        scene: { site: 'reviewer-gate-human', parkedAt: new Date().toISOString(), questions: ['Q'] },
+        expected: 'halted-review',
+      },
+      {
+        slug: 'leg-halted-analyzer',
+        opts: { status: 'halted-analyzer' },
+        scene: { site: 'analyzer-human', parkedAt: new Date().toISOString(), questions: ['Q'] },
+        expected: 'halted-analyzer',
+      },
+      {
+        slug: 'leg-scope-proposal',
+        opts: { status: 'halted-scope' },
+        scene: {
+          site: 'plan-scope-lint',
+          kind: 'scope-proposal',
+          parkedAt: new Date().toISOString(),
+          proposedFiles: [],
+          candidatePlan: { milestones: [] },
+          candidatePlanDigest: 'fixture-digest',
+          missionId: '001-001',
+          lintArmsPending: [],
+        },
+        expected: 'halted-scope',
+      },
+    ];
+
+    for (const leg of legs) {
+      createQueueEntry(root, leg.slug);
+      pipeline._parkEntry({ slug: leg.slug }, leg.scene, leg.opts);
+    }
+
+    const resolved = legs.map((leg) => readStatus(root, leg.slug));
+    assert.deepStrictEqual(resolved, legs.map((leg) => leg.expected),
+      `each scene must resolve to its own leg (expected ${JSON.stringify(legs.map((l) => l.expected))}, got ${JSON.stringify(resolved)})`);
+
+    // The whole point: FOUR distinct dispositions coexist — none collide.
+    assert.strictEqual(new Set(resolved).size, 4,
+      `the parked / halted-review / halted-analyzer / halted-scope legs must be four DISTINCT statuses (got ${JSON.stringify(resolved)})`);
+
+    // Each scene also lands its scope-proposal 'kind' marker correctly (the
+    // discriminator batchResume's approved-scope-proposal recognition step
+    // keys on), while the other three legs stay kind-free.
+    const scopeScene = readParkScene(root, 'leg-scope-proposal');
+    assert.strictEqual(scopeScene.kind, 'scope-proposal', "the scope-proposal scene must carry kind:'scope-proposal'");
+    for (const slug of ['leg-parked', 'leg-halted-review', 'leg-halted-analyzer']) {
+      const scene = readParkScene(root, slug);
+      assert.notStrictEqual(scene.kind, 'scope-proposal', `'${slug}' must not carry a scope-proposal kind marker`);
+    }
   } finally {
     cleanup(root);
   }

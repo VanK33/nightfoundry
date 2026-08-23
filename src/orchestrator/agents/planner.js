@@ -997,6 +997,18 @@ Return structured JSON with your findings.`;
             `[plan-lint-retry] mission ${missionId}: corrective turn REJECTED by ${rejectedBy}; failing the plan`,
           );
         }
+        // Enrich ONLY the propagating scope-excursion error with the
+        // candidate plan just linted (this turn's `plan`, from
+        // _extractJson above) so downstream consumers (e.g. a scope-
+        // negotiation flow) can inspect what the planner proposed without
+        // re-deriving it. proposedBy is stamped here — at the producing
+        // site — so no downstream consumer needs to hardcode the
+        // proposer identity. Every other rule id (or no ruleId) passes
+        // through unchanged.
+        if (err?.ruleId === 'scope-excursion') {
+          err.candidatePlan = plan;
+          err.proposedBy = 'planner-excursion';
+        }
         throw err;
       }
       if (lintRetriesUsed > 0) {

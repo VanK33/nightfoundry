@@ -1,3 +1,14 @@
+## [0.2.20] - 2026-08-23 — Add scope-negotiation protocol v0 with human approval for excursions
+
+### New features
+- Plan-scope excursions carry structured {taskId, path} data for all excursion hits, preserved as candidate plans throughout approval cycle
+- New halted-scope queue status and scope-proposal park scene kind for parked excursion proposals
+- New `park resolve --approve` command authorizes proposed files and promotes preserved candidate plan without re-planning
+- Approved scope proposals append proposed files to queue entry's spec.json target_files and spec.md scope section with provenance annotation
+- Promotion re-runs pending lint arms deterministically as in-process JavaScript without invoking planner or spawning agent sessions
+- Park CLI enhancements: parkShow renders scope proposals; parkList includes halted-scope entries; --requeue/--waive refused on scope-proposal; --reject routes halted-scope to failed-plan
+- CLI flag and usage updates: added --approve to KNOWN_LONG_FLAGS and updated all park resolve usage strings
+
 ## [0.2.19] - 2026-08-20 — Operationalize replay with classification and golden corpus
 
 ### New features

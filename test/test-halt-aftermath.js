@@ -40,6 +40,12 @@
  *              swallowed (logged) and the original breaker error still
  *              propagates byte-identical.
  *   TC10     — scripts/run-tests.js registers this file in TEST_FILES.
+ *   TC11     — positive behavioral pin (mission's final task): a single-run
+ *              halt still records its halt evidence at
+ *              state.projectMeta.haltRecord (full {kind, site, eventId,
+ *              runId, at} shape) AND marks the run 'paused', asserted
+ *              directly (independent of TC1/TC3/TC4's larger fixtures) so
+ *              this coexistence is pinned on its own.
  *
  * Run: node test/test-halt-aftermath.js
  */
@@ -854,6 +860,37 @@ await test('TC9(i): a poisoned queue entry dir swallows the helper failure and t
 // ═════════════════════════════════════════════════════════════════════════
 // TC10 — registration
 // ═════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════
+// TC11 — positive behavioral pin: single-run halt records haltRecord + paused
+// ═════════════════════════════════════════════════════════════════════════
+
+await test("TC11: a single-run halt records its halt evidence at state.projectMeta.haltRecord and marks the run 'paused'", async () => {
+  const root = makeTmpRoot();
+  try {
+    const { harnessDir, taskId } = createTaskHarness(root, { prdPath: '' });
+    const pipeline = new Pipeline(root, { onLog: () => {}, onConfirm: async () => true, statusBar: false, skipWorktreeCreation: true });
+
+    const before = readGlobalState(harnessDir);
+    assert.notStrictEqual(before.globalStatus, 'paused', 'sanity: the run must not already be paused before the halt');
+    assert.strictEqual(before.projectMeta.haltRecord, undefined, 'sanity: no haltRecord must exist before the halt');
+
+    pipeline._persistHaltAftermath({ kind: 'reviewer-gate', site: 'reviewer-gate-human', eventId: 'tc11-event' });
+
+    const after = readGlobalState(harnessDir);
+    assert.strictEqual(after.globalStatus, 'paused', "a single-run halt must mark the run 'paused'");
+
+    const rec = after.projectMeta.haltRecord;
+    assert.ok(rec, 'the halt evidence must be recorded at state.projectMeta.haltRecord');
+    assert.strictEqual(rec.kind, 'reviewer-gate');
+    assert.strictEqual(rec.site, 'reviewer-gate-human');
+    assert.strictEqual(rec.eventId, 'tc11-event');
+    assert.ok(rec.at && !Number.isNaN(new Date(rec.at).getTime()), 'haltRecord.at must be a parseable timestamp');
+    void taskId;
+  } finally {
+    cleanup(root);
+  }
+});
 
 await test('TC10: scripts/run-tests.js registers test/test-halt-aftermath.js in TEST_FILES', async () => {
   const runTestsPath = path.resolve(__dirname, '../scripts/run-tests.js');

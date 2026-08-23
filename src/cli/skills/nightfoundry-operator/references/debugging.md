@@ -41,7 +41,7 @@ When it is a single task that keeps repeatedly failing verification and tripping
 
 - **Symptom:** a spec was queued for batch processing but its status doesn't seem to change over time.
 - **Read:** `queue/<slug>/status` for its current one-line status, and `queue/<slug>/plan.json` for the plan that was built at validation time.
-- **Act:** run `nightfoundry queue list` to see all entries and their statuses at a glance; if an entry is `parked`, `halted-review`, or `halted-analyzer`, follow flow b or c above via `nightfoundry park show <slug>` first.
+- **Act:** run `nightfoundry queue list` to see all entries and their statuses at a glance; if an entry is `parked`, `halted-review`, `halted-analyzer`, or `halted-scope`, follow flow b or c above via `nightfoundry park show <slug>` first. For `halted-scope`, `nightfoundry park show <slug>` renders the pending scope proposal — the proposed files with a per-file reason for each, the mission id it belongs to, and the preserved candidate plan. Resolve it with `nightfoundry park resolve <slug> --approve` to authorize the proposed files (appended to the queue entry's spec copies) and promote the preserved candidate plan straight into execution on the next `nightfoundry resume --batch`, without re-invoking the planner; or `--reject` (optionally with `--note "<text>"`) to route the entry to `failed-plan`. `--requeue` and `--waive` are refused on a `halted-scope` entry.
 
 ## Flow e: reported cost or usage looks wrong
 

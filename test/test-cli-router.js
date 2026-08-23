@@ -29,6 +29,9 @@
  *          render 'cc-orch' (not 'nightfoundry')
  *   TC29 — invoked through a shim/symlink named 'nightfoundry', version and
  *          help render 'nightfoundry'
+ *   TC30 — 'park resolve <slug> --approve' is accepted by parseArgs (no
+ *          'Unknown option: --approve') and routes to parkResolve; 'park
+ *          bogus' and 'help' both advertise --approve in their usage lines
  */
 import assert from 'assert';
 import fs from 'fs';
@@ -565,7 +568,7 @@ const MISSING_ARG_CASES = [
   { tc: 'TC19', args: ['queue', 'retry'], usage: 'Usage: cc-orch queue retry <slug>' },
   { tc: 'TC20', args: ['queue', 'remove'], usage: 'Usage: cc-orch queue remove <slug>' },
   { tc: 'TC21', args: ['park', 'show'], usage: 'Usage: cc-orch park show <slug>' },
-  { tc: 'TC22', args: ['park', 'resolve'], usage: 'Usage: cc-orch park resolve <slug>' },
+  { tc: 'TC22', args: ['park', 'resolve'], usage: 'Usage: cc-orch park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]' },
   { tc: 'TC23', args: ['archive', 'show'], usage: 'Usage: cc-orch archive show <id>' },
   { tc: 'TC24', args: ['archive', 'diff', 'only-one'], usage: 'Usage: cc-orch archive diff <a> <b>' },
   { tc: 'TC25', args: ['usage', 'compare', 'only-one'], usage: 'Usage: cc-orch usage compare <a> <b>' },
@@ -685,6 +688,45 @@ await test("TC29: invoked via a 'nightfoundry' shim, version and help render 'ni
     assert.ok(
       helpCombined.includes('nightfoundry run <spec.md>'),
       `Expected help output to contain "nightfoundry run <spec.md>", got: ${helpCombined.trim()}`
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC30 — 'park resolve <slug> --approve' is accepted by parseArgs and routes
+// to parkResolve; 'park bogus' and 'help' advertise --approve
+// ---------------------------------------------------------------------------
+await test("TC30: 'park resolve <slug> --approve' is accepted by parseArgs and advertised in usage/help", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-router-test-'));
+  try {
+    const resolveResult = spawnCli(['park', 'resolve', 'some-slug', '--approve'], { cwd: tmpDir });
+    const resolveCombined = (resolveResult.stdout || '') + (resolveResult.stderr || '');
+
+    assert.ok(
+      !resolveCombined.includes('Unknown option: --approve'),
+      `Expected --approve to be accepted by parseArgs for 'park resolve', got: ${resolveCombined.trim()}`
+    );
+
+    const bogusResult = spawnCli(['park', 'bogus'], { cwd: tmpDir });
+    const bogusCombined = (bogusResult.stdout || '') + (bogusResult.stderr || '');
+
+    assert.ok(
+      bogusCombined.includes(
+        'Usage: cc-orch park list|show <slug>|resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]'
+      ),
+      `Expected 'park bogus' usage line to advertise --approve, got: ${bogusCombined.trim()}`
+    );
+
+    const helpResult = spawnCli(['help'], { cwd: tmpDir });
+    const helpCombined = (helpResult.stdout || '') + (helpResult.stderr || '');
+
+    assert.ok(
+      helpCombined.includes(
+        'park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]'
+      ),
+      `Expected help output to advertise --approve for park resolve, got: ${helpCombined.trim()}`
     );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -477,6 +477,11 @@ export function writeVerifyJson(harnessDir, task) {
  * The canonical set of queue entry status strings. Any code that reads or
  * writes a queue entry's `status` field should restrict itself to these
  * values.
+ *
+ * `halted-scope` is the scope-proposal park status: it marks an entry parked
+ * pending a human decision on a proposed scope change/negotiation, distinct
+ * from `halted-review` (human review halt) and `halted-analyzer` (analyzer
+ * halt).
  */
 export const VALID_QUEUE_STATUSES = Object.freeze([
   'pending',
@@ -488,6 +493,7 @@ export const VALID_QUEUE_STATUSES = Object.freeze([
   'halted-review',
   'halted-analyzer',
   'rejected',
+  'halted-scope',
 ]);
 
 /**

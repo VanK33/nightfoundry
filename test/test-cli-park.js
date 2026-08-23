@@ -46,6 +46,24 @@
  *          deleted) — list exits 0 with a placeholder line, show degrades
  *          gracefully (no raw ENOENT), resolve refuses with an explanatory
  *          error and leaves state unchanged.
+ *   TC15 — halted-analyzer entries (analyzer-closure spec, AC9): list
+ *          includes them, resolve accepts --requeue/--reject and refuses
+ *          --waive with an explanatory error.
+ *   TC-AP1 — (scope-negotiation-protocol spec, AC2) park resolve --approve on
+ *          a halted-scope/scope-proposal entry appends every proposedFiles
+ *          path to spec.json target_files (deduped against an
+ *          already-declared path) and one provenance-annotated bullet per
+ *          file to spec.md's scope section, in the same resolve; spec.json's
+ *          other top-level keys retain their fixture values
+ *   TC-AP2 — park resolve --reject --note '<text>' on a halted-scope entry:
+ *          status → 'failed-plan', scene.resolution {action:'reject', note},
+ *          and the proposed paths never land in spec.json target_files
+ *   TC-AP3 — --requeue/--waive on a scope-proposal scene are both refused
+ *          with an explanatory message naming --approve/--reject; status
+ *          stays 'halted-scope', scene.resolution stays null
+ *   TC-AP4 — --approve refuses a 'parked' (non-halted-scope) entry; park show
+ *          renders the proposal (files + reasons + taskIds, proposedBy,
+ *          missionId, lintArmsPending); park list shows a halted-scope row
  *
  * Run: node test/test-cli-park.js
  *
@@ -60,10 +78,12 @@ import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { writeQueueEntry, readQueueEntry } from '../src/orchestrator/core/state.js';
+import { writeQueueEntry, readQueueEntry, stateToDecomp } from '../src/orchestrator/core/state.js';
 import { Pipeline } from '../src/orchestrator/core/pipeline.js';
+import { pendingLintArms } from '../src/orchestrator/gates/plan-scope-lint.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, '../src/cli/index.js');
@@ -110,14 +130,225 @@ function createQueueEntry(root, slug, {
   status = 'parked',
   validatedAt = new Date().toISOString(),
   plan = { milestones: [], assumptions: [] },
+  spec = SPEC_MD,
+  specJson = SPEC_JSON,
 } = {}) {
   writeQueueEntry(root, slug, {
-    spec: SPEC_MD,
+    spec,
     plan,
     validatedAt,
     status,
-    specJson: SPEC_JSON,
+    specJson,
   });
+}
+
+// ── scope-proposal (halted-scope) fixtures — TC-AP1..TC-AP4 ────────────────
+// (scope-negotiation-protocol.spec.md Scope item 4 / AC2). Unlike the
+// assumption-gate scene above, a scope-proposal scene has no round1/round2/
+// appliedSpecEdits/questions — its shape is the one pipeline.js's
+// batchResume actually writes at the scope-excursion park site
+// (pipeline.js ~:2091): site/kind/parkedAt/proposedFiles/candidatePlan/
+// missionId/lintArmsPending/proposedBy, plus the resolve-owned
+// previousResolutions/resolution pair every scene carries.
+
+// A spec.md with a real "## Scope" heading — SPEC_MD above only has
+// "## Goals", so the writeback's scope-section locator (matching
+// `#{1,6} Scope ...`) would fail against it. Existing tests are unaffected:
+// this constant is new and only used by the TC-AP* cases below.
+const SCOPE_SPEC_MD = `# Test Spec
+
+This is a test spec for the park CLI scope-proposal flow.
+
+## Scope
+- existing/declared.js
+
+## Other Section
+- irrelevant
+`;
+
+function scopeSpecJson(targetFiles = ['existing/declared.js']) {
+  return JSON.stringify({
+    goal: 'scope proposal fixture goal',
+    target_files: targetFiles,
+    acceptance_criteria: ['AC fixture'],
+    constraints: ['constraint fixture'],
+  });
+}
+
+function makeScopeProposalScene(overrides = {}) {
+  return {
+    site: 'plan-scope-lint',
+    kind: 'scope-proposal',
+    parkedAt: new Date(Date.now() - DAY).toISOString(), // 1 day ago
+    proposedFiles: [
+      { path: 'existing/declared.js', reason: 'ALREADY-DECLARED-DEDUP-CHECK', taskIds: ['001-001-001-001'] },
+      { path: 'src/new/file-one.js', reason: '"src/new/file-one.js" is outside the spec-declared scope set', taskIds: ['001-001-001-002'] },
+      { path: 'src/new/file-two.js', reason: '"src/new/file-two.js" is outside the spec-declared scope set', taskIds: ['001-001-001-003'] },
+    ],
+    candidatePlan: { milestones: [{ id: 'm1', missions: [{ id: '001-001', tasks: [] }] }] },
+    missionId: '001-001',
+    lintArmsPending: ['uncovered-token', 'structure-caps'],
+    proposedBy: 'planner-excursion',
+    previousResolutions: [],
+    resolution: null,
+    ...overrides,
+  };
+}
+
+// ── Promotion fixtures — TC-PR1..TC-PR4 ─────────────────────────────────────
+// (scope-negotiation-protocol.spec.md Scope item 4 / AC2, "Promotion without
+// re-planning"). Unlike TC-AP1..TC-AP4 above (which exercise the CLI's
+// approve/reject/refuse verbs in isolation against a hand-written scene),
+// these cases drive the real batchResume end-to-end from an ALREADY-APPROVED
+// scope-proposal entry (status 'pending', scene.resolution.action ===
+// 'approve', spec.json/spec.md already carrying the approved paths — the
+// post-`park resolve --approve` state) and assert on the PROMOTION leg: the
+// preserved candidatePlan is loaded and used directly (the planner is never
+// re-invoked), the still-pending lint arms are re-run deterministically
+// against the grown declared set, and the batch proceeds into execution with
+// zero LLM agent sessions.
+
+const PROMOTION_MISSION_ID = '001-001';
+const PROMOTION_SUBMISSION_ID = '001-001-001';
+
+// Stable sha256 content digest — mirrors Pipeline#_candidatePlanDigest
+// (pipeline.js ~:2813) exactly, so a fixture's stamped candidatePlanDigest
+// matches what batchResume's approved-scope-proposal recognition recomputes
+// off the persisted candidatePlan. Not imported from pipeline.js (a private
+// instance method) — the formula is trivial and documented at its producing
+// site.
+function candidatePlanDigest(candidatePlan) {
+  return crypto.createHash('sha256').update(JSON.stringify(candidatePlan)).digest('hex');
+}
+
+// A minimal, self-consistent mission decomposition: one sub-mission with NO
+// tasks. Deliberately task-less so promotion has literally nothing to
+// execute (no executor/agent sessions are needed to reach a fully-completed
+// batch run), while still exercising every promotion-specific step (skip
+// planMission, write mission state, re-run lintArmsPending, proceed to
+// milestone completion).
+function makePromotedCandidatePlan(overrides = {}) {
+  return {
+    subMissions: [
+      {
+        id: PROMOTION_SUBMISSION_ID,
+        description: 'Promoted sub-mission (approved scope proposal)',
+        tasks: [],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+// Writes an ALREADY-APPROVED scope-proposal queue entry: status 'pending',
+// spec.json/spec.md already carrying `targetFiles` (the post-approve
+// writeback state — this file exercises the PROMOTION leg only, so the
+// approve writeback itself, already covered by TC-AP1, is folded directly
+// into the fixture rather than re-driven through the CLI), and a park.json
+// scene whose resolution is 'approve' and whose candidatePlanDigest matches
+// the persisted candidatePlan (the "approve what you saw" identity check at
+// pipeline.js ~:1674-1709).
+function writeApprovedScopeProposalFixture(root, slug, {
+  missionId = PROMOTION_MISSION_ID,
+  candidatePlan,
+  lintArmsPending,
+  proposedFiles,
+  targetFiles,
+} = {}) {
+  createQueueEntry(root, slug, {
+    status: 'pending',
+    spec: SCOPE_SPEC_MD,
+    specJson: scopeSpecJson(targetFiles),
+    plan: {
+      milestones: [{
+        id: 'm1',
+        description: 'Promotion milestone',
+        missions: [{ id: missionId, description: `Mission ${missionId}` }],
+      }],
+      assumptions: [],
+      scopeItems: [],
+      scopeMapping: [],
+    },
+  });
+
+  const scene = {
+    site: 'plan-scope-lint',
+    kind: 'scope-proposal',
+    parkedAt: new Date(Date.now() - DAY).toISOString(),
+    proposedFiles,
+    candidatePlan,
+    missionId,
+    lintArmsPending,
+    proposedBy: 'planner-excursion',
+    previousResolutions: [],
+    resolution: {
+      action: 'approve',
+      at: new Date(Date.now() - DAY / 2).toISOString(),
+      note: null,
+      consumedAt: null,
+    },
+    candidatePlanDigest: candidatePlanDigest(candidatePlan),
+  };
+  writeScene(root, slug, scene);
+  return scene;
+}
+
+// Drives the real batchResume against `root`'s single queued entry with:
+//   - a planMission stub that THROWS on any invocation (so a single call
+//     fails the test outright) and counts its own invocations;
+//   - every downstream LLM-agent seam (reviewer gate, mission regression,
+//     milestone regression) neutralized so a fully-promoted, task-less
+//     mission can drain to a completed, archived batch run with ZERO agent
+//     sessions — the coverage/hard-check gates are also skipped since this
+//     file's fixture spec.json carries no checkable acceptance criteria for
+//     them to act on;
+//   - onLog captured, so promotion-time log output (e.g. per-lint-arm
+//     progress) is inspectable by assertion.
+// Returns { pipeline, planMissionCalls, logs, sessionsBefore, sessionsAfter }.
+async function runPromotionBatch(root) {
+  let planMissionCalls = 0;
+  const logs = [];
+  const pipeline = new Pipeline(root, {
+    skipWorktreeCreation: true,
+    noReview: true,
+    onLog: (msg) => { logs.push(String(msg)); },
+    onConfirm: async () => true,
+    archive: async () => 'fake-archive-dir',
+  });
+  // Coverage/hard-check gates are irrelevant to the promotion contract under
+  // test and would otherwise require a fully-checkable spec.json fixture.
+  pipeline._skipCoverageGate = true;
+  // Mission-level regression (Phase C of _executeMilestoneParallel) and
+  // milestone-level regression (the final delivery gate) both spawn a real
+  // verifier agent session unconditionally — neutralize both so a
+  // task-less promoted mission can drain to completion with zero sessions.
+  pipeline._missionRegression = async () => {};
+  pipeline.verifier.verifyRegression = async () => ({
+    verified: true,
+    structured: { result: 'PASSED', checks: [] },
+    report: 'stub: verifyRegression neutralized for promotion test',
+    reportPath: null,
+    isStub: false,
+  });
+  pipeline.planner.planMission = async () => {
+    planMissionCalls++;
+    throw new Error(
+      'fixture: planMission must never be invoked for an approved, digest-matching scope-proposal promotion'
+    );
+  };
+  const sessionsBefore = pipeline.tokenTracker.getTotalUsage().sessionCount;
+  await pipeline.batchResume({});
+  const sessionsAfter = pipeline.tokenTracker.getTotalUsage().sessionCount;
+  return { pipeline, planMissionCalls, logs, sessionsBefore, sessionsAfter };
+}
+
+// Reads back a mission's persisted decomposition (the same stateToDecomp
+// inverse resume call sites use) from the harness dir the pipeline last
+// pointed at.
+function readPromotedMissionDecomp(pipeline, missionId) {
+  const stateFile = path.join(pipeline.harnessDir, 'state', `mission-${missionId}.json`);
+  if (!fs.existsSync(stateFile)) return null;
+  return stateToDecomp(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
 }
 
 // Spec-pinned scene shape (Scope item 1).
@@ -792,6 +1023,401 @@ await test("TC15: park list includes halted-analyzer entries; resolve accepts --
       "halted-analyzer --reject must transition to 'rejected'");
     assert.ok(fs.existsSync(path.join(root, 'queue', 'halt-an-rj')),
       'the rejected entry directory must remain on disk (terminal close, no GC)');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-AP1: park resolve --approve — spec.json + spec.md writeback ─────────
+// (scope-negotiation-protocol.spec.md Scope item 4 / AC2). Written by the
+// INDEPENDENT test author against the spec contract. proposedFiles carries
+// one already-declared path (dedup check) plus two new paths.
+
+await test('TC-AP1: park resolve --approve appends proposedFiles to spec.json target_files (deduped) and one provenance bullet per file to spec.md scope section', async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'scope-approve', {
+      status: 'halted-scope',
+      spec: SCOPE_SPEC_MD,
+      specJson: scopeSpecJson(['existing/declared.js']),
+    });
+    const scene = makeScopeProposalScene();
+    writeScene(root, 'scope-approve', scene);
+
+    const res = runCli(root, ['park', 'resolve', 'scope-approve', '--approve']);
+    assert.strictEqual(res.status, 0,
+      `resolve --approve must succeed on a halted-scope entry (got exit ${res.status}; output: ${res.out.trim().slice(0, 300)})`);
+
+    const specJsonPath = path.join(root, 'queue', 'scope-approve', 'spec.json');
+    const specJson = JSON.parse(fs.readFileSync(specJsonPath, 'utf8'));
+
+    // Every proposedFiles path present, and the already-declared path is not
+    // duplicated (3 distinct paths in, 3 distinct paths out — not 4).
+    assert.deepStrictEqual(
+      [...specJson.target_files].sort(),
+      ['existing/declared.js', 'src/new/file-one.js', 'src/new/file-two.js'].sort(),
+      `target_files must contain every proposed path with no duplicate for the already-declared one (got ${JSON.stringify(specJson.target_files)})`
+    );
+    assert.strictEqual(
+      specJson.target_files.filter((p) => p === 'existing/declared.js').length,
+      1,
+      'the already-declared path must appear exactly once in target_files, never duplicated'
+    );
+
+    // Every other top-level spec.json key retains its fixture value.
+    assert.strictEqual(specJson.goal, 'scope proposal fixture goal',
+      "spec.json's 'goal' key must retain its fixture value");
+    assert.deepStrictEqual(specJson.acceptance_criteria, ['AC fixture'],
+      "spec.json's 'acceptance_criteria' key must retain its fixture value");
+    assert.deepStrictEqual(specJson.constraints, ['constraint fixture'],
+      "spec.json's 'constraints' key must retain its fixture value");
+
+    // One provenance-annotated bullet per proposedFiles entry (all 3,
+    // including the already-declared one — the spec.md bullet is per
+    // proposed file, independent of the spec.json dedup) in the scope
+    // section of spec.md.
+    const specMd = fs.readFileSync(path.join(root, 'queue', 'scope-approve', 'spec.md'), 'utf8');
+    for (const f of scene.proposedFiles) {
+      const bulletRe = new RegExp(
+        `^- ${f.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*approved via scope proposal`,
+        'm'
+      );
+      assert.ok(bulletRe.test(specMd),
+        `spec.md must contain a provenance-annotated bullet for '${f.path}' in the scope section (spec.md:\n${specMd})`);
+    }
+    const bulletCount = (specMd.match(/approved via scope proposal/g) || []).length;
+    assert.strictEqual(bulletCount, scene.proposedFiles.length,
+      `spec.md must gain exactly one provenance bullet per proposedFiles entry (got ${bulletCount} bullets for ${scene.proposedFiles.length} proposed files)`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-AP2: park resolve --reject --note on a halted-scope entry ───────────
+
+await test("TC-AP2: park resolve --reject --note on a halted-scope entry → status 'failed-plan', note recorded, proposed paths never land in target_files", async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'scope-reject', {
+      status: 'halted-scope',
+      spec: SCOPE_SPEC_MD,
+      specJson: scopeSpecJson(['existing/declared.js']),
+    });
+    const scene = makeScopeProposalScene();
+    writeScene(root, 'scope-reject', scene);
+
+    const res = runCli(root, ['park', 'resolve', 'scope-reject', '--reject', '--note', 'the proposed files are out of scope']);
+    assert.strictEqual(res.status, 0,
+      `resolve --reject must succeed on a halted-scope entry (got exit ${res.status}; output: ${res.out.trim().slice(0, 300)})`);
+
+    assert.strictEqual(readStatus(root, 'scope-reject'), 'failed-plan',
+      "resolve --reject on a halted-scope entry must transition status to 'failed-plan'");
+
+    const resolvedScene = readScene(root, 'scope-reject');
+    assert.ok(resolvedScene && resolvedScene.resolution,
+      'the reject resolution must be written into the scene');
+    assert.strictEqual(resolvedScene.resolution.action, 'reject',
+      `resolution.action expected 'reject', got '${resolvedScene.resolution.action}'`);
+    assert.strictEqual(resolvedScene.resolution.note, 'the proposed files are out of scope',
+      `--note must be persisted into resolution.note (got ${JSON.stringify(resolvedScene.resolution.note)})`);
+
+    // The proposed paths must never land in spec.json target_files on reject.
+    const specJson = JSON.parse(fs.readFileSync(path.join(root, 'queue', 'scope-reject', 'spec.json'), 'utf8'));
+    assert.deepStrictEqual(specJson.target_files, ['existing/declared.js'],
+      `a rejected scope proposal must leave target_files exactly as the fixture declared it (got ${JSON.stringify(specJson.target_files)})`);
+    assert.ok(!specJson.target_files.includes('src/new/file-one.js') && !specJson.target_files.includes('src/new/file-two.js'),
+      'the proposed (unapproved) paths must not appear in target_files after a reject');
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-AP3: --requeue/--waive refused on a scope-proposal scene ────────────
+
+await test("TC-AP3: --requeue and --waive on a scope-proposal scene are both refused with an explanatory message naming --approve/--reject; status stays 'halted-scope', resolution stays null", async () => {
+  const root = makeTmpRoot();
+  try {
+    for (const verb of ['requeue', 'waive']) {
+      const slug = `scope-${verb}`;
+      createQueueEntry(root, slug, {
+        status: 'halted-scope',
+        spec: SCOPE_SPEC_MD,
+        specJson: scopeSpecJson(['existing/declared.js']),
+      });
+      writeScene(root, slug, makeScopeProposalScene());
+
+      const res = runCli(root, ['park', 'resolve', slug, `--${verb}`]);
+      assertNonSilentFailure(res, `resolve --${verb} on a scope-proposal scene`);
+      assert.ok(/--approve/.test(res.out) && /--reject/.test(res.out),
+        `the refusal for --${verb} must explain that only --approve/--reject apply to a scope proposal (output: ${res.out.trim().slice(0, 300)})`);
+
+      assert.strictEqual(readStatus(root, slug), 'halted-scope',
+        `a refused --${verb} must leave the status unchanged`);
+      const scene = readScene(root, slug);
+      assert.strictEqual(scene.resolution, null,
+        `a refused --${verb} must not write a resolution into the scene`);
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-AP4: --approve refused on 'parked'; show/list render the proposal ───
+
+await test("TC-AP4: --approve is refused for a 'parked' (non-halted-scope) entry; park show renders the proposal; park list shows a halted-scope row", async () => {
+  const root = makeTmpRoot();
+  try {
+    // --approve on an ordinary parked entry (not halted-scope) must be refused.
+    createQueueEntry(root, 'plain-parked-ap4', { status: 'parked' });
+    writeScene(root, 'plain-parked-ap4', makeScene());
+    const resApprove = runCli(root, ['park', 'resolve', 'plain-parked-ap4', '--approve']);
+    assertNonSilentFailure(resApprove, '--approve on a parked (non-halted-scope) entry');
+    assert.strictEqual(readStatus(root, 'plain-parked-ap4'), 'parked',
+      'a refused --approve must leave the status unchanged');
+    const plainScene = readScene(root, 'plain-parked-ap4');
+    assert.strictEqual(plainScene.resolution, null,
+      'a refused --approve must not write a resolution into the scene');
+
+    // park show: proposed files (with reasons + taskIds), proposedBy,
+    // missionId, lintArmsPending.
+    createQueueEntry(root, 'scope-show', {
+      status: 'halted-scope',
+      spec: SCOPE_SPEC_MD,
+      specJson: scopeSpecJson(['existing/declared.js']),
+    });
+    const scene = makeScopeProposalScene();
+    writeScene(root, 'scope-show', scene);
+
+    const resShow = runCli(root, ['park', 'show', 'scope-show']);
+    assert.strictEqual(resShow.status, 0,
+      `park show must exit 0 for a halted-scope entry (got ${resShow.status}; output: ${resShow.out.trim().slice(0, 300)})`);
+    for (const f of scene.proposedFiles) {
+      assert.ok(resShow.stdout.includes(f.path),
+        `park show must print proposed file path '${f.path}'`);
+      assert.ok(resShow.stdout.includes(f.reason),
+        `park show must print the reason for '${f.path}'`);
+      for (const taskId of f.taskIds) {
+        assert.ok(resShow.stdout.includes(taskId),
+          `park show must print taskId '${taskId}' for '${f.path}'`);
+      }
+    }
+    assert.ok(resShow.stdout.includes(scene.proposedBy),
+      "park show must print the scene's proposedBy");
+    assert.ok(resShow.stdout.includes(scene.missionId),
+      "park show must print the scene's missionId");
+    for (const arm of scene.lintArmsPending) {
+      assert.ok(resShow.stdout.includes(arm),
+        `park show must print the pending lint arm '${arm}'`);
+    }
+
+    // park list: a halted-scope row for the same entry.
+    const resList = runCli(root, ['park', 'list']);
+    assert.strictEqual(resList.status, 0,
+      `park list must exit 0 (got ${resList.status}; output: ${resList.out.trim().slice(0, 300)})`);
+    assert.ok(resList.stdout.includes('scope-show'),
+      'park list must include the halted-scope entry slug');
+    assert.ok(resList.stdout.includes('halted-scope'),
+      "park list must show the 'halted-scope' status for the entry");
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-PR1..TC-PR4: promotion without re-planning (batchResume) ────────────
+// (scope-negotiation-protocol.spec.md Scope item 5 / AC2's execution half —
+// "promotion never invokes the planner (throwing-stub assertion) and re-runs
+// the pending lint arms; a promotion that hits a fresh excursion re-parks
+// with a new proposal"). Written by the INDEPENDENT test author against the
+// spec contract, before the promotion-consuming implementation exists
+// (batchResume's approved-scope-proposal RECOGNITION at pipeline.js ~:1674
+// already populates `this._promotedScopePlans`, but nothing yet consumes it
+// at the `_planAndApproveMission` planMission call site) — TC-PR1/PR2/PR4
+// are expected to fail behaviorally (the throwing planMission stub gets
+// invoked for real) until that consuming logic lands. TC-PR3 exercises the
+// ALREADY-IMPLEMENTED candidatePlanDigest invalidation leg and is expected
+// to pass at every HEAD.
+
+await test('TC-PR1: an approved scope-proposal entry resuming under batchResume promotes without invoking the planner, writing the persisted candidatePlan verbatim as the mission decomposition', async () => {
+  const root = makeTmpRoot();
+  try {
+    const candidatePlan = makePromotedCandidatePlan();
+    const proposedFiles = [
+      { path: 'src/new/file-one.js', reason: '"src/new/file-one.js" is outside the spec-declared scope set', taskIds: ['001-001-001-001'] },
+    ];
+    const lintArmsPending = pendingLintArms('scope-excursion');
+    writeApprovedScopeProposalFixture(root, 'promo-pr1', {
+      candidatePlan,
+      lintArmsPending,
+      proposedFiles,
+      targetFiles: ['existing/declared.js', 'src/new/file-one.js'],
+    });
+
+    const { pipeline, planMissionCalls } = await runPromotionBatch(root);
+
+    assert.strictEqual(planMissionCalls, 0,
+      `promotion must never invoke planMission for an approved, digest-matching scope proposal (it was invoked ${planMissionCalls} time(s))`);
+
+    const writtenDecomp = readPromotedMissionDecomp(pipeline, PROMOTION_MISSION_ID);
+    assert.ok(writtenDecomp,
+      `promotion must write a mission decomposition to state/mission-${PROMOTION_MISSION_ID}.json (none found under ${pipeline.harnessDir})`);
+    assert.deepStrictEqual(writtenDecomp, candidatePlan,
+      `the mission decomposition written to state must deep-equal the scene's candidatePlan (got ${JSON.stringify(writtenDecomp)}, expected ${JSON.stringify(candidatePlan)})`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test('TC-PR2: promotion re-runs every pending lint arm named in the scene and issues zero agent-session calls', async () => {
+  const root = makeTmpRoot();
+  try {
+    const candidatePlan = makePromotedCandidatePlan();
+    const proposedFiles = [
+      { path: 'src/new/file-a.js', reason: '"src/new/file-a.js" is outside the spec-declared scope set', taskIds: ['001-001-001-001'] },
+      { path: 'src/new/file-b.js', reason: '"src/new/file-b.js" is outside the spec-declared scope set', taskIds: ['001-001-001-002'] },
+    ];
+    const lintArmsPending = pendingLintArms('scope-excursion');
+    assert.ok(lintArmsPending.length > 0, 'fixture sanity: a scope-excursion park must leave ≥1 lint arm pending');
+    writeApprovedScopeProposalFixture(root, 'promo-pr2', {
+      candidatePlan,
+      lintArmsPending,
+      proposedFiles,
+      targetFiles: ['existing/declared.js', 'src/new/file-a.js', 'src/new/file-b.js'],
+    });
+
+    const { planMissionCalls, logs, sessionsBefore, sessionsAfter } = await runPromotionBatch(root);
+
+    assert.strictEqual(planMissionCalls, 0,
+      `promotion must never invoke planMission (it was invoked ${planMissionCalls} time(s))`);
+
+    const combinedLog = logs.join('\n');
+    for (const armId of lintArmsPending) {
+      assert.ok(combinedLog.includes(armId),
+        `promotion must re-run pending lint arm '${armId}' — expected its arm id to be observable in the promotion log ` +
+        `(log:\n${combinedLog.slice(0, 2000)})`);
+    }
+
+    assert.strictEqual(sessionsAfter - sessionsBefore, 0,
+      `promotion must issue zero agent-session calls (session count went from ${sessionsBefore} to ${sessionsAfter})`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test("TC-PR3: mutating the persisted candidatePlan between park and promotion invalidates the approval — status stays 'halted-scope' with a freshly written park.json", async () => {
+  const root = makeTmpRoot();
+  try {
+    const candidatePlan = makePromotedCandidatePlan();
+    const proposedFiles = [
+      { path: 'src/new/file-one.js', reason: '"src/new/file-one.js" is outside the spec-declared scope set', taskIds: ['001-001-001-001'] },
+    ];
+    const lintArmsPending = pendingLintArms('scope-excursion');
+    writeApprovedScopeProposalFixture(root, 'promo-pr3', {
+      candidatePlan,
+      lintArmsPending,
+      proposedFiles,
+      targetFiles: ['existing/declared.js', 'src/new/file-one.js'],
+    });
+
+    // Mutate the PERSISTED candidatePlan on disk (simulating a hand-edit
+    // after approval) WITHOUT recomputing candidatePlanDigest — the digest
+    // stamped at park/approve time now describes a plan that no longer
+    // matches what's actually on disk.
+    const mutatedScene = readScene(root, 'promo-pr3');
+    mutatedScene.candidatePlan = {
+      subMissions: [
+        { id: PROMOTION_SUBMISSION_ID, description: 'MUTATED after approval', tasks: [] },
+      ],
+    };
+    writeScene(root, 'promo-pr3', mutatedScene);
+    const beforeMtime = fs.statSync(path.join(root, 'queue', 'promo-pr3', 'park.json')).mtimeMs;
+
+    const { planMissionCalls } = await runPromotionBatch(root);
+
+    assert.strictEqual(planMissionCalls, 0,
+      `an invalidated (digest-mismatched) promotion must never invoke planMission either (it was invoked ${planMissionCalls} time(s))`);
+
+    assert.strictEqual(readStatus(root, 'promo-pr3'), 'halted-scope',
+      "a candidatePlan mutated between park and promotion must leave the entry at status 'halted-scope', not promote it");
+
+    const reparkedScene = readScene(root, 'promo-pr3');
+    assert.ok(reparkedScene, 'a fresh park.json scene must exist after the invalidated promotion');
+    assert.strictEqual(reparkedScene.kind, 'scope-proposal',
+      'the re-park must still carry a scope-proposal scene');
+    assert.strictEqual(reparkedScene.resolution, null,
+      'the freshly re-parked scene must be unresolved (awaiting a fresh human decision)');
+    assert.ok(
+      Array.isArray(reparkedScene.previousResolutions) &&
+      reparkedScene.previousResolutions.some((r) => r && r.action === 'approve'),
+      `the prior 'approve' resolution must be preserved in previousResolutions (got ${JSON.stringify(reparkedScene.previousResolutions)})`
+    );
+    const afterMtime = fs.statSync(path.join(root, 'queue', 'promo-pr3', 'park.json')).mtimeMs;
+    assert.ok(afterMtime >= beforeMtime,
+      'park.json must be freshly (re-)written by the invalidated promotion, not left untouched');
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test("TC-PR4: a promotion whose re-run lint arms hit a fresh excursion re-parks at 'halted-scope' with a new scope-proposal scene naming the new offending paths", async () => {
+  const root = makeTmpRoot();
+  try {
+    // The approved set only covers 'src/new/file-one.js' (the ORIGINAL
+    // excursion). The candidate plan's task ALSO targets
+    // 'src/new/fresh-excursion.js' — a path never approved, so promotion's
+    // scope-excursion re-check must catch it as a FRESH excursion beyond
+    // the approved set.
+    const candidatePlan = {
+      subMissions: [
+        {
+          id: PROMOTION_SUBMISSION_ID,
+          description: 'Promoted sub-mission with a fresh excursion',
+          tasks: [
+            {
+              id: `${PROMOTION_SUBMISSION_ID}-001`,
+              description: 'Task targeting an unapproved path',
+              targetFiles: ['src/new/fresh-excursion.js'],
+              dependencies: [],
+              testCases: [],
+              tracesScenario: [],
+              patternReferences: [],
+              dataSchemas: [],
+            },
+          ],
+        },
+      ],
+    };
+    const proposedFiles = [
+      { path: 'src/new/file-one.js', reason: '"src/new/file-one.js" is outside the spec-declared scope set', taskIds: ['001-001-001-001'] },
+    ];
+    const lintArmsPending = pendingLintArms('scope-excursion');
+    writeApprovedScopeProposalFixture(root, 'promo-pr4', {
+      candidatePlan,
+      lintArmsPending,
+      proposedFiles,
+      // Only the ORIGINALLY proposed/approved path is declared —
+      // 'fresh-excursion.js' is NOT, so it must surface as a new excursion.
+      targetFiles: ['existing/declared.js', 'src/new/file-one.js'],
+    });
+
+    const { planMissionCalls } = await runPromotionBatch(root);
+
+    assert.strictEqual(planMissionCalls, 0,
+      `promotion must never invoke planMission even when it re-parks on a fresh excursion (it was invoked ${planMissionCalls} time(s))`);
+
+    assert.strictEqual(readStatus(root, 'promo-pr4'), 'halted-scope',
+      "a fresh excursion discovered at promotion must leave the entry at status 'halted-scope'");
+
+    const reparkedScene = readScene(root, 'promo-pr4');
+    assert.ok(reparkedScene, 'a new park.json scene must exist after the fresh-excursion re-park');
+    assert.strictEqual(reparkedScene.kind, 'scope-proposal',
+      'the re-park must carry a scope-proposal scene');
+    assert.strictEqual(reparkedScene.resolution, null,
+      'the freshly re-parked scene must be unresolved');
+    assert.ok(
+      Array.isArray(reparkedScene.proposedFiles) &&
+      reparkedScene.proposedFiles.some((f) => f && f.path === 'src/new/fresh-excursion.js'),
+      `the new scope-proposal scene must name the fresh offending path 'src/new/fresh-excursion.js' in proposedFiles (got ${JSON.stringify(reparkedScene.proposedFiles)})`
+    );
   } finally {
     cleanup(root);
   }

@@ -63,7 +63,49 @@ import {
   isMultiOwnerCheck,
   _exciseEvalPayloads,
 } from '../agents/planner.js';
-import { PlanLintError } from './plan-structure-lint.js';
+import { PlanLintError, ScopeExcursionError } from './plan-structure-lint.js';
+
+/**
+ * Mission-plan lint arm ids, in the exact order planner.js's validation
+ * chain runs them.
+ *
+ * @type {string[]}
+ */
+export const MISSION_LINT_ARM_ORDER = ['scope-excursion', 'uncovered-token', 'structure-cap', 'task-check-shapes'];
+
+/**
+ * Returns a NEW array of the lint arm ids that run strictly AFTER `armId`
+ * in `MISSION_LINT_ARM_ORDER`. Returns [] for an unknown, non-string, or
+ * last-position id. Never throws.
+ *
+ * @param {*} armId
+ * @returns {string[]}
+ */
+export function pendingLintArms(armId) {
+  if (typeof armId !== 'string') return [];
+  const idx = MISSION_LINT_ARM_ORDER.indexOf(armId);
+  if (idx === -1) return [];
+  return MISSION_LINT_ARM_ORDER.slice(idx + 1);
+}
+
+/**
+ * Thrown by lintPlanScope's excursion arm. Extends PlanLintError with a
+ * fixed ruleId of 'scope-excursion', an `excursions` array of
+ * `{taskId, path}` entries (one per excursion hit collected by the
+ * collect-all pass, not just the first), and a `lintArmsPending` array
+ * naming the mission-plan lint arms that have not yet run. The inherited
+ * `violations` array keeps its `{ruleId, taskId, offending}` element
+ * shape.
+ */
+// ScopeExcursionError is DEFINED in plan-structure-lint.js next to its
+// superclass: a load-time `extends` of an imported binding inside the
+// planner↔lint module cycle hits the temporal dead zone whenever module
+// loading enters via plan-structure-lint.js (the 45-suite cascade,
+// analyzer-diagnosed twice on 2026-08-23). Defining the subclass in the
+// SAME module as PlanLintError is entry-order-proof; the import +
+// re-export below is a pure binding passthrough with no load-time
+// evaluation. Do NOT move the class back here.
+export { ScopeExcursionError } from './plan-structure-lint.js';
 
 /**
  * Builds the declared-path set from the spec's authoritative target_files
@@ -292,7 +334,13 @@ export function lintPlanScope(plan, declaredSet, opts = {}) {
     }
   }
   if (excursionViolations.length > 0) {
-    throw new PlanLintError(firstExcursionMessage, 'scope-excursion', excursionViolations);
+    const excursions = excursionViolations.map((v) => ({ taskId: v.taskId, path: v.offending }));
+    throw new ScopeExcursionError(
+      firstExcursionMessage,
+      excursionViolations,
+      excursions,
+      pendingLintArms('scope-excursion'),
+    );
   }
 
   // (b) Per-scoped-check coverage: for every acceptance command

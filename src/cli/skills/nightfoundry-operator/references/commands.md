@@ -90,13 +90,23 @@ Long flags that always consume the next arg as a value: `--role`, `--task`, `--p
 
 ## Park
 
-A "park" is a queue entry paused at an operator gate (review reject / analyzer escalation / regression). Backed by `refs/park/<slug>/`.
+A "park" is a queue entry paused at an operator gate (review reject / analyzer escalation / regression / scope proposal). Backed by `refs/park/<slug>/`.
 
 | Command | Args | Flags | What it does |
 |---|---|---|---|
-| `nightfoundry park list` | — | `-j` | List parked/halted entries (statuses `parked`, `halted-review`, `halted-analyzer`). |
-| `nightfoundry park show <slug>` | slug | — | Show the parked entry's scene (spec/plan/state at halt) + any operator notes. |
-| `nightfoundry park resolve <slug>` | slug | exactly one of `--requeue` / `--waive` / `--reject`; optional `--note "<text>"` | Resolve the entry: `--requeue` re-runs it (reattaching preserved work), `--waive` skips it and continues, `--reject` drops it and stops. |
+| `nightfoundry park list` | — | `-j` | List parked/halted entries (statuses `parked`, `halted-review`, `halted-analyzer`, `halted-scope`). |
+| `nightfoundry park show <slug>` | slug | — | Show the parked entry's scene (spec/plan/state at halt) + any operator notes. For a `halted-scope` entry this renders the pending scope proposal: the proposed files, a per-file reason for each one, and the mission id the proposal belongs to. |
+| `nightfoundry park resolve <slug>` | slug | exactly one of `--requeue` / `--waive` / `--reject` / `--approve`; optional `--note "<text>"` | Resolve the entry: `--requeue` re-runs it (reattaching preserved work), `--waive` skips it and continues, `--reject` drops it and stops (records the `--note`, if given, alongside the rejection). |
+
+### Scope proposals (`halted-scope`)
+
+An entry halts at `halted-scope` when a scene proposes widening the declared file scope mid-run. `park resolve <slug> --approve` is legal **only** for an entry whose queue status is `halted-scope`; running it against any other status is refused.
+
+- `nightfoundry park resolve <slug> --approve` (optional `--note "<text>"`) approves the pending proposal. In the same resolve it appends the proposed files to **both** queue spec copies: `queue/<slug>/spec.json` `target_files` and the matching `queue/<slug>/spec.md` scope-section bullets. Each appended entry carries a provenance annotation naming the run id and the date (e.g. `approved via scope proposal, <runId>, <date>`). No other spec content is changed by the approval.
+- On the next `nightfoundry resume --batch`, the approved entry's candidate plan — preserved in the parked scene — is promoted directly into execution **without re-invoking the planner**; the promoted plan is byte-identical to the one that was parked. Before promotion, the lint arms that were still pending at halt time are deterministically re-run.
+- `nightfoundry park resolve <slug> --reject` on a `halted-scope` entry routes the entry to `failed-plan` and records the `--note`, if given.
+- `--requeue` and `--waive` are **refused** on a `halted-scope` (scope-proposal) entry with a clear error message; `--approve` and `--reject` are the only legal resolutions for that scene kind.
+- Approval is scoped to the one queue entry: it extends only that entry's `queue/<slug>/spec.json` and `queue/<slug>/spec.md`. Project-wide promotion of the approved files (e.g. into any project-level scope/config file) is explicitly **out of scope** for `--approve` — it touches no project config.
 
 ## Warnings
 

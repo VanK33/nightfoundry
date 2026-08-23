@@ -28,6 +28,13 @@
  *       Intent-table row.
  *   (6) Public-safety sweep — no internal repo absolute path or OS username
  *       leaks into any deployed/shipped skill artifact.
+ *   (8) Scope-negotiation pins — the `halted-scope` proposal flow's
+ *       `--approve`/`--reject`/`--requeue`/`--waive` legality and dual-
+ *       writeback statements in commands.md, the `halted-scope` queue-status
+ *       row and `scope-proposal` scene-field names in state-layout.md, and
+ *       (in debugging.md's Flow d) the `halted-scope` status mention in the
+ *       queue-status triage list plus the `nightfoundry park show <slug>`
+ *       proposal-inspection guidance.
  *
  * Run: node test/test-operator-manual.js
  */
@@ -135,6 +142,7 @@ const SKILL_MD_PATH = path.join(SKILL_SRC_DIR, 'SKILL.md');
 const COMMANDS_MD_PATH = path.join(SKILL_SRC_DIR, 'references', 'commands.md');
 const SPEC_AUTHORING_PATH = path.join(SKILL_SRC_DIR, 'references', 'spec-authoring.md');
 const DEBUGGING_PATH = path.join(SKILL_SRC_DIR, 'references', 'debugging.md');
+const STATE_LAYOUT_PATH = path.join(SKILL_SRC_DIR, 'references', 'state-layout.md');
 const TEMPLATE_PATH = path.resolve(__dirname, '../src/cli/templates/nightfoundry-guidance.md');
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../package.json');
 
@@ -415,6 +423,64 @@ function acX_packagingPins() {
     Array.isArray(pkg.files) && pkg.files.includes('src/'));
 }
 
+// ── (8) scope-negotiation pins — commands.md `halted-scope` proposal flow ──
+
+// Verbatim substrings from the "Scope proposals (`halted-scope`)" section of
+// references/commands.md: (a) the `--approve` invocation, (b) the
+// `halted-scope`-only legality statement, (c) the dual-writeback statement
+// (both spec.json target_files and spec.md, with a provenance annotation),
+// (d) the promotion-without-re-planning statement, (e) the `--requeue`/
+// `--waive` refusal statement, and (f) the project-wide-promotion-is-out-of-
+// scope statement.
+const COMMANDS_SCOPE_PROPOSAL_PINS = [
+  'nightfoundry park resolve <slug> --approve',
+  'is legal **only** for an entry whose queue status is `halted-scope`; running it against any other status is refused.',
+  'it appends the proposed files to **both** queue spec copies: `queue/<slug>/spec.json` `target_files` and the matching `queue/<slug>/spec.md` scope-section bullets. Each appended entry carries a provenance annotation naming the run id and the date',
+  "the approved entry's candidate plan — preserved in the parked scene — is promoted directly into execution **without re-invoking the planner**; the promoted plan is byte-identical to the one that was parked.",
+  '`--requeue` and `--waive` are **refused** on a `halted-scope` (scope-proposal) entry with a clear error message; `--approve` and `--reject` are the only legal resolutions for that scene kind.',
+  'Project-wide promotion of the approved files (e.g. into any project-level scope/config file) is explicitly **out of scope** for `--approve` — it touches no project config.',
+];
+
+// Verbatim substrings from references/state-layout.md: the `halted-scope`
+// queue-status table row, the `scope-proposal` scene-kind label, and each of
+// the five `scope-proposal` scene field names.
+const STATE_LAYOUT_SCOPE_PINS = [
+  '| `halted-scope` | halted with a pending scope proposal awaiting human approve/reject; the batch continues past it |',
+  'Scene kind `scope-proposal` (used with queue status `halted-scope`) carries:',
+  '`proposedFiles` — the offending files, each with a per-file `reason` and the proposing task ids.',
+  '`candidatePlan` — the exact lint-rejected mission plan, persisted so promotion executes it unmodified; any mutation between park and promotion invalidates the proposal and re-parks it.',
+  '`missionId` — the mission the proposal belongs to.',
+  '`lintArmsPending` — the lint arms that had not yet run when the excursion threw, re-run deterministically at promotion.',
+  "`proposedBy` — the producer of the proposal (`'planner-excursion'` today); the field carries the proposer so nothing hardcodes it.",
+];
+
+// Verbatim substrings from Flow d of references/debugging.md: the
+// `halted-scope` status mention in the queue-status triage list, and the
+// `nightfoundry park show <slug>` proposal-inspection guidance describing
+// what the rendered pending scope proposal contains.
+const DEBUGGING_FLOW_D_SCOPE_PINS = [
+  "if an entry is `parked`, `halted-review`, `halted-analyzer`, or `halted-scope`, follow flow b or c above via `nightfoundry park show <slug>` first.",
+  'For `halted-scope`, `nightfoundry park show <slug>` renders the pending scope proposal — the proposed files with a per-file reason for each, the mission id it belongs to, and the preserved candidate plan.',
+];
+
+function ac8_scopeNegotiationPins() {
+  console.log('\n=== (8) scope-negotiation pins — commands.md `halted-scope` proposal flow ===\n');
+  const commandsText = fs.readFileSync(COMMANDS_MD_PATH, 'utf8');
+  for (const pin of COMMANDS_SCOPE_PROPOSAL_PINS) {
+    assert(`commands: scope-proposal pin present — "${pin}"`, commandsText.includes(pin));
+  }
+
+  const stateLayoutText = fs.readFileSync(STATE_LAYOUT_PATH, 'utf8');
+  for (const pin of STATE_LAYOUT_SCOPE_PINS) {
+    assert(`state-layout: scope-proposal pin present — "${pin}"`, stateLayoutText.includes(pin));
+  }
+
+  const debugText = fs.readFileSync(DEBUGGING_PATH, 'utf8');
+  for (const pin of DEBUGGING_FLOW_D_SCOPE_PINS) {
+    assert(`debugging: Flow d scope-negotiation pin present — "${pin}"`, debugText.includes(pin));
+  }
+}
+
 function makeStaleGuidanceRoot() {
   // A fully-initialized fixture root whose guidance stamp is then tampered —
   // the canonical "stale" precondition for the channel-gate legs.
@@ -488,6 +554,7 @@ function main() {
   ac5_skillPins();
   ac6_publicSafetySweep();
   ac7_channelGate();
+  ac8_scopeNegotiationPins();
   acX_packagingPins();
 
   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
