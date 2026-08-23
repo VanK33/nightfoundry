@@ -18,6 +18,10 @@
     {
       "dir": "archives/228-failed-archive-parity-spec",
       "reason": "RecordingExhaustedError on identity key 'planner:reusable' during mission 001-002 planning — a batch-leg (multi-mission milestone) call-sequence drift where mission 001-001's plan-lint corrective retry consumes an extra reusable-planner turn, leaving no recorded turn for mission 001-002."
+    },
+    {
+      "dir": "archives/234-scope-negotiation-protocol-v0-a-plan-sco",
+      "reason": "MissingExitStructuredOutputError: verifier-001-001-002-002 session recording was severed mid-flight by the 2026-08-23 429/529 API window (the run itself recovered and delivered cleanly; the recording did not). Re-measured 2026-08-23: existing three entries all MATCH against the v0.2.20 engine, so no rotation needed this cycle."
     }
   ]
 }
