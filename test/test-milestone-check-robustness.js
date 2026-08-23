@@ -168,7 +168,11 @@ await test('TC2: runMilestoneOnlyChecks SIGTERM termination → timedOut: true i
     // (This is the same signal the OS sends when the real MILESTONE_ONLY_CHECK_TIMEOUT_MS
     // fires — using self-SIGTERM lets us test the classification path without
     // waiting 10 minutes for the real timeout.)
-    const cmd = `node -e "process.kill(process.pid, 'SIGTERM')"`;
+    // `exec` replaces the shell with node, so the process Node signals is the
+    // direct child. Without it dash reports the survived shell's exit 143
+    // (signal null) while bash propagates SIGTERM — the assertion below wants
+    // the signalled-child case on both.
+    const cmd = `exec node -e "process.kill(process.pid, 'SIGTERM')"`;
     const result = await withTimeout(
       Promise.resolve(runMilestoneOnlyChecks(
         [{ name: 'sigterm-self', command: cmd }],

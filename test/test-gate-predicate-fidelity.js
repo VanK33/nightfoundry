@@ -606,7 +606,9 @@ await test('AC4-TC2: runMilestoneOnlyChecks with SIGTERM-killed child → failur
   try {
     const check = {
       name: 'self-sigterm',
-      command: `node -e "process.kill(process.pid, 'SIGTERM')"`,
+      // `exec` so the signalled process is Node's direct child on any /bin/sh —
+      // dash otherwise reports the survived shell's exit 143 instead of SIGTERM.
+      command: `exec node -e "process.kill(process.pid, 'SIGTERM')"`,
     };
     const result = runMilestoneOnlyChecks([check], tmpDir, {});
     assert.strictEqual(result.passed, false,

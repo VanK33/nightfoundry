@@ -280,7 +280,9 @@ await test('TC5b: timeout-path contract — SIGTERM-killed command (no exit stat
   // shape execSync throws on timeout, exercising the spec's -1 mapping branch.
   const fixture = createFixtureDir();
   try {
-    const cmd = 'node -e "process.kill(process.pid, \'SIGTERM\')"';
+    // `exec` so the signalled process is Node's direct child on any /bin/sh —
+    // dash otherwise reports the survived shell's exit 143 instead of SIGTERM.
+    const cmd = 'exec node -e "process.kill(process.pid, \'SIGTERM\')"';
     const r = withConfigOverride('testCommand', cmd, () => runTestCommand(fixture));
     assert.strictEqual(r.exitCode, -1, 'signal-terminated (timeout-shaped) run must map to exitCode -1');
     assert.ok(

@@ -55,8 +55,18 @@ export function archiveShow(projectRoot, archiveId, options = {}) {
       console.error(`Report not found: ${reportPath}`);
       return;
     }
-    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const opener = process.platform === 'darwin'
+      ? 'open'
+      : process.platform === 'win32' ? 'start' : 'xdg-open';
     const child = spawn(opener, [reportPath], { detached: true, stdio: 'ignore' });
+    // A missing opener binary (common on headless Linux and WSL, where
+    // xdg-utils is often absent) makes spawn emit 'error' asynchronously. With
+    // no listener that becomes an uncaught 'error' event and kills the process
+    // mid-command, so the path is printed instead — the report is already on
+    // disk and the user can open it themselves.
+    child.on('error', (err) => {
+      console.error(`Could not launch ${opener} (${err.code}). Open the report manually: ${reportPath}`);
+    });
     child.unref();
     return;
   }

@@ -314,7 +314,9 @@ await test('TC(b): command comfortably under 16 MiB exiting 0 → exitCode === 0
 await test('TC(c): REGRESSION PIN — SIGTERM-killed run (no maxBuffer overflow) still maps to exitCode -1', () => {
   const fixture = createFixtureDir();
   try {
-    const cmd = 'node -e "process.kill(process.pid, \'SIGTERM\')"';
+    // `exec` so the signalled process is Node's direct child on any /bin/sh —
+    // dash otherwise reports the survived shell's exit 143 instead of SIGTERM.
+    const cmd = 'exec node -e "process.kill(process.pid, \'SIGTERM\')"';
     const r = withConfigOverride('testAllCommand', cmd, () => runFullTestSuite(fixture));
     assert.strictEqual(r.exitCode, -1, 'a genuine timeout-shaped (signal-terminated, no overflow) run must still map to exitCode -1');
   } finally {

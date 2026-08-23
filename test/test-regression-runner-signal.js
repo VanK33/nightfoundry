@@ -88,7 +88,10 @@ function withConfigOverride(key, value, fn) {
 
 // A node -e one-liner that SIGKILLs its own process. No exit code follows —
 // the process is terminated by the signal before it can return one.
-const SIGKILL_SELF_COMMAND = `node -e "process.kill(process.pid, 'SIGKILL')"`;
+// `exec` so the signalled process is Node's direct child on any /bin/sh —
+// dash otherwise reports the survived shell's exit 137 (signal null) instead
+// of propagating SIGKILL, which is the case this fixture exists to cover.
+const SIGKILL_SELF_COMMAND = `exec node -e "process.kill(process.pid, 'SIGKILL')"`;
 
 // A node -e one-liner that exits 3 cleanly — no signal involved.
 const EXIT_3_COMMAND = `node -e "process.exit(3)"`;
