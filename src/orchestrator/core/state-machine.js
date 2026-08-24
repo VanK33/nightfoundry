@@ -309,8 +309,11 @@ export async function transitionTask(harnessDir, taskId, newStatus, opts = {}) {
     if (newStatus === 'in_progress' && !task.startedAt) {
       task.startedAt = now;
     }
-    if (newStatus === 'complete' || newStatus === 'invalidated') {
+    if (newStatus === 'complete') {
       task.completedAt = now;
+    }
+    if (newStatus === 'invalidated') {
+      task.invalidatedAt = now;
     }
     if (newStatus === 'invalidated' && opts.invalidationReason && typeof opts.invalidationReason === 'string' && opts.invalidationReason.length > 0) {
       task.invalidationReason = opts.invalidationReason;

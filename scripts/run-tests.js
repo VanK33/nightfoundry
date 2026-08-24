@@ -356,6 +356,7 @@ export const TEST_FILES = [
   'test/test-p1-prompt-hardening.js',
   'test/test-hardcheck-rehoming.js',
   'test/test-invalidation-reason.js',
+  'test/test-invalidation-forensics.js',
   'test/test-prdpath-anchor.js',
   'test/test-state-resume-persistence.js',
   'test/test-path-token-quote-strip.js',

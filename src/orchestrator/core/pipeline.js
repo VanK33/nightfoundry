@@ -34,7 +34,7 @@ import {
   readParkResumeMarker, removeParkResumeMarker,
   updateQueueEntryStatus, writeJsonAtomic,
   writeGateFlags, readGateFlags,
-  resolveHarnessFileRef,
+  resolveHarnessFileRef, appendInvalidationRecord,
 } from './state.js';
 import {
   transitionTask, transitionSubMission, transitionMission,
@@ -3754,6 +3754,15 @@ class Pipeline {
    * Fails soft to {} on ANY error (corrupt/unreadable state, malformed
    * mission state, etc.) — this helper NEVER throws.
    *
+   * Consumer-check finding (redundant-task invalidation, Defect #17): this
+   * method already tolerates a candidate with an absent completedAt — see
+   * the `if (!c.completedAt) continue;` guard in the candidate-selection
+   * loop below, which skips any such candidate outright — and an
+   * 'invalidated' candidate never wins the restore comparison regardless of
+   * completedAt (per the "'invalidated' task NEVER wins" rule above). Since
+   * a task marked invalidated via the phantom-write-probe redundancy path
+   * may have no completedAt set, no consumer-side fix is required here.
+   *
    * @param {{id: string}} task
    * @param {'before'|'after'} phase
    * @returns {Object<string,string>} snapshot-relative path → absolute path of the winning sibling's after-snapshot copy
@@ -5890,6 +5899,12 @@ class Pipeline {
           this.onLog(`    Task ${task.id}: REDUNDANT — sibling work satisfied goal; marking invalidated (no executor edits made, verifier confirmed goal state holds)`);
           console.warn(`[phantom-write-probe] Redundant task: ${task.id}. Possible planner over-decomposition. Verifier passed without executor delta.`);
           await transitionTask(this.harnessDir, task.id, 'invalidated', { invalidationReason: 'redundant' });
+          appendInvalidationRecord(this.harnessDir, {
+            taskId: task.id,
+            reason: 'redundant',
+            site: 'phantom-write-probe',
+            detail: `declared file(s) already present, no executor delta: [${(task.targetFiles || []).join(', ')}]`,
+          }, { onLog: this.onLog });
 
           this._bumpProgress(task.id);
           return;

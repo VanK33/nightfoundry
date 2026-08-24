@@ -293,7 +293,7 @@ await test('transitionTask: verified → complete succeeds (no caller needed for
   } finally { cleanup(dir); }
 });
 
-await test('transitionTask: pending → invalidated succeeds and stamps completedAt', async () => {
+await test('transitionTask: pending → invalidated succeeds and stamps invalidatedAt (not completedAt)', async () => {
   const dir = createHarnessDir();
   try {
     simpleFixture(dir);
@@ -302,7 +302,9 @@ await test('transitionTask: pending → invalidated succeeds and stamps complete
 
     const state = JSON.parse(fs.readFileSync(path.join(dir, 'state', 'mission-001-001.json'), 'utf8'));
     const task = state.subMissions['001-001-001'].tasks['001-001-001-001'];
-    assert.ok(task.completedAt, 'completedAt should be set');
+    assert.ok(task.invalidatedAt, 'invalidatedAt should be set');
+    assert.ok(!Number.isNaN(Date.parse(task.invalidatedAt)), 'invalidatedAt should be a valid ISO date');
+    assert.equal(task.completedAt, undefined, 'completedAt should be absent');
   } finally { cleanup(dir); }
 });
 
@@ -318,9 +320,20 @@ await test('transitionTask: in_progress → invalidated succeeds', async () => {
 await test('transitionTask: complete → invalidated succeeds', async () => {
   const dir = createHarnessDir();
   try {
-    simpleFixture(dir, { taskStatus: 'complete' });
+    simpleFixture(dir, { taskStatus: 'verified' });
+    await transitionTask(dir, '001-001-001-001', 'complete');
+    const preState = JSON.parse(fs.readFileSync(path.join(dir, 'state', 'mission-001-001.json'), 'utf8'));
+    const completedAt = preState.subMissions['001-001-001'].tasks['001-001-001-001'].completedAt;
+    assert.ok(completedAt, 'completedAt should be set by the complete transition');
+
     await transitionTask(dir, '001-001-001-001', 'invalidated');
     assert.equal(getTaskStatus(dir, '001-001-001-001'), 'invalidated');
+
+    const state = JSON.parse(fs.readFileSync(path.join(dir, 'state', 'mission-001-001.json'), 'utf8'));
+    const task = state.subMissions['001-001-001'].tasks['001-001-001-001'];
+    assert.equal(task.completedAt, completedAt, 'completedAt should be preserved, untouched by invalidation');
+    assert.ok(task.invalidatedAt, 'invalidatedAt should be set');
+    assert.ok(!Number.isNaN(Date.parse(task.invalidatedAt)), 'invalidatedAt should be a valid ISO date');
   } finally { cleanup(dir); }
 });
 

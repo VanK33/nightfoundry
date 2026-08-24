@@ -1,3 +1,9 @@
+## [0.2.23] - 2026-08-24 — Separate invalidation timestamp and add durable invalidation records
+
+### New features
+- Task invalidation now uses separate invalidatedAt timestamp, preserving existing completedAt values
+- Invalidation records persisted to analysis/invalidations.jsonl as durable JSONL for forensic reconstruction
+
 ## [0.2.22] - 2026-08-24 — Add stall-boundary rescue for mid-run task demotion
 
 ### Bug fixes

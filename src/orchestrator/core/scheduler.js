@@ -71,7 +71,7 @@
 import fs from 'fs';
 import path from 'path';
 import { cascadeComplete, transitionTask } from './state-machine.js';
-import { readTaskStatus, readState, writeJsonAtomic, writeVerifyJson } from './state.js';
+import { readTaskStatus, readState, writeJsonAtomic, writeVerifyJson, appendInvalidationRecord } from './state.js';
 import { InfrastructureError } from '../infra/session-manager.js';
 import { normalizeTargetFile } from './path-utils.js';
 import { scopeSpecHardChecks, findOrphanedSpecHardChecks } from '../agents/planner.js';
@@ -1033,6 +1033,16 @@ export class Scheduler {
 
     for (const id of invalidatedIds) {
       await transitionTask(this.harnessDir, id, 'invalidated', { invalidationReason: 'replaced' });
+      appendInvalidationRecord(
+        this.harnessDir,
+        {
+          taskId: id,
+          reason: 'replaced',
+          site: 'replaceTask',
+          detail: `replaced by [${replacementTasks.map((rt) => rt.id).join(', ')}]`,
+        },
+        { onLog: this.onLog }
+      );
       this.onLog(`  Scheduler.replaceTask: transitioned "${id}" → invalidated`);
     }
 

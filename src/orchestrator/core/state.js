@@ -6,6 +6,7 @@
  *
  * Public API:
  *   writeJsonAtomic(filePath, data)
+ *   appendInvalidationRecord(harnessDir, record, { onLog })
  *   readState(harnessDir) → parsed state.json object
  *   writeGateFlags(harnessDir, { allowIncompleteScope?, skipCoverageGate? })
  *   readGateFlags(harnessDir) → { allowIncompleteScope, skipCoverageGate }
@@ -74,6 +75,44 @@ export function writeJsonAtomic(filePath, data) {
     fs.closeSync(fd);
   }
   fs.renameSync(tmpPath, filePath);
+}
+
+/**
+ * Append a single invalidation record line to
+ * <harnessDir>/analysis/invalidations.jsonl.
+ *
+ * Creates the analysis/ directory (recursive) and the file on first append.
+ * Each call appends exactly one line: JSON.stringify(record) (no
+ * pretty-printing) followed by a single '\n'. The written record always
+ * carries a fresh `ts` (ISO-8601, new Date().toISOString()) alongside the
+ * passed-through taskId/reason/site/detail.
+ *
+ * Strictly fail-soft: every filesystem operation is wrapped in try/catch —
+ * on any failure this function emits exactly one warning through the
+ * caller-supplied onLog (when provided) and returns normally. It never
+ * throws.
+ *
+ * @param {string} harnessDir - path to the .harness directory
+ * @param {{ taskId, reason, site, detail }} record
+ * @param {{ onLog?: (message: string) => void }} [options]
+ */
+export function appendInvalidationRecord(harnessDir, { taskId, reason, site, detail } = {}, { onLog } = {}) {
+  try {
+    const analysisDir = path.join(harnessDir, 'analysis');
+    fs.mkdirSync(analysisDir, { recursive: true });
+    const record = {
+      ts: new Date().toISOString(),
+      taskId,
+      reason,
+      site,
+      detail,
+    };
+    fs.appendFileSync(path.join(analysisDir, 'invalidations.jsonl'), JSON.stringify(record) + '\n');
+  } catch (err) {
+    if (typeof onLog === 'function') {
+      onLog(`Failed to append invalidation record to invalidations.jsonl: ${err.message}`);
+    }
+  }
 }
 
 /**
