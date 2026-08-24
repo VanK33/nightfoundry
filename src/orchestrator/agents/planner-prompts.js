@@ -285,6 +285,7 @@ Rules:
 - \`dependencies\` is an array of { taskId, type } objects where type is 'hard' or 'soft'. Use 'hard' ONLY when this replacement reads something another task writes. Reference ONLY task ids that exist in the current plan or among your replacement batch — never invent a task id. When the replacement is independent (the normal case), use an empty array.
 - Scope replacements ONLY to the failed task's targetFiles unless the root cause clearly requires touching additional files.
 - Output structured JSON matching the session's jsonSchema.
+- When the analyzer report lists secondary findings, the output must include a \`findingDispositions\` array containing exactly one entry per listed finding id, each entry carrying \`findingId\` (matching a listed id) and a disposition, with no missing, duplicate, or unknown ids.
 
 ${PROMPT_SECTION_TASK_SPECIFICITY}
 

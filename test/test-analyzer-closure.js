@@ -336,6 +336,7 @@ Rules:
 - human: if the spec is ambiguous, the failure pattern is novel, or you are not confident
 - Only list affected tasks that actually share files with the failed task
 - Mark tasks that touched the same files as 'needs_revalidation'; unrelated completed tasks as 'safe_to_keep' (or omit)
+- Enumerate every material observation beyond the primary root cause as its own secondaryFindings entry — do not bury it in prose
 - Do NOT write any files — the orchestrator persists your structured output`;
 }
 

@@ -1,3 +1,10 @@
+## [0.2.24] - 2026-08-24 — Route secondary findings through explicit disposition validation
+
+### New features
+- Analyzer now emits secondary findings as first-class structured data in addition to primary root cause analysis
+- Task replan must now explicitly disposition each secondary finding (fix/defer/not_applicable) reported in consumed analysis, validated mechanically in JavaScript
+- Deferred and not_applicable secondary findings automatically append to cross-run candidates ledger after successful replan, preventing secondary observations from being lost
+
 ## [0.2.23] - 2026-08-24 — Separate invalidation timestamp and add durable invalidation records
 
 ### New features

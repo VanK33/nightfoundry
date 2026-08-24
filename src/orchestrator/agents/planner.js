@@ -1558,6 +1558,16 @@ Each task's subMissionId must name an EXISTING sub-mission of this mission — n
    * @returns {Promise<{ replacementTasks: Array }>}
    */
   async replanTask(failedTask, analyzerReport, missionContext, opts = {}) {
+    // Optional secondary-findings block: only rendered when the consumed
+    // analyzerReport carries a non-empty secondaryFindings array (added by
+    // mission 001-001; absent on every historical report). When absent,
+    // non-array, or empty, this is the empty string and the prompt below
+    // is byte-identical to the pre-existing template.
+    const hasSecondaryFindings = Array.isArray(analyzerReport.secondaryFindings) && analyzerReport.secondaryFindings.length > 0;
+    const secondaryFindingsBlock = hasSecondaryFindings
+      ? `\n\nThe analyzer report also includes the following secondary findings, which also require disposition:\n${analyzerReport.secondaryFindings.map((f, i) => `${i + 1}. id: ${f.id} — summary: ${f.summary}`).join('\n')}\n\nFor each secondary finding listed above, return exactly one entry in \`findingDispositions\`, one per listed id.`
+      : '';
+
     const prompt = `Task ${failedTask.id} has failed and requires replacement tasks.
 
 Failed task ID: ${failedTask.id}
@@ -1570,7 +1580,7 @@ Analyzer evidence: ${analyzerReport.evidence || '(none provided)'}
 Mission context:
 ${missionContext}
 
-Produce replacement tasks that address the root cause. Use the ID convention {original-id}-rp-001 for the first replacement.`;
+Produce replacement tasks that address the root cause. Use the ID convention {original-id}-rp-001 for the first replacement.${secondaryFindingsBlock}`;
 
     const sessionName = `planner-replan-${failedTask.id}`;
 
@@ -1604,6 +1614,7 @@ Produce replacement tasks that address the root cause. Use the ID convention {or
         toolCallCount: handle._toolCallCount,
       });
       const replanResult = this._extractJson(result);
+      _validateFindingDispositions(replanResult, analyzerReport);
       const specTargetFiles = Array.isArray(opts.specTargetFiles) ? opts.specTargetFiles : [];
       _validatePathAnchorPreservation(replanResult, specTargetFiles);
       const specAcceptanceCriteria = Array.isArray(opts.specAcceptanceCriteria) ? opts.specAcceptanceCriteria : [];
@@ -1999,6 +2010,54 @@ function _validatePathAnchorPreservation(plan, specTargetFiles, projectRoot = nu
       }
     }
   }
+}
+
+/**
+ * Validates that every secondary finding surfaced on the analyzer report has
+ * exactly one disposition entry in the replan result's `findingDispositions`,
+ * and that no disposition names a finding id absent from the report. When
+ * the analyzer report carries no (non-empty) `secondaryFindings` array, this
+ * is a no-op — there is nothing to require dispositions for.
+ */
+function _validateFindingDispositions(replanResult, analyzerReport) {
+  const secondaryFindings = analyzerReport?.secondaryFindings;
+  if (!Array.isArray(secondaryFindings) || secondaryFindings.length === 0) return;
+
+  const findingIds = new Set(secondaryFindings.map((f) => f?.id));
+
+  const dispositions = Array.isArray(replanResult?.findingDispositions)
+    ? replanResult.findingDispositions
+    : [];
+
+  const countsByFindingId = new Map();
+  const unknownFindingIds = new Set();
+  for (const d of dispositions) {
+    const fid = d?.findingId;
+    if (findingIds.has(fid)) {
+      countsByFindingId.set(fid, (countsByFindingId.get(fid) || 0) + 1);
+    } else {
+      unknownFindingIds.add(fid);
+    }
+  }
+
+  const missing = [];
+  const duplicated = [];
+  for (const fid of findingIds) {
+    const count = countsByFindingId.get(fid) || 0;
+    if (count === 0) missing.push(fid);
+    else if (count >= 2) duplicated.push(fid);
+  }
+
+  if (missing.length === 0 && duplicated.length === 0 && unknownFindingIds.size === 0) return;
+
+  const parts = [];
+  if (missing.length > 0) parts.push(`missing disposition for finding(s): ${missing.join(', ')}`);
+  if (duplicated.length > 0) parts.push(`duplicated disposition for finding(s): ${duplicated.join(', ')}`);
+  if (unknownFindingIds.size > 0) {
+    parts.push(`disposition references unknown finding(s): ${Array.from(unknownFindingIds).join(', ')}`);
+  }
+
+  throw new Error(`[planner] finding disposition violation: ${parts.join('; ')}`);
 }
 
 /**
@@ -2611,4 +2670,4 @@ function enrichTestTaskTargetFiles(missionDecomp, projectRoot) {
   }
 }
 
-export { Planner, extractPathTokens, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, pathTokenMatchesFile, isMilestoneOnlyCheck, isMultiOwnerCheck, isWholeSuiteCommand, scopeSpecHardChecks, findOrphanedSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, _validatePathAnchorPreservation, resolveSpecPathAnchor, _exciseEvalPayloads, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS, isCheckableCriterion };
+export { Planner, extractPathTokens, parseSpecHardChecks, parseSpecFileChecks, parseSpecTargetFiles, pathTokenMatchesFile, isMilestoneOnlyCheck, isMultiOwnerCheck, isWholeSuiteCommand, scopeSpecHardChecks, findOrphanedSpecHardChecks, findUnassignedSpecHardChecks, validateTaskDependencies, enrichTestTaskTargetFiles, _validatePathAnchorPreservation, _validateFindingDispositions, resolveSpecPathAnchor, _exciseEvalPayloads, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS, isCheckableCriterion };

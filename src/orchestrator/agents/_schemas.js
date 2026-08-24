@@ -168,6 +168,21 @@ export const analyzerSchema = {
     },
     evidence: { type: 'string' },
     notes:    { type: 'string' },
+    // OPTIONAL: secondary findings the analyzer noticed while investigating
+    // the primary failure but that are not the root cause of it. Not in
+    // `required` — an analyzer report with no secondaryFindings still validates.
+    secondaryFindings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id:              { type: 'string' },
+          summary:         { type: 'string' },
+          affectedTaskIds: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['id', 'summary'],
+      },
+    },
   },
   required: ['recommendation', 'rootCause', 'failureType', 'affectedTasks'],
 };
@@ -405,6 +420,21 @@ export const taskReplanSchema = {
           },
         },
         required: ['id', 'description', 'targetFiles', 'dependencies'],
+      },
+    },
+    // OPTIONAL: how the re-plan agent disposed of each analyzer
+    // secondaryFinding. Not in `required` — a replan with no
+    // findingDispositions still validates.
+    findingDispositions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          findingId:   { type: 'string' },
+          disposition: { type: 'string', enum: ['fix', 'defer', 'not_applicable'] },
+          note:        { type: 'string' },
+        },
+        required: ['findingId', 'disposition'],
       },
     },
   },

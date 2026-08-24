@@ -24,6 +24,19 @@
  *   TC6 — best-effort: pre-create archives/candidates.jsonl as a DIRECTORY
  *         so the write fails; appendCandidate must not throw and must
  *         produce exactly one warning via the injected onWarn spy.
+ *   TC7 — emitSecondaryFindingCandidates with one 'defer' disposition
+ *         writes exactly one JSONL line marked with the
+ *         'analysis-secondary-finding' errorClass and taskState 'defer'.
+ *   TC8 — emitSecondaryFindingCandidates with one 'not_applicable'
+ *         disposition writes exactly one JSONL line with the same source
+ *         marker and taskState 'not_applicable'.
+ *   TC9 — dispositions valued only 'fix' write zero ledger lines.
+ *   TC10 — a mixed batch of defer + fix + not_applicable writes exactly
+ *          two lines, one per non-fix finding.
+ *   TC11 — with archives/candidates.jsonl pre-created as a DIRECTORY,
+ *          emitSecondaryFindingCandidates does not throw and forwards a
+ *          warning containing 'Failed to append candidate to
+ *          candidates.jsonl' to the injected onWarn spy.
  *
  * Run: node test/test-candidates-ledger.js
  */
@@ -37,6 +50,10 @@ import {
   hashSignature,
   appendCandidate,
 } from '../src/orchestrator/core/candidates-ledger.js';
+import {
+  buildSecondaryFindingCandidateEntries,
+  emitSecondaryFindingCandidates,
+} from '../src/orchestrator/core/pipeline.js';
 
 let passCount = 0;
 let failCount = 0;
@@ -271,6 +288,125 @@ await test('TC6: an unwritable (directory) ledger path never throws and emits ex
     assert.strictEqual(threw, null, `appendCandidate must never throw on a write failure; threw: ${threw && threw.message}`);
     assert.strictEqual(warnings.length, 1, `expected exactly one onWarn call; got ${warnings.length}`);
     assert.ok(typeof warnings[0] === 'string' && warnings[0].length > 0, 'the warning message must be a non-empty string');
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test('TC7: emitSecondaryFindingCandidates with a single "defer" disposition writes exactly one marked JSONL line', async () => {
+  const root = makeTmpRoot();
+  try {
+    emitSecondaryFindingCandidates(root, {
+      secondaryFindings: [{ id: 'F1', summary: 's1' }],
+      findingDispositions: [{ findingId: 'F1', disposition: 'defer', note: 'n' }],
+    });
+
+    const ledgerFile = candidatesLedgerPath(root);
+    const lines = readLinesRaw(ledgerFile);
+    assert.strictEqual(lines.length, 1, `expected exactly one JSONL line; got ${lines.length}`);
+
+    const parsed = JSON.parse(lines[0]);
+    assert.strictEqual(parsed.signature.errorClass, 'analysis-secondary-finding');
+    assert.strictEqual(parsed.slug, 'F1');
+    assert.strictEqual(parsed.signature.taskState, 'defer');
+    assert.ok(typeof parsed.summary === 'string' && parsed.summary.includes('s1'), `summary must contain 's1'; got ${parsed.summary}`);
+    assert.ok(typeof parsed.summary === 'string' && parsed.summary.includes('n'), `summary must contain 'n'; got ${parsed.summary}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test('TC8: emitSecondaryFindingCandidates with a single "not_applicable" disposition writes exactly one marked JSONL line', async () => {
+  const root = makeTmpRoot();
+  try {
+    emitSecondaryFindingCandidates(root, {
+      secondaryFindings: [{ id: 'F2', summary: 's2' }],
+      findingDispositions: [{ findingId: 'F2', disposition: 'not_applicable', note: 'm' }],
+    });
+
+    const ledgerFile = candidatesLedgerPath(root);
+    const lines = readLinesRaw(ledgerFile);
+    assert.strictEqual(lines.length, 1, `expected exactly one JSONL line; got ${lines.length}`);
+
+    const parsed = JSON.parse(lines[0]);
+    assert.strictEqual(parsed.signature.errorClass, 'analysis-secondary-finding');
+    assert.strictEqual(parsed.slug, 'F2');
+    assert.strictEqual(parsed.signature.taskState, 'not_applicable');
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test('TC9: dispositions valued only "fix" write zero ledger lines', async () => {
+  const root = makeTmpRoot();
+  try {
+    emitSecondaryFindingCandidates(root, {
+      secondaryFindings: [{ id: 'F3', summary: 's3' }, { id: 'F4', summary: 's4' }],
+      findingDispositions: [
+        { findingId: 'F3', disposition: 'fix' },
+        { findingId: 'F4', disposition: 'fix' },
+      ],
+    });
+
+    const ledgerFile = candidatesLedgerPath(root);
+    const lines = readLinesRaw(ledgerFile);
+    assert.strictEqual(lines.length, 0, `expected zero JSONL lines for fix-only dispositions; got ${lines.length}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test('TC10: a mixed batch of defer + fix + not_applicable writes exactly two lines for the non-fix findings', async () => {
+  const root = makeTmpRoot();
+  try {
+    emitSecondaryFindingCandidates(root, {
+      secondaryFindings: [
+        { id: 'F5', summary: 's5' },
+        { id: 'F6', summary: 's6' },
+        { id: 'F7', summary: 's7' },
+      ],
+      findingDispositions: [
+        { findingId: 'F5', disposition: 'defer' },
+        { findingId: 'F6', disposition: 'fix' },
+        { findingId: 'F7', disposition: 'not_applicable' },
+      ],
+    });
+
+    const ledgerFile = candidatesLedgerPath(root);
+    const lines = readLinesRaw(ledgerFile);
+    assert.strictEqual(lines.length, 2, `expected exactly two JSONL lines; got ${lines.length}`);
+
+    const slugs = lines.map((l) => JSON.parse(l).slug).sort();
+    assert.deepStrictEqual(slugs, ['F5', 'F7'], `expected the two non-fix finding ids; got ${JSON.stringify(slugs)}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test('TC11: emitSecondaryFindingCandidates never throws on an unwritable ledger path and forwards a descriptive warning', async () => {
+  const root = makeTmpRoot();
+  try {
+    const ledgerFile = candidatesLedgerPath(root);
+    fs.mkdirSync(ledgerFile, { recursive: true });
+
+    const warnings = [];
+    const onWarn = (message) => warnings.push(message);
+
+    let threw = null;
+    try {
+      emitSecondaryFindingCandidates(root, {
+        secondaryFindings: [{ id: 'F8', summary: 's8' }],
+        findingDispositions: [{ findingId: 'F8', disposition: 'defer', note: 'doomed' }],
+      }, { onWarn });
+    } catch (e) {
+      threw = e;
+    }
+
+    assert.strictEqual(threw, null, `emitSecondaryFindingCandidates must never throw on a write failure; threw: ${threw && threw.message}`);
+    assert.ok(
+      warnings.some((w) => typeof w === 'string' && w.includes('Failed to append candidate to candidates.jsonl')),
+      `expected an onWarn message containing 'Failed to append candidate to candidates.jsonl'; got ${JSON.stringify(warnings)}`
+    );
   } finally {
     cleanup(root);
   }

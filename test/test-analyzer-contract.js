@@ -117,6 +117,78 @@ await test('validateStructured: invalid action enum rejected', () => {
   assert.ok(r.errors.some((e) => /affectedTasks\[0\]\.action/.test(e)));
 });
 
+// ── secondaryFindings (optional field) ─────────────────────────────────
+
+await test('validateStructured: report without secondaryFindings is still valid', () => {
+  const r = validateStructured(fixtureRetry.structured_output, analyzerSchema);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.ok(!('secondaryFindings' in fixtureRetry.structured_output));
+});
+
+const fixtureSecondaryFinding = {
+  structured_output: {
+    ...fixtureReplan.structured_output,
+    secondaryFindings: [
+      {
+        id: 'sf-1',
+        summary: 'sibling tasks 001-001-001-002/003 were flagged needs_revalidation but their file content was never written',
+        affectedTaskIds: ['001-001-001-002', '001-001-001-003'],
+      },
+    ],
+  },
+};
+
+await test('validateStructured: report with well-formed secondaryFindings entry is valid', () => {
+  const r = validateStructured(fixtureSecondaryFinding.structured_output, analyzerSchema);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+await test('validateStructured: secondaryFindings[0] missing id is rejected', () => {
+  const bad = {
+    ...fixtureReplan.structured_output,
+    secondaryFindings: [
+      {
+        summary: 'sibling tasks mistakenly flagged needs_revalidation',
+        affectedTaskIds: ['001-001-001-002'],
+      },
+    ],
+  };
+  const r = validateStructured(bad, analyzerSchema);
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => /secondaryFindings\[0\]\.id/.test(e)));
+});
+
+await test('validateStructured: secondaryFindings[0] missing summary is rejected', () => {
+  const bad = {
+    ...fixtureReplan.structured_output,
+    secondaryFindings: [
+      {
+        id: 'sf-1',
+        affectedTaskIds: ['001-001-001-002'],
+      },
+    ],
+  };
+  const r = validateStructured(bad, analyzerSchema);
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => /secondaryFindings\[0\]\.summary/.test(e)));
+});
+
+await test('validateStructured: secondaryFindings[0].summary as non-string is rejected', () => {
+  const bad = {
+    ...fixtureReplan.structured_output,
+    secondaryFindings: [
+      {
+        id: 'sf-1',
+        summary: 12345,
+        affectedTaskIds: ['001-001-001-002'],
+      },
+    ],
+  };
+  const r = validateStructured(bad, analyzerSchema);
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => /secondaryFindings\[0\]\.summary/.test(e) && /expected string/.test(e)));
+});
+
 // ── analyzer.extractAnalysis integration ───────────────────────────────
 
 await test('analyzer.extractAnalysis: retry fixture → {recommendation: "retry"}', async () => {

@@ -6155,6 +6155,23 @@ class Pipeline {
                 `replaced with [${result.replacementTasks.map((t) => t.id).join(', ')}]`,
                 (msg) => this.onLog(`    ${msg}`)
               );
+              // Best-effort secondary-finding candidate ledger emit (fail-soft —
+              // mirrors createParkSnapshot's try/catch-warn-never-throw pattern).
+              // Must never alter re_plan routing above.
+              try {
+                emitSecondaryFindingCandidates(
+                  this.projectRoot,
+                  {
+                    findingDispositions: result.findingDispositions,
+                    secondaryFindings: analysis.structured?.secondaryFindings,
+                    analyzerRecommendation: analysis.recommendation,
+                    analyzerSidecar: analysis.eventId ?? null,
+                  },
+                  { onWarn: (msg) => this.onLog(`    ${msg}`) }
+                );
+              } catch (ledgerErr) {
+                this.onLog(`    Failed to append secondary-finding candidate(s) to candidates.jsonl for task ${task.id}: ${ledgerErr.message}`);
+              }
               return; // Scheduler will pick up replacement tasks — do NOT throw
             }
           } catch (replanErr) {
@@ -7091,6 +7108,78 @@ export function assertNoNonTerminalTasks(harnessDir, msId, msState, onLog) {
     const ids = nonTerminalIds.join(', ');
     onLog(`Invariant violation: ${n} non-terminal task(s) found before milestone ${msId} advance: ${ids}`);
     throw new PendingTasksAtMilestoneAdvance(msId, nonTerminalIds);
+  }
+}
+
+/**
+ * Builds appendCandidate-shaped entries from replan findingDispositions,
+ * projecting the joined finding data onto appendCandidate's fixed field
+ * whitelist. Produces one entry per disposition whose value is 'defer' or
+ * 'not_applicable'; dispositions of 'fix' (or any other value) are skipped.
+ *
+ * @param {object} args
+ * @param {Array} [args.secondaryFindings] - [{ id, summary }]
+ * @param {Array} [args.findingDispositions] - [{ findingId, disposition, note? }]
+ * @param {*} [args.analyzerRecommendation]
+ * @param {*} [args.analyzerSidecar]
+ * @returns {Array} appendCandidate-shaped entries
+ */
+export function buildSecondaryFindingCandidateEntries({
+  secondaryFindings,
+  findingDispositions,
+  analyzerRecommendation,
+  analyzerSidecar,
+} = {}) {
+  if (!Array.isArray(findingDispositions)) return [];
+  const findingsById = new Map();
+  if (Array.isArray(secondaryFindings)) {
+    for (const f of secondaryFindings) {
+      if (f && f.id != null) findingsById.set(f.id, f);
+    }
+  }
+  const entries = [];
+  for (const disposition of findingDispositions) {
+    if (!disposition) continue;
+    const { findingId, disposition: dispositionValue, note } = disposition;
+    if (dispositionValue !== 'defer' && dispositionValue !== 'not_applicable') continue;
+    const matched = findingsById.get(findingId);
+    let summary = matched ? matched.summary ?? null : null;
+    if (typeof note === 'string' && note.length > 0) {
+      summary = summary ? `${summary} ${note}` : note;
+    }
+    entries.push({
+      slug: findingId,
+      summary,
+      signature: {
+        phase: 'analyze',
+        errorClass: 'analysis-secondary-finding',
+        analyzerRecommendation: analyzerRecommendation ?? null,
+        taskState: dispositionValue,
+      },
+      evidence: {
+        archiveId: null,
+        stashRef: null,
+        analyzerSidecar: analyzerSidecar ?? null,
+      },
+    });
+  }
+  return entries;
+}
+
+/**
+ * Emits candidates.jsonl entries for replan findingDispositions marked
+ * 'defer' or 'not_applicable'. Never throws; failures are surfaced via the
+ * injected onWarn callback (see appendCandidate).
+ *
+ * @param {string} projectRoot
+ * @param {object} args - see buildSecondaryFindingCandidateEntries
+ * @param {object} [options]
+ * @param {function} [options.onWarn]
+ */
+export function emitSecondaryFindingCandidates(projectRoot, args, { onWarn } = {}) {
+  const entries = buildSecondaryFindingCandidateEntries(args);
+  for (const entry of entries) {
+    appendCandidate(projectRoot, entry, { onWarn });
   }
 }
 
