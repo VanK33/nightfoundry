@@ -335,7 +335,7 @@ await test('TC1: resume() catches the last-milestone spec-criteria drain failure
       `expected the failing command printed to stderr. Got:\n${output.stderr}`);
     assert.ok(output.stderr.includes('Fix the failing criteria above'),
       `expected the fix-and-re-run hint printed. Got:\n${output.stderr}`);
-    assert.ok(output.stderr.includes('cc-orch resume'),
+    assert.ok(/(cc-orch|nightfoundry) resume/.test(output.stderr),
       `expected the hint to name \`cc-orch resume\` as the next step. Got:\n${output.stderr}`);
 
     // No stack trace printed on this path.
@@ -481,7 +481,7 @@ for (const tc3 of tc3Cases) {
       // empty/undefined failures list).
       assert.ok(output.stderr.includes('Fix the failing criteria above'),
         `expected the fix-and-re-run hint printed. Got:\n${output.stderr}`);
-      assert.ok(output.stderr.includes('cc-orch resume'),
+      assert.ok(/(cc-orch|nightfoundry) resume/.test(output.stderr),
         `expected the hint to name \`cc-orch resume\` as the next step. Got:\n${output.stderr}`);
 
       // No stack trace / source-frame reference printed on this path.

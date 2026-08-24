@@ -57,6 +57,7 @@
  * freshness, it never throws and never blocks the calling verb.
  */
 import fs from 'fs';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import path from 'path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
@@ -603,5 +604,5 @@ export function guardFreshRoot(projectRoot, { refuse = false, readChannel = defa
     return;
   }
 
-  console.error('fresh project — run `cc-orch init` first for scaffolding + AI guidance');
+  console.error(`fresh project — run \`${displayName()} init\` first for scaffolding + AI guidance`);
 }

@@ -178,7 +178,7 @@ test("(f) infraErrorHint({ batch: false, projectRoot }) with a claimed+bootstrap
     bootstrap(root, { runId });
 
     const hint = infraErrorHint({ batch: false, projectRoot: root });
-    assert.ok(hint.includes('cc-orch resume'), `expected hint to name "cc-orch resume", got: ${hint}`);
+    assert.ok(/(cc-orch|nightfoundry) resume/.test(hint), `expected hint to name the resume command, got: ${hint}`);
     assert.ok(!hint.includes('resume --batch'), `expected hint to NOT name "resume --batch", got: ${hint}`);
   } finally {
     cleanup(root);

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { readQueueEntry, removeQueueEntry, updateQueueEntryStatus } from '../../orchestrator/core/state.js';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 
 /**
  * Read one queue entry without letting a damaged directory throw.
@@ -205,6 +206,6 @@ export function queueRetry(projectRoot, slug) {
   updateQueueEntryStatus(projectRoot, slug, 'pending');
   console.log(
     `Queue entry '${slug}' reset from '${status}' to 'pending'. ` +
-    `Run cc-orch resume --batch to pick it up.`
+    `Run ${displayName()} resume --batch to pick it up.`
   );
 }

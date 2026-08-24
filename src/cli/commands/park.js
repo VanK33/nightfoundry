@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import path from 'path';
 import {
   readQueueEntry,
@@ -306,7 +307,7 @@ export function parkList(projectRoot, options = {}) {
  */
 export function parkShow(projectRoot, slug) {
   if (!slug) {
-    console.error('Usage: cc-orch park show <slug>');
+    console.error(`Usage: ${displayName()} park show <slug>`);
     process.exitCode = 1;
     return;
   }
@@ -412,7 +413,7 @@ export function parkShow(projectRoot, slug) {
  */
 export function parkResolve(projectRoot, slug, flags = {}) {
   if (!slug) {
-    console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]');
+    console.error(`Usage: ${displayName()} park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]`);
     process.exitCode = 1;
     return;
   }

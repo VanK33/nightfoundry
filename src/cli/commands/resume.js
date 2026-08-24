@@ -1,4 +1,5 @@
 import path from 'path';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import { Pipeline } from '../../orchestrator/core/pipeline.js';
 import { InfrastructureError } from '../../orchestrator/infra/session-manager.js';
 import { askYesNo, askMenu } from '../prompt.js';
@@ -67,7 +68,8 @@ export async function resume(projectRoot, flags) {
           message +=
             `Stale active-run pointer at ${pointerPath} (runId: ${heldRunId}) was cleared.\n`;
         }
-        message += 'Recovery: run `cc-orch run <spec-path>` to start a fresh run.\n';
+        message += `Recovery: run \`${displayName()} run <spec-path>\` to start a fresh run.
+`;
         process.stderr.write(message);
         process.exit(76);
       }

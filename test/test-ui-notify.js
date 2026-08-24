@@ -91,7 +91,7 @@ test('TC1b: pendingDecision edge (false -> true) fires once', () => {
   assert.strictEqual(transitions[0].type, 'pendingDecision');
   assert.ok(transitions[0].message.includes('Decision needed'));
   // Next-step hint: the phone message must be actionable, not just informational.
-  assert.ok(transitions[0].message.includes('cc-orch park list'),
+  assert.ok(/(cc-orch|nightfoundry) park list/.test(transitions[0].message),
     'pendingDecision message must carry the park-list next-step hint');
 });
 
@@ -101,7 +101,7 @@ test('TC1c: error edge (false -> true) fires once', () => {
   assert.strictEqual(transitions.length, 1);
   assert.strictEqual(transitions[0].type, 'error');
   assert.ok(transitions[0].message.includes('Run hit an error'));
-  assert.ok(transitions[0].message.includes('cc-orch status'),
+  assert.ok(/(cc-orch|nightfoundry) status/.test(transitions[0].message),
     'error message must carry the status next-step hint');
 });
 
@@ -111,7 +111,7 @@ test('TC1d: complete edge (active true -> false) fires once', () => {
   assert.strictEqual(transitions.length, 1);
   assert.strictEqual(transitions[0].type, 'complete');
   assert.ok(transitions[0].message.includes('Run complete'));
-  assert.ok(transitions[0].message.includes('cc-orch archive list'),
+  assert.ok(/(cc-orch|nightfoundry) archive list/.test(transitions[0].message),
     'complete message must carry the archive-list next-step hint');
 });
 

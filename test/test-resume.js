@@ -128,7 +128,7 @@ await test('TC2+TC4: unresumable state (active+planning+empty milestones) exits 
 
     // TC4: stderr must contain 'cc-orch run' recovery hint
     assert.ok(
-      stderr.includes('cc-orch run'),
+      /(cc-orch|nightfoundry) run/.test(stderr),
       `Expected stderr to contain 'cc-orch run'. Got:\n${stderr}`,
     );
   } finally {

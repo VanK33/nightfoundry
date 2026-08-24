@@ -922,7 +922,7 @@ await test('TC14 — batch=false + unresumable state → process.exit(76) called
 
     // (2) stderr must contain the 'cc-orch run' recovery hint
     assert.ok(
-      stderr.includes('cc-orch run'),
+      /(cc-orch|nightfoundry) run/.test(stderr),
       `Expected stderr to contain 'cc-orch run'. Got:\n${stderr}`,
     );
 

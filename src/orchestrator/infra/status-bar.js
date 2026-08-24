@@ -44,6 +44,7 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
+import { displayName } from './display-name.js';
 
 // ── Agent role icons ───────────────────────────────────────────────────────
 const ROLE_ICONS = {
@@ -467,9 +468,9 @@ export class StatusBar {
     const elapsedStr = (elapsed != null) ? formatElapsed(elapsed) : '';
     let headerContent;
     if (msId != null) {
-      headerContent = ` cc-orch v${this.version} · milestone ${msId} (${done}/${total}) · ${elapsedStr}`;
+      headerContent = ` ${displayName()} v${this.version} · milestone ${msId} (${done}/${total}) · ${elapsedStr}`;
     } else {
-      headerContent = ` cc-orch v${this.version} · idle`;
+      headerContent = ` ${displayName()} v${this.version} · idle`;
     }
     lines.push(truncate(headerContent, w).padEnd(w));
 

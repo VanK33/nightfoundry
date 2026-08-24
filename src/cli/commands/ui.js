@@ -18,6 +18,7 @@
  */
 
 import path from 'path';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import { once } from 'events';
 import { createServer } from '../../ui/server.js';
 
@@ -67,7 +68,7 @@ export async function ui(projectRoot, flags = {}) {
   // installing the SIGINT handler.
   await once(server, 'listening');
 
-  console.log(`cc-orch ui listening on http://localhost:${port}`);
+  console.log(`${displayName()} ui listening on http://localhost:${port}`);
 
   // One-shot SIGINT handler: close the server gracefully then exit.
   const onSigint = () => {

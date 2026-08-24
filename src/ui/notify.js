@@ -1,3 +1,5 @@
+import { displayName } from '../orchestrator/infra/display-name.js';
+
 /**
  * Pure transition-detection logic for the side-rail notification watcher.
  *
@@ -59,9 +61,9 @@ export function detectTransitions(prev, curr) {
 // phone message is actionable, not just informational. Commands must stay
 // generic (the snapshot does not carry a slug on every path).
 const NEXT_STEP_HINTS = {
-  pendingDecision: ' — act: `cc-orch park list` (or answer the prompt in the run terminal)',
-  error: ' — inspect: `cc-orch status`, then `cc-orch archive list` for a forensic archive',
-  complete: ' — review: `cc-orch archive list`',
+  pendingDecision: ` — act: \`${displayName()} park list\` (or answer the prompt in the run terminal)`,
+  error: ` — inspect: \`${displayName()} status\`, then \`${displayName()} archive list\` for a forensic archive`,
+  complete: ` — review: \`${displayName()} archive list\``,
 };
 
 /**

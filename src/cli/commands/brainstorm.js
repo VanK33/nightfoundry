@@ -24,6 +24,7 @@
  */
 import path from 'node:path';
 import fs from 'node:fs';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import crypto from 'node:crypto';
 import readline from 'node:readline';
 import config from '../../orchestrator/infra/config.js';
@@ -394,7 +395,7 @@ export function printHelp(output, slug) {
       '│       Draft files are kept — nothing is deleted.                      │',
       '│       You can resume later using the --resume flag.                   │',
       '│                                                                        │',
-      `│  Resume: cc-orch brainstorm --resume ${slug.padEnd(34)}│`,
+      `│  Resume: ${displayName()} brainstorm --resume ${slug.padEnd(28)}│`,
       `│  Draft location: ~/.cc-orch/brainstorm/${slug.padEnd(32)}│`,
       '│                                                                        │',
       '└────────────────────────────────────────────────────────────────────────┘',
@@ -610,7 +611,7 @@ function printNoTtyOutcome(output, { dir, slug, status, spec }) {
       `  Contents:  ${criteriaCount} acceptance criteria, ${targetCount} target file(s)`,
       `  Spec file: ${path.join(dir, 'spec.md')}`,
       '',
-      `Next: cc-orch brainstorm --resume ${slug}   (interactive review & approve)`,
+      `Next: ${displayName()} brainstorm --resume ${slug}   (interactive review & approve)`,
       '',
     ].join('\n'),
   );
@@ -1209,7 +1210,7 @@ export async function brainstorm(projectRoot, args, flags, opts = {}) {
       const st = readState(dir);
       writeState(dir, { ...st, status: 'approved', lastUpdatedAt: new Date().toISOString() });
       copyApprovedToProjectRoot(projectRoot, dir, slug);
-      output.write(`\n✓ Accepted — spec written to:\n  ${path.join(projectRoot, `${slug}.spec.json`)}\n  ${path.join(projectRoot, `${slug}.spec.md`)}\nNext: run \`cc-orch run\` to execute.\n`);
+      output.write(`\n✓ Accepted — spec written to:\n  ${path.join(projectRoot, `${slug}.spec.json`)}\n  ${path.join(projectRoot, `${slug}.spec.md`)}\nNext: run \`${displayName()} run\` to execute.\n`);
       finalStatus = 'approved';
       looping = false;
     } else if (key === 'r') {
@@ -1269,7 +1270,7 @@ export async function brainstorm(projectRoot, args, flags, opts = {}) {
       // Cancel
       const st = readState(dir);
       writeState(dir, { ...st, status: 'cancelled', lastUpdatedAt: new Date().toISOString() });
-      output.write(`\n✓ Cancelled — draft preserved at:\n  ${dir}\nResume later: cc-orch brainstorm --resume ${slug}\n`);
+      output.write(`\n✓ Cancelled — draft preserved at:\n  ${dir}\nResume later: ${displayName()} brainstorm --resume ${slug}\n`);
       finalStatus = 'cancelled';
       looping = false;
     } else if (key === 'd') {

@@ -173,7 +173,7 @@ const GITIGNORE_PATTERNS = [
   '/nightfoundry-guidance.md',
 ];
 
-const FRESH_HINT = 'fresh project — run `cc-orch init` first for scaffolding + AI guidance';
+const FRESH_HINT = 'fresh project — run `nightfoundry init` first for scaffolding + AI guidance';
 const REFUSAL_TEXT = 'Refusing:';
 
 // ── (A) scaffold creation: anchors, negative pin, size ceiling ─────────────

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Pipeline, copyBundleToQueueEntry } from '../../orchestrator/core/pipeline.js';
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import { usage as printUsage } from './usage.js';
 import { askYesNo, askMenu } from '../prompt.js';
 import { isUserSpecInvocation, prepareUserSpecInput, warnOnEngineSpecJson } from '../user-spec-input.js';
@@ -66,7 +67,7 @@ export async function dryRun(projectRoot, specPath, flags) {
       console.error(`\nSpec validation failed: ${result.reason}`);
       process.exit(1);
     } else {
-      console.log('\nSpec validated and queued. Run cc-orch resume --batch to execute.');
+      console.log(`\nSpec validated and queued. Run ${displayName()} resume --batch to execute.`);
     }
   } catch (err) {
     try {

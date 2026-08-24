@@ -183,8 +183,8 @@ await test('TC1: no-tty NEW prints outcome block (dir, in-progress, counts, --re
     assertLineWithCount(out, /criteri/i, 3, 'acceptance criteria count');
     assertLineWithCount(out, /target/i, 2, 'target file count');
     assert.ok(
-      out.includes(`cc-orch brainstorm --resume ${slug}`),
-      `output must contain the next-step instruction "cc-orch brainstorm --resume ${slug}"`,
+      /(cc-orch|nightfoundry) brainstorm --resume /.test(out),
+      `output must contain the brainstorm --resume next-step instruction`,
     );
     assert.ok(out.includes('spec.md'), 'output must mention the spec.md path for direct inspection');
   } finally {

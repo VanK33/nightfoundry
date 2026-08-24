@@ -12,17 +12,17 @@
  *
  * Covers:
  *   TC1 — 'run --spec-stdin -a --allow-dirty --no-git-required' with malformed
- *         JSON on stdin: stderr lacks 'Usage: cc-orch run' and contains
+ *         JSON on stdin: stderr lacks 'Usage: nightfoundry run' and contains
  *         'Failed to parse JSON from stdin' (proves the missing-positional
  *         guard was bypassed and control reached run()).
  *   TC2 — 'run' with no positional and no --spec-stdin: stderr contains
- *         'Usage: cc-orch run <spec.md>' and exit status is 1 (guard still
+ *         'Usage: nightfoundry run <spec.md>' and exit status is 1 (guard still
  *         fires for the ordinary invocation).
  *   TC3 — 'dry-run --spec-stdin -a --allow-dirty --no-git-required' with
- *         malformed JSON on stdin: stderr lacks 'Usage: cc-orch dry-run' and
+ *         malformed JSON on stdin: stderr lacks 'Usage: nightfoundry dry-run' and
  *         contains 'Failed to parse JSON from stdin'.
  *   TC4 — 'dry-run' with no positional and no --spec-stdin: stderr contains
- *         'Usage: cc-orch dry-run <spec.md>' and exit status is 1.
+ *         'Usage: nightfoundry dry-run <spec.md>' and exit status is 1.
  */
 import assert from 'assert';
 import fs from 'fs';
@@ -70,7 +70,7 @@ function spawnCli(args, opts = {}) {
 
 // ---------------------------------------------------------------------------
 // TC1 — 'run --spec-stdin -a --allow-dirty --no-git-required' with malformed
-// JSON on stdin bypasses the "Usage: cc-orch run" guard and reaches run().
+// JSON on stdin bypasses the "Usage: nightfoundry run" guard and reaches run().
 // ---------------------------------------------------------------------------
 await test(
   "TC1: 'run --spec-stdin -a --allow-dirty --no-git-required' with malformed stdin JSON bypasses Usage guard",
@@ -84,7 +84,7 @@ await test(
       const stderr = result.stderr || '';
 
       assert.ok(
-        !stderr.includes('Usage: cc-orch run'),
+        !stderr.includes('Usage: nightfoundry run'),
         `Expected the missing-positional Usage guard to be bypassed, but got: ${stderr.trim()}`
       );
 
@@ -111,8 +111,8 @@ await test(
       const stderr = result.stderr || '';
 
       assert.ok(
-        stderr.includes('Usage: cc-orch run <spec.md>'),
-        `Expected stderr to contain "Usage: cc-orch run <spec.md>", got: ${stderr.trim()}`
+        stderr.includes('Usage: nightfoundry run <spec.md>'),
+        `Expected stderr to contain "Usage: nightfoundry run <spec.md>", got: ${stderr.trim()}`
       );
 
       assert.strictEqual(
@@ -128,7 +128,7 @@ await test(
 
 // ---------------------------------------------------------------------------
 // TC3 — 'dry-run --spec-stdin -a --allow-dirty --no-git-required' with
-// malformed JSON on stdin bypasses the "Usage: cc-orch dry-run" guard and
+// malformed JSON on stdin bypasses the "Usage: nightfoundry dry-run" guard and
 // reaches the stdin read.
 // ---------------------------------------------------------------------------
 await test(
@@ -143,7 +143,7 @@ await test(
       const stderr = result.stderr || '';
 
       assert.ok(
-        !stderr.includes('Usage: cc-orch dry-run'),
+        !stderr.includes('Usage: nightfoundry dry-run'),
         `Expected the missing-positional Usage guard to be bypassed, but got: ${stderr.trim()}`
       );
 
@@ -170,8 +170,8 @@ await test(
       const stderr = result.stderr || '';
 
       assert.ok(
-        stderr.includes('Usage: cc-orch dry-run <spec.md>'),
-        `Expected stderr to contain "Usage: cc-orch dry-run <spec.md>", got: ${stderr.trim()}`
+        stderr.includes('Usage: nightfoundry dry-run <spec.md>'),
+        `Expected stderr to contain "Usage: nightfoundry dry-run <spec.md>", got: ${stderr.trim()}`
       );
 
       assert.strictEqual(

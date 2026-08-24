@@ -48,9 +48,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * @param {string} [argv1=process.argv[1]]
  * @returns {'cc-orch' | 'nightfoundry'}
  */
-export function displayName(argv1 = process.argv[1]) {
-  return path.basename(argv1 || '') === 'cc-orch' ? 'cc-orch' : 'nightfoundry';
-}
+import { displayName } from '../orchestrator/infra/display-name.js';
+export { displayName };
 
 /**
  * Render the full CLI usage/help text, with the title line and every
@@ -170,7 +169,7 @@ async function main() {
       const specPath = positional[1];
       if (!flags['spec-stdin']) {
         if (!specPath) {
-          console.error('Usage: cc-orch run <spec.md>');
+          console.error(`Usage: ${displayName()} run <spec.md>`);
           process.exit(1);
         }
         if (!fs.existsSync(specPath)) {
@@ -194,7 +193,7 @@ async function main() {
     case 'status': {
       guardFreshRoot(projectRoot, { refuse: false });
       if (!harnessExists()) {
-        console.error('No .harness/state.json found. Start a run with cc-orch run <spec.md> first.');
+        console.error(`No .harness/state.json found. Start a run with ${displayName()} run <spec.md> first.`);
         process.exit(1);
       }
       return status(projectRoot, positional[1]);
@@ -203,7 +202,7 @@ async function main() {
     case 'resume': {
       // --batch reads from queue/, doesn't need .harness/state.json
       if (!flags.batch && !harnessExists()) {
-        console.error('No .harness/state.json found. Start a run with cc-orch run <spec.md> first.');
+        console.error(`No .harness/state.json found. Start a run with ${displayName()} run <spec.md> first.`);
         process.exit(1);
       }
       if (flags.batch) {
@@ -232,7 +231,7 @@ async function main() {
       }
       const prose = positional[1];
       if (!prose) {
-        console.error('Usage: cc-orch brainstorm "<prose>" [--no-tty]');
+        console.error(`Usage: ${displayName()} brainstorm "<prose>" [--no-tty]`);
         process.exit(1);
       }
       return brainstorm(projectRoot, [prose], flags, { sessionManager, logger, tokenTracker });
@@ -241,7 +240,7 @@ async function main() {
     case 'usage': {
       if (positional[1] === 'compare') {
         if (!positional[2] || !positional[3]) {
-          console.error('Usage: cc-orch usage compare <a> <b>');
+          console.error(`Usage: ${displayName()} usage compare <a> <b>`);
           process.exit(1);
         }
         return compare(projectRoot, positional[2], positional[3], {});
@@ -261,7 +260,7 @@ async function main() {
         });
       }
       if (!harnessExists()) {
-        console.error('No .harness/state.json found. Start a run with cc-orch run <spec.md> first.');
+        console.error(`No .harness/state.json found. Start a run with ${displayName()} run <spec.md> first.`);
         process.exit(1);
       }
       return usage(projectRoot, {
@@ -283,13 +282,13 @@ async function main() {
         return archiveList(projectRoot, { json: jsonOut });
       } else if (sub === 'show') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch archive show <id> [--report]');
+          console.error(`Usage: ${displayName()} archive show <id> [--report]`);
           process.exit(1);
         }
         return archiveShow(projectRoot, positional[2], { json: jsonOut, report: !!flags.report });
       } else if (sub === 'diff') {
         if (!positional[2] || !positional[3]) {
-          console.error('Usage: cc-orch archive diff <a> <b>');
+          console.error(`Usage: ${displayName()} archive diff <a> <b>`);
           process.exit(1);
         }
         return archiveDiff(projectRoot, positional[2], positional[3], { json: jsonOut });
@@ -304,18 +303,18 @@ async function main() {
         return queueList(projectRoot, { json: jsonOut });
       } else if (sub === 'remove') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch queue remove <slug>');
+          console.error(`Usage: ${displayName()} queue remove <slug>`);
           process.exit(1);
         }
         return queueRemove(projectRoot, positional[2], { json: jsonOut });
       } else if (sub === 'retry') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch queue retry <slug>');
+          console.error(`Usage: ${displayName()} queue retry <slug>`);
           process.exit(1);
         }
         return queueRetry(projectRoot, positional[2]);
       } else {
-        console.error('Usage: cc-orch queue list|remove|retry <slug>');
+        console.error(`Usage: ${displayName()} queue list|remove|retry <slug>`);
         process.exit(1);
       }
       break;
@@ -327,18 +326,18 @@ async function main() {
         return parkList(projectRoot, { json: jsonOut });
       } else if (sub === 'show') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch park show <slug>');
+          console.error(`Usage: ${displayName()} park show <slug>`);
           process.exit(1);
         }
         return parkShow(projectRoot, positional[2]);
       } else if (sub === 'resolve') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]');
+          console.error(`Usage: ${displayName()} park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]`);
           process.exit(1);
         }
         return parkResolve(projectRoot, positional[2], flags);
       } else {
-        console.error('Usage: cc-orch park list|show <slug>|resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]');
+        console.error(`Usage: ${displayName()} park list|show <slug>|resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]`);
         process.exit(1);
       }
       break;
@@ -350,7 +349,7 @@ async function main() {
         return warningsList(projectRoot, { all: !!flags.all, json: jsonOut });
       } else if (sub === 'show') {
         if (!positional[2]) {
-          console.error('Usage: cc-orch warnings show <id>');
+          console.error(`Usage: ${displayName()} warnings show <id>`);
           process.exit(1);
         }
         return warningsShow(projectRoot, positional[2]);
@@ -359,7 +358,7 @@ async function main() {
       } else if (sub === 'brainstorm') {
         return warningsBrainstorm(projectRoot, positional.slice(2), flags);
       } else {
-        console.error('Usage: cc-orch warnings list [--all]|show <id>|resolve <id...> --waive|--defer|--done [--note <text>]|brainstorm <id...> [--no-tty]');
+        console.error(`Usage: ${displayName()} warnings list [--all]|show <id>|resolve <id...> --waive|--defer|--done [--note <text>]|brainstorm <id...> [--no-tty]`);
         process.exit(1);
       }
       break;
@@ -392,7 +391,7 @@ async function main() {
     case 'reset': {
       const taskId = positional[1];
       if (!taskId) {
-        console.error('Usage: cc-orch reset <task-id>');
+        console.error(`Usage: ${displayName()} reset <task-id>`);
         process.exit(1);
       }
       return reset(projectRoot, taskId);
@@ -403,7 +402,7 @@ async function main() {
       const specPath = positional[1];
       if (!flags['spec-stdin']) {
         if (!specPath) {
-          console.error('Usage: cc-orch dry-run <spec.md>');
+          console.error(`Usage: ${displayName()} dry-run <spec.md>`);
           process.exit(1);
         }
         if (!fs.existsSync(specPath)) {
@@ -427,7 +426,7 @@ async function main() {
     case 'task': {
       const description = positional[1];
       if (!description) {
-        console.error('Usage: cc-orch task "<description>"');
+        console.error(`Usage: ${displayName()} task "<description>"`);
         process.exit(1);
       }
       const baselineResult = await runBaselineGate(projectRoot);

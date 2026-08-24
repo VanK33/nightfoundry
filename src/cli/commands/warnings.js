@@ -10,6 +10,7 @@
  *   cc-orch warnings resolve <id...> --waive|--defer|--done [--note <text>]
  *   cc-orch warnings brainstorm <id...> [--no-tty]
  */
+import { displayName } from '../../orchestrator/infra/display-name.js';
 import {
   readLedger,
   resolveEntries,
@@ -111,7 +112,7 @@ export function warningsList(projectRoot, options = {}) {
  */
 export function warningsShow(projectRoot, id) {
   if (!id) {
-    console.error('Usage: cc-orch warnings show <id>');
+    console.error(`Usage: ${displayName()} warnings show <id>`);
     process.exitCode = 1;
     return;
   }
@@ -137,7 +138,7 @@ export function warningsShow(projectRoot, id) {
  */
 export function warningsResolve(projectRoot, ids, flags = {}) {
   if (!ids || ids.length === 0) {
-    console.error('Usage: cc-orch warnings resolve <id...> --waive|--defer|--done [--note <text>]');
+    console.error(`Usage: ${displayName()} warnings resolve <id...> --waive|--defer|--done [--note <text>]`);
     process.exitCode = 1;
     return;
   }
@@ -201,7 +202,7 @@ export function synthesizeBrainstormGoal(entries) {
  */
 export async function warningsBrainstorm(projectRoot, ids, flags = {}, deps = {}) {
   if (!ids || ids.length === 0) {
-    console.error('Usage: cc-orch warnings brainstorm <id...> [--no-tty]');
+    console.error(`Usage: ${displayName()} warnings brainstorm <id...> [--no-tty]`);
     process.exitCode = 1;
     return;
   }
@@ -240,7 +241,7 @@ export async function warningsBrainstorm(projectRoot, ids, flags = {}, deps = {}
   stampBrainstormSlug(projectRoot, ids, result.slug);
   console.log(
     `Stamped brainstormSlug '${result.slug}' on ${ids.length} warning(s): ${ids.join(', ')} ` +
-    `(status unchanged — close with: cc-orch warnings resolve ${ids.join(' ')} --done after the fix ships).`
+    `(status unchanged — close with: ${displayName()} warnings resolve ${ids.join(' ')} --done after the fix ships).`
   );
   return result;
 }

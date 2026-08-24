@@ -16,6 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'node:crypto';
+import { displayName } from '../infra/display-name.js';
 import { execSync, execFileSync } from 'child_process';
 import config from '../infra/config.js';
 import { SessionManager, InfrastructureError, WallClockExceededError } from '../infra/session-manager.js';
@@ -709,8 +710,8 @@ class Pipeline {
           this.onLog(
             `Refusing to start a new run: the active-run pointer at ${pointerDir} is already held` +
             (pointerRunId ? ` by run ${pointerRunId}` : '') +
-            `. If it is still progressing or resumable, run \`cc-orch resume\`; ` +
-            `if it is wedged and should be discarded, run \`cc-orch clean\`.`
+            `. If it is still progressing or resumable, run \`${displayName()} resume\`; ` +
+            `if it is wedged and should be discarded, run \`${displayName()} clean\`.`
           );
           return;
         }
@@ -1352,7 +1353,7 @@ class Pipeline {
           const resumeCritFailures = err.failures || [];
           if (resumeCritFailures.length > 0 && resumeCritFailures.every((f) => f.timedOut === true)) {
             console.error('\nSpec acceptance criteria suite TIMED OUT during resume — not a criterion failure.');
-            console.error('Re-run `cc-orch resume` when the system is quiet.');
+            console.error(`Re-run \`${displayName()} resume\` when the system is quiet.`);
 
             try {
               const pendingState = readState(this.harnessDir);
@@ -1373,7 +1374,7 @@ class Pipeline {
               console.error(`  - ${failure.name}`);
             }
           }
-          console.error('\nFix the failing criteria above, then re-run `cc-orch resume`.');
+          console.error(`\nFix the failing criteria above, then re-run \`${displayName()} resume\`.`);
 
           try {
             const pendingState = readState(this.harnessDir);
@@ -1547,7 +1548,7 @@ class Pipeline {
       isGitRepo = false;
     }
     if (porcelain.length > 0) {
-      const refusalMessage = 'Batch refused: working tree is not clean. Commit or stash changes before running cc-orch resume --batch. (cc-orch\'s own artifacts — .harness/, queue/, and root-level spec files — are auto-excluded from git; the changes above are outside that set.)';
+      const refusalMessage = `Batch refused: working tree is not clean. Commit or stash changes before running ${displayName()} resume --batch. (${displayName()}'s own artifacts — .harness/, queue/, and root-level spec files — are auto-excluded from git; the changes above are outside that set.)`;
       // A park resolved by `cc-orch park resolve` restores a preserved stash
       // BEFORE this guard runs, which legitimately dirties the tree with the
       // very changes the batch is meant to resume — the guard as written
@@ -3098,7 +3099,7 @@ class Pipeline {
       // user the entry survived the interrupt and how to continue.
       this.onLog(
         `  Entry '${slug}' interrupted — it stays pending and reruns on the next ` +
-        '`cc-orch resume --batch`.'
+        `\`${displayName()} resume --batch\`.`
       );
       return;
     }
@@ -3110,13 +3111,13 @@ class Pipeline {
         // clean-tree post-exec interrupt would break the loop with zero output.
         this.onLog(
           `  Entry '${slug}' interrupted on a clean tree — it stays pending and ` +
-          'reruns on the next `cc-orch resume --batch`.'
+          `reruns on the next \`${displayName()} resume --batch\`.`
         );
         return;
       }
       this.onLog(
         `  Work for entry '${slug}' snapshotted (best-effort) to ${snap.stashRef}; ` +
-        "the entry will re-run from scratch on the next `cc-orch resume --batch`."
+        `the entry will re-run from scratch on the next \`${displayName()} resume --batch\`.`
       );
     } catch (snapErr) {
       let porcelain;
@@ -3139,7 +3140,7 @@ class Pipeline {
         this.onLog(
           `  Snapshot of entry '${slug}' failed (${snapErr.message}) and the working tree is STILL DIRTY. ` +
           'The work-in-progress is intact but needs a manual `git stash` or commit before the next ' +
-          '`cc-orch resume --batch` (the clean-tree guard will otherwise refuse it).'
+          `\`${displayName()} resume --batch\` (the clean-tree guard will otherwise refuse it).`
         );
       }
     }
@@ -6201,7 +6202,7 @@ class Pipeline {
           `Circuit breaker: task ${task.id} failed ${failureType} after ${retryCount + 1} attempts. ` +
           `Analyzer repeated its previous verdict (rec=${analysis.recommendation}) — escalated to human. ` +
           `See .harness/analysis/${analysis.eventId}.json. ` +
-          `Run \`cc-orch reset ${task.id}\` to give this task a fresh chance.`,
+          `Run \`${displayName()} reset ${task.id}\` to give this task a fresh chance.`,
           { taskId: task.id, recommendation: analysis.recommendation, eventId: analysis.eventId, escalatedByRepeat: true }
         );
       }
@@ -6280,7 +6281,7 @@ class Pipeline {
         `Recommendation: ${analysis.recommendation}. ` +
         `${analysis.affectedTasks?.length || 0} task(s) marked for revalidation. ` +
         `See .harness/analysis/${analysis.eventId}.json. ` +
-        `Run \`cc-orch reset ${task.id}\` to give this task a fresh chance.`,
+        `Run \`${displayName()} reset ${task.id}\` to give this task a fresh chance.`,
         { taskId: task.id, recommendation: analysis.recommendation, eventId: analysis.eventId }
       );
     } catch (err) {
@@ -6290,7 +6291,7 @@ class Pipeline {
       throw new CircuitBreakerError(
         `Circuit breaker: task ${task.id} failed ${failureType} after ${retryCount + 1} attempts. ` +
         `Analyzer could not complete: ${err.message}. ` +
-        `Run \`cc-orch reset ${task.id}\` to give this task a fresh chance.`,
+        `Run \`${displayName()} reset ${task.id}\` to give this task a fresh chance.`,
         { taskId: task.id }
       );
     }

@@ -246,7 +246,7 @@ await test("TC7: legacy flag '--status' is rejected and suggests positional 'sta
 
     // Should suggest using positional 'status' instead of --status flag
     assert.ok(
-      combined.includes('cc-orch status') || combined.includes("use 'status'") || combined.includes('Did you mean'),
+      /(cc-orch|nightfoundry) status/.test(combined) || combined.includes("use 'status'") || combined.includes('Did you mean'),
       `Expected suggestion to use positional 'status', got: ${combined.trim()}`
     );
 
@@ -279,7 +279,7 @@ await test("TC8: legacy flag '--resume' is rejected and suggests positional 'res
     // brainstorm subcommand; at top level it has no value to consume, hence the error.
     // Both are valid rejections — the user typed something invalid and got told so.
     assert.ok(
-      combined.includes('cc-orch resume') ||
+      /(cc-orch|nightfoundry) resume/.test(combined) ||
         combined.includes("use 'resume'") ||
         combined.includes('Did you mean') ||
         combined.includes('--resume requires a value'),
@@ -565,14 +565,14 @@ await test("TC18: '--role' at end of args exits non-zero with 'requires a value'
 // (The \"path\" argument must be of type string)" error naming 'undefined').
 // ---------------------------------------------------------------------------
 const MISSING_ARG_CASES = [
-  { tc: 'TC19', args: ['queue', 'retry'], usage: 'Usage: cc-orch queue retry <slug>' },
-  { tc: 'TC20', args: ['queue', 'remove'], usage: 'Usage: cc-orch queue remove <slug>' },
-  { tc: 'TC21', args: ['park', 'show'], usage: 'Usage: cc-orch park show <slug>' },
-  { tc: 'TC22', args: ['park', 'resolve'], usage: 'Usage: cc-orch park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]' },
-  { tc: 'TC23', args: ['archive', 'show'], usage: 'Usage: cc-orch archive show <id>' },
-  { tc: 'TC24', args: ['archive', 'diff', 'only-one'], usage: 'Usage: cc-orch archive diff <a> <b>' },
-  { tc: 'TC25', args: ['usage', 'compare', 'only-one'], usage: 'Usage: cc-orch usage compare <a> <b>' },
-  { tc: 'TC26', args: ['warnings', 'show'], usage: 'Usage: cc-orch warnings show <id>' },
+  { tc: 'TC19', args: ['queue', 'retry'], usage: 'Usage: nightfoundry queue retry <slug>' },
+  { tc: 'TC20', args: ['queue', 'remove'], usage: 'Usage: nightfoundry queue remove <slug>' },
+  { tc: 'TC21', args: ['park', 'show'], usage: 'Usage: nightfoundry park show <slug>' },
+  { tc: 'TC22', args: ['park', 'resolve'], usage: 'Usage: nightfoundry park resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]' },
+  { tc: 'TC23', args: ['archive', 'show'], usage: 'Usage: nightfoundry archive show <id>' },
+  { tc: 'TC24', args: ['archive', 'diff', 'only-one'], usage: 'Usage: nightfoundry archive diff <a> <b>' },
+  { tc: 'TC25', args: ['usage', 'compare', 'only-one'], usage: 'Usage: nightfoundry usage compare <a> <b>' },
+  { tc: 'TC26', args: ['warnings', 'show'], usage: 'Usage: nightfoundry warnings show <id>' },
 ];
 
 for (const { tc, args, usage } of MISSING_ARG_CASES) {
@@ -714,7 +714,7 @@ await test("TC30: 'park resolve <slug> --approve' is accepted by parseArgs and a
 
     assert.ok(
       bogusCombined.includes(
-        'Usage: cc-orch park list|show <slug>|resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]'
+        'Usage: nightfoundry park list|show <slug>|resolve <slug> --requeue|--waive|--reject|--approve [--note <text>]'
       ),
       `Expected 'park bogus' usage line to advertise --approve, got: ${bogusCombined.trim()}`
     );

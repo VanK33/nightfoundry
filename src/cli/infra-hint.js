@@ -9,6 +9,7 @@
  */
 
 import { resolveActiveHarnessDir } from '../orchestrator/core/run-context.js';
+import { displayName } from '../orchestrator/infra/display-name.js';
 
 /**
  * Returns a resumability-hint string for an infrastructure error.
@@ -26,11 +27,11 @@ import { resolveActiveHarnessDir } from '../orchestrator/core/run-context.js';
  */
 export function infraErrorHint({ batch, projectRoot }) {
   if (batch) {
-    return 'Infrastructure error (API down/rate limited). State saved. Run `cc-orch resume --batch` when ready.';
+    return `Infrastructure error (API down/rate limited). State saved. Run \`${displayName()} resume --batch\` when ready.`;
   }
 
   if (resolveActiveHarnessDir(projectRoot) !== null) {
-    return 'Infrastructure error (API down/rate limited). State saved. Run `cc-orch resume` when ready.';
+    return `Infrastructure error (API down/rate limited). State saved. Run \`${displayName()} resume\` when ready.`;
   }
 
   return 'Infrastructure error (API down/rate limited). No active run to resume.';

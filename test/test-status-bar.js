@@ -265,8 +265,8 @@ await test('TTY: updateMilestone renders header with version and milestone ID (T
 
   const combined = chunks.join('');
   // Header should contain the package version prefix
-  assert.ok(/cc-orch v/.test(combined),
-    `render should include "cc-orch v", got: ${combined.slice(0, 300)}`);
+  assert.ok(/(cc-orch|nightfoundry) v/.test(combined),
+    `render should include the display name + version, got: ${combined.slice(0, 300)}`);
   // Header should include milestone ID
   assert.ok(/001-003/.test(combined),
     `render should include milestone ID "001-003", got: ${combined.slice(0, 300)}`);

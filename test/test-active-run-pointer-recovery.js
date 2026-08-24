@@ -457,12 +457,12 @@ for (const fixture of tc4Fixtures) {
 
         const combinedLog = logs.join('\n');
         assert.ok(
-          combinedLog.includes('cc-orch resume'),
-          `Expected the refusal captured via onLog to contain the literal 'cc-orch resume'. Got:\n${combinedLog}`,
+          /(cc-orch|nightfoundry) resume/.test(combinedLog),
+          `Expected the refusal captured via onLog to name the resume command. Got:\n${combinedLog}`,
         );
         assert.ok(
-          combinedLog.includes('cc-orch clean'),
-          `Expected the refusal captured via onLog to contain the literal 'cc-orch clean'. Got:\n${combinedLog}`,
+          /(cc-orch|nightfoundry) clean/.test(combinedLog),
+          `Expected the refusal captured via onLog to name the clean command. Got:\n${combinedLog}`,
         );
       } finally {
         cleanup(root);
