@@ -9,7 +9,10 @@
  *   TC-A-1: regressionVerifierSchema = verifierSchema + optional `findings`
  *           array ({file, description} required; evidence/relatedFiles
  *           optional); `required` identical to verifierSchema.required
- *           (findings NOT required).
+ *           (findings NOT required). Also pins `redundancyCitations`: present
+ *           (and deep-equal) on both schemas' properties, array of
+ *           {claim, file, pattern} strings, and absent from both `required`
+ *           lists.
  *
  * B) PRODUCER — verifyMilestone
  *   TC-B-1: failing verdict WITH structured findings → JSON companion
@@ -347,7 +350,7 @@ async function runMilestoneWithMocks({ pipeline, harnessDir, milestoneId, verifi
 
 // ── A) Schema pins ───────────────────────────────────────────────────────────
 
-await test('TC-A-1: regressionVerifierSchema = verifierSchema + optional findings; required identical', () => {
+await test('TC-A-1: regressionVerifierSchema = verifierSchema + optional findings; required identical; redundancyCitations pinned', () => {
   assert.ok(regressionVerifierSchema && typeof regressionVerifierSchema === 'object',
     'regressionVerifierSchema must be exported from agents/_schemas.js');
 
@@ -388,6 +391,41 @@ await test('TC-A-1: regressionVerifierSchema = verifierSchema + optional finding
   );
   assert.ok(!regressionVerifierSchema.required.includes('findings'),
     'findings must NOT be in the required list');
+
+  // redundancyCitations: present on both schemas, deep-equal, correct shape.
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(verifierSchema.properties, 'redundancyCitations'),
+    'verifierSchema.properties must include redundancyCitations'
+  );
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(regressionVerifierSchema.properties, 'redundancyCitations'),
+    'regressionVerifierSchema.properties must include redundancyCitations'
+  );
+  assert.deepStrictEqual(
+    regressionVerifierSchema.properties.redundancyCitations,
+    verifierSchema.properties.redundancyCitations,
+    'redundancyCitations must be identical across both schemas'
+  );
+
+  const redundancyCitations = regressionVerifierSchema.properties.redundancyCitations;
+  assert.strictEqual(redundancyCitations.type, 'array', 'redundancyCitations must be an array schema');
+  for (const key of ['claim', 'file', 'pattern']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(redundancyCitations.items.properties, key),
+      `redundancyCitations.items.properties must declare '${key}'`
+    );
+    assert.strictEqual(
+      redundancyCitations.items.properties[key].type,
+      'string',
+      `redundancyCitations.items.properties.${key} must be type 'string'`
+    );
+  }
+
+  // redundancyCitations must NOT be required on either schema.
+  assert.ok(!verifierSchema.required.includes('redundancyCitations'),
+    'redundancyCitations must NOT be in verifierSchema.required');
+  assert.ok(!regressionVerifierSchema.required.includes('redundancyCitations'),
+    'redundancyCitations must NOT be in regressionVerifierSchema.required');
 });
 
 // ── B) Producer — verifyMilestone ────────────────────────────────────────────

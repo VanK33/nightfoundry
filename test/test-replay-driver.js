@@ -784,7 +784,18 @@ await test('TC3 the pipeline calls the injected predicate and the disposition fo
   try {
     const { pipeline } = buildDependencyRoutingPipeline(envFail.root, {
       execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
-      verifyResult: { verified: true, report: 'goal state holds' },
+      verifyResult: {
+        verified: true,
+        report: 'goal state holds',
+        // Two-arm redundancy gate (redundant-probe-hardening): a redundant
+        // disposition now also requires machine-checkable citations that
+        // resolve against the tree; without them the probe routes to failed.
+        structured: {
+          redundancyCitations: [
+            { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+          ],
+        },
+      },
       assertChangesLandedSpy: predicateFail,
     });
     await pipeline._executeAndVerifyTask(envFail.missionId, envFail.subMissionId, {

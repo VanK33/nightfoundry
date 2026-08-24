@@ -94,6 +94,24 @@ export const verifierSchema = {
       },
       required: ['spec_consulted', 'plan_consulted', 'deviations'],
     },
+    // OPTIONAL: citations backing a redundancy-probe verdict (calls flagged
+    // via the context key `redundancyProbe`). Not in `required` — ordinary
+    // verdicts validate with no added branch. Requiredness on probe calls is
+    // enforced pipeline-side, never schema-side. Defined here (not directly
+    // on regressionVerifierSchema) so the property spread below keeps the
+    // two schemas' `properties.redundancyCitations` deep-equal.
+    redundancyCitations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          claim:   { type: 'string' },
+          file:    { type: 'string' },
+          pattern: { type: 'string' },
+        },
+        required: ['claim', 'file', 'pattern'],
+      },
+    },
   },
   required: ['result', 'hardChecks', 'taskScopeChecks', 'back_reference_check'],
 };

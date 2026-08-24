@@ -32,6 +32,8 @@
  * TC-PW-7: not all declared files changed (one unchanged) → ok:false
  * TC-PW-8: bothMissing classification — in-before-unchanged excluded,
  *          both-missing included
+ * TC-MANIFEST-1: milestone test files are registered in TEST_FILES
+ * TC-MANIFEST-2: TEST_FILES and the on-disk test set agree
  *
  * Pipeline tests:
  * TC-PW-PROBE-1: phantom-write + verifier PASS + in-before targetFile →
@@ -54,6 +56,12 @@
  *                task `failed`, analyzer dispatched
  * TC-PW-PROBE-9: phantom-write + verifier PASS + multi-file mix (one
  *                in-before + one both-missing) → `failed` (any-missing)
+ * TC-PW-PROBE-11: probe-PASS with NO redundancyCitations → failed (citation arm)
+ * TC-PW-PROBE-12: probe-PASS with a non-resolving citation → failed (citation arm)
+ * TC-PW-PROBE-13: resolving citations + FAILING hard check → failed (hard-check arm)
+ * TC-PW-PROBE-14: resolving citations + passing hard check → invalidated (positive control)
+ * TC-PW-PROBE-15: empty-string pattern is inadmissible → failed (citation arm)
+ * TC-PW-PROBE-16: root-escaping citation file is inadmissible → failed (citation arm)
  * TC-PW-PROBE-10: executor-reported-but-undeclared both-missing file does
  *                NOT trigger FAILED (gate scoped to targetFiles only)
  *
@@ -63,10 +71,15 @@ import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { snapshotFiles, assertChangesLanded } from '../src/orchestrator/core/snapshots.js';
 import { Pipeline } from '../src/orchestrator/core/pipeline.js';
 import { InfrastructureError } from '../src/orchestrator/infra/session-manager.js';
 import { writeMissionState } from '../src/orchestrator/core/state.js';
+import { TEST_FILES } from '../scripts/run-tests.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
 
 let passCount = 0;
 let failCount = 0;
@@ -195,6 +208,78 @@ await test('TC-PW-8: bothMissing classification — in-before-unchanged excluded
     assert.deepStrictEqual(result.bothMissing, ['ghost.js'],
       'bothMissing includes only the file absent from before-snapshot AND disk');
   } finally { cleanup(root); }
+});
+
+await test('TC-MANIFEST-1: milestone test files are registered in TEST_FILES', async () => {
+  const requiredPaths = [
+    'test/test-phantom-write-guard.js',
+    'test/test-phantom-write-readonly-sentinel.js',
+    'test/test-regression-structured-findings.js',
+  ];
+  const missing = requiredPaths.filter((p) => !TEST_FILES.includes(p));
+  assert.deepStrictEqual(
+    missing,
+    [],
+    `Expected TEST_FILES (scripts/run-tests.js) to include the following milestone test ` +
+      `file path(s), but they are missing: ${missing.join(', ')}`
+  );
+});
+
+/**
+ * Read the flat exemption list from scripts/test-exemptions.json.
+ * @returns {Array<{ file: string, reason: string }>}
+ */
+function readExemptions() {
+  const exemptionsPath = path.join(repoRoot, 'scripts', 'test-exemptions.json');
+  const raw = fs.readFileSync(exemptionsPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `Expected ${exemptionsPath} to contain a flat array of { file, reason } entries, got: ${typeof parsed}`
+    );
+  }
+  return parsed;
+}
+
+/**
+ * List the test-*.js files directly under test/ (non-recursive), so
+ * test/helpers/ (and any other subdirectory) is excluded, along with any
+ * top-level file whose basename does not match test-*.js.
+ * @returns {string[]} project-relative paths, e.g. 'test/test-foo.js'
+ */
+function discoverTestFiles() {
+  const testDir = path.join(repoRoot, 'test');
+  const entries = fs.readdirSync(testDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && /^test-.*\.js$/.test(entry.name))
+    .map((entry) => `test/${entry.name}`)
+    .sort();
+}
+
+await test('TC-MANIFEST-2: TEST_FILES and the on-disk test set agree', async () => {
+  const discovered = discoverTestFiles();
+  const registered = new Set(TEST_FILES);
+  const exemptions = readExemptions();
+  const exempted = new Set(exemptions.map((entry) => entry.file));
+
+  const unregistered = discovered.filter(
+    (file) => !registered.has(file) && !exempted.has(file)
+  );
+  assert.deepStrictEqual(
+    unregistered,
+    [],
+    `Found ${unregistered.length} on-disk test file(s) in test/ that are neither ` +
+      `registered in scripts/run-tests.js TEST_FILES nor listed in ` +
+      `scripts/test-exemptions.json: ${unregistered.join(', ')}`
+  );
+
+  const dangling = TEST_FILES.filter((entry) => !fs.existsSync(path.join(repoRoot, entry)));
+  assert.deepStrictEqual(
+    dangling,
+    [],
+    `Found ${dangling.length} TEST_FILES entry/entries in scripts/run-tests.js with no ` +
+      `corresponding file on disk: ${dangling.join(', ')}`
+  );
 });
 
 // ── Pipeline integration tests for Defect #17 fix ───────────────────────────
@@ -326,7 +411,15 @@ await test('TC-PW-PROBE-1: phantom-write + verifier PASS + in-before targetFile 
   const env = createPipelineEnv();  // src/foo.js exists → in-before
   const { pipeline, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
     execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },  // executor lies — won't actually edit foo.js
-    verifyResult: { verified: true, report: 'goal state holds' },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
   });
   try {
     await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
@@ -368,7 +461,15 @@ await test('TC-PW-PROBE-1b: phantom-write + verifier PASS + ALL targetFiles in-b
 
   const { pipeline, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
     execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js', 'src/bar.js'] },  // executor lies — edits nothing
-    verifyResult: { verified: true, report: 'goal state holds' },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
   });
   try {
     await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
@@ -452,7 +553,15 @@ await test('TC-PW-PROBE-4: state-transition on redundant probe-PASS skips `faile
   const env = createPipelineEnv();  // src/foo.js exists → in-before
   const { pipeline, restoreWarn } = makePipelineWithFakes(env.root, {
     execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
-    verifyResult: { verified: true, report: 'goal state holds' },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
   });
   try {
     // No exception means all transitions were legal per state-machine.
@@ -590,7 +699,15 @@ await test('TC-PW-PROBE-8: phantom-write + verifier PASS + both-missing targetFi
 
   const { pipeline, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
     execResult: { status: 'COMPLETED', affectedFiles: ['src/ghost.js'] },  // executor lies — ghost.js never produced
-    verifyResult: { verified: true, report: 'goal state holds' },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
   });
   try {
     // Analyzer recommends 'human' (fake default) → _dispatchAnalyzer may
@@ -633,7 +750,15 @@ await test('TC-PW-PROBE-9: phantom-write + verifier PASS + multi-file mix (one i
 
   const { pipeline, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
     execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js', 'src/ghost.js'] },  // edits nothing
-    verifyResult: { verified: true, report: 'goal state holds' },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
   });
   try {
     try {
@@ -661,7 +786,15 @@ await test('TC-PW-PROBE-10: executor-reported-but-undeclared both-missing file d
   const { pipeline, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
     // Executor self-reports an undeclared, never-produced file alongside foo.js.
     execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js', 'src/ghost.js'] },
-    verifyResult: { verified: true, report: 'goal state holds' },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
   });
   try {
     await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
@@ -675,6 +808,203 @@ await test('TC-PW-PROBE-10: executor-reported-but-undeclared both-missing file d
   } finally {
     restoreWarn();
     fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+// ── TC-PW-PROBE-11..12: the citation arm rejects ungrounded redundancy claims ──
+
+await test('TC-PW-PROBE-11: probe-PASS with NO redundancyCitations at all → failed (not invalidated), analyzer dispatched', async () => {
+  // Citation arm: a probe verdict that carries no citations cannot support a
+  // redundant disposition — the task must route to the probe-FAIL path.
+  const env = createPipelineEnv();  // src/foo.js exists → in-before
+  const { pipeline, logs, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
+    execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
+    verifyResult: { verified: true, report: 'goal state holds' },  // deliberately no structured.redundancyCitations
+  });
+  try {
+    try {
+      await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
+        id: env.taskId, description: 'test', targetFiles: ['src/foo.js'], dependencies: [],
+      });
+    } catch { /* analyzer human-recommendation throw is acceptable */ }
+    const ms = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state', `mission-${env.missionId}.json`), 'utf8'));
+    const task = ms.subMissions[env.subMissionId].tasks[env.taskId];
+    assert.strictEqual(task.status, 'failed', `expected failed (no citations → citation arm rejects), got ${task.status}`);
+    assert.ok(getAnalyzerDispatched() >= 1, 'analyzer should be dispatched on the probe-FAIL path');
+    assert.ok(logs.some((l) => l.includes('redundancy-citation arm')), 'the CITATION arm (not the hard-check arm) should be the one that fired');
+  } finally {
+    restoreWarn();
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test('TC-PW-PROBE-12: probe-PASS with a NON-RESOLVING citation (pattern absent from file) → failed (not invalidated)', async () => {
+  // Citation arm: a citation whose pattern is not a literal substring of the
+  // cited file's current text is ungrounded — the redundant disposition must
+  // be refused and the task routed to the probe-FAIL path.
+  const env = createPipelineEnv();
+  const { pipeline, logs, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
+    execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'content already present', file: 'src/foo.js', pattern: 'THIS PATTERN DOES NOT OCCUR' },
+        ],
+      },
+    },
+  });
+  try {
+    try {
+      await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
+        id: env.taskId, description: 'test', targetFiles: ['src/foo.js'], dependencies: [],
+      });
+    } catch { /* analyzer human-recommendation throw is acceptable */ }
+    const ms = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state', `mission-${env.missionId}.json`), 'utf8'));
+    const task = ms.subMissions[env.subMissionId].tasks[env.taskId];
+    assert.strictEqual(task.status, 'failed', `expected failed (non-resolving citation → citation arm rejects), got ${task.status}`);
+    assert.ok(getAnalyzerDispatched() >= 1, 'analyzer should be dispatched on the probe-FAIL path');
+    assert.ok(logs.some((l) => l.includes('redundancy-citation arm')), 'the CITATION arm should be the one that fired');
+  } finally {
+    restoreWarn();
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+// ── TC-PW-PROBE-13..14: the hard-check arm gates the redundant disposition ──
+
+await test('TC-PW-PROBE-13: probe-PASS with resolving citations but a FAILING hard check → failed (not invalidated)', async () => {
+  // Hard-check arm: even with fully-resolving citations, a failing declared
+  // hard check blocks the redundant disposition — the bypass the old early
+  // return created is closed.
+  const env = createPipelineEnv();
+  fs.writeFileSync(
+    path.join(env.harnessDir, 'verify', `task-${env.taskId}.json`),
+    JSON.stringify({ taskId: env.taskId, targetFiles: ['src/foo.js'], hardChecks: [{ name: 'fail', command: 'false' }], testCases: [] })
+  );
+  const { pipeline, logs, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
+    execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
+  });
+  try {
+    try {
+      await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
+        id: env.taskId, description: 'test', targetFiles: ['src/foo.js'], dependencies: [],
+      });
+    } catch { /* analyzer human-recommendation throw is acceptable */ }
+    const ms = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state', `mission-${env.missionId}.json`), 'utf8'));
+    const task = ms.subMissions[env.subMissionId].tasks[env.taskId];
+    assert.strictEqual(task.status, 'failed', `expected failed (failing hard check gates the disposition), got ${task.status}`);
+    assert.ok(getAnalyzerDispatched() >= 1, 'analyzer should be dispatched on the probe-FAIL path');
+    assert.ok(logs.some((l) => l.includes('hard-check arm')), 'the HARD-CHECK arm (not the citation arm) should be the one that fired');
+  } finally {
+    restoreWarn();
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test('TC-PW-PROBE-14: probe-PASS with resolving citations AND a passing hard check → invalidated (both arms green)', async () => {
+  // Positive control for the two-arm gate: with the hard-check arm green and
+  // the citation arm resolving, the legitimate redundant disposition still
+  // works — the gate did not become a blanket refusal.
+  const env = createPipelineEnv();
+  fs.writeFileSync(
+    path.join(env.harnessDir, 'verify', `task-${env.taskId}.json`),
+    JSON.stringify({ taskId: env.taskId, targetFiles: ['src/foo.js'], hardChecks: [{ name: 'ok', command: 'true' }], testCases: [] })
+  );
+  const { pipeline, getAnalyzerDispatched, restoreWarn } = makePipelineWithFakes(env.root, {
+    execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: {
+        redundancyCitations: [
+          { claim: 'goal already satisfied by pre-existing file content', file: 'src/foo.js', pattern: 'original content' },
+        ],
+      },
+    },
+  });
+  try {
+    await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
+      id: env.taskId, description: 'test', targetFiles: ['src/foo.js'], dependencies: [],
+    });
+    const ms = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state', `mission-${env.missionId}.json`), 'utf8'));
+    const task = ms.subMissions[env.subMissionId].tasks[env.taskId];
+    assert.strictEqual(task.status, 'invalidated', `expected invalidated (both arms green → legitimate redundant), got ${task.status}`);
+    assert.strictEqual(getAnalyzerDispatched(), 0, 'analyzer should NOT be dispatched when both arms pass');
+  } finally {
+    restoreWarn();
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+// ── TC-PW-PROBE-15..16: adversarially-found citation-arm bypasses stay closed ──
+
+await test('TC-PW-PROBE-15: an EMPTY-STRING pattern cannot ground a redundancy claim → failed (not invalidated)', async () => {
+  // contents.includes('') is vacuously true for every file — an empty
+  // pattern is contentless evidence and must be rejected by the citation arm.
+  const env = createPipelineEnv();
+  const { pipeline, logs, restoreWarn } = makePipelineWithFakes(env.root, {
+    execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: { redundancyCitations: [{ claim: 'vacuous', file: 'src/foo.js', pattern: '' }] },
+    },
+  });
+  try {
+    try {
+      await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
+        id: env.taskId, description: 'test', targetFiles: ['src/foo.js'], dependencies: [],
+      });
+    } catch { /* analyzer human-recommendation throw is acceptable */ }
+    const ms = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state', `mission-${env.missionId}.json`), 'utf8'));
+    const task = ms.subMissions[env.subMissionId].tasks[env.taskId];
+    assert.strictEqual(task.status, 'failed', `expected failed (empty pattern is inadmissible), got ${task.status}`);
+    assert.ok(logs.some((l) => l.includes('redundancy-citation arm')), 'the citation arm should be the one that fired');
+  } finally {
+    restoreWarn();
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test('TC-PW-PROBE-16: a citation whose file escapes the project root (absolute or ../ traversal) → failed (not invalidated)', async () => {
+  // Confinement: only files INSIDE the project root are admissible evidence;
+  // /etc/hosts-style absolute paths and ../ traversal must be rejected.
+  const env = createPipelineEnv();
+  const outside = path.join(os.tmpdir(), `pw-outside-${Date.now()}.txt`);
+  fs.writeFileSync(outside, 'outside content');
+  const { pipeline, logs, restoreWarn } = makePipelineWithFakes(env.root, {
+    execResult: { status: 'COMPLETED', affectedFiles: ['src/foo.js'] },
+    verifyResult: {
+      verified: true,
+      report: 'goal state holds',
+      structured: { redundancyCitations: [{ claim: 'escape attempt', file: outside, pattern: 'outside content' }] },
+    },
+  });
+  try {
+    try {
+      await pipeline._executeAndVerifyTask(env.missionId, env.subMissionId, {
+        id: env.taskId, description: 'test', targetFiles: ['src/foo.js'], dependencies: [],
+      });
+    } catch { /* analyzer human-recommendation throw is acceptable */ }
+    const ms = JSON.parse(fs.readFileSync(path.join(env.harnessDir, 'state', `mission-${env.missionId}.json`), 'utf8'));
+    const task = ms.subMissions[env.subMissionId].tasks[env.taskId];
+    assert.strictEqual(task.status, 'failed', `expected failed (root-escaping citation is inadmissible), got ${task.status}`);
+    assert.ok(logs.some((l) => l.includes('redundancy-citation arm')), 'the citation arm should be the one that fired');
+  } finally {
+    restoreWarn();
+    fs.rmSync(env.root, { recursive: true, force: true });
+    try { fs.rmSync(outside, { force: true }); } catch { /* ignore */ }
   }
 });
 

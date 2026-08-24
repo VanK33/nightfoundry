@@ -5842,7 +5842,7 @@ class Pipeline {
     this.statusBar.updateAgent('verifier-'+task.id, { role: 'verifier', taskId: task.id, description: task.description, status: 'active', startedAt: verifyStart, cost: this.tokenTracker.getUsageByType('verifier').totalCostUsd });
     let verifyResult;
     try {
-      verifyResult = await this.verifier.verifyTask(task, this.projectRoot, { purpose: task.description, specPath: readState(this.harnessDir)?.projectMeta?.prdPath, firstWrite: skipExecutor ? false : (preExecStatus === 'pending'), ...this._buildVerifierSpecContext(task) });
+      verifyResult = await this.verifier.verifyTask(task, this.projectRoot, { purpose: task.description, specPath: readState(this.harnessDir)?.projectMeta?.prdPath, firstWrite: skipExecutor ? false : (preExecStatus === 'pending'), ...this._buildVerifierSpecContext(task), ...(phantomWriteProbe ? { redundancyProbe: true } : {}) });
     } catch (err) {
       if (err instanceof WallClockExceededError || err.name === 'WallClockExceededError') {
         this.onLog(`Task ${task.id}: wall-clock exceeded (${err.message}) — non-retryable, dispatching analyzer`);
@@ -5870,6 +5870,7 @@ class Pipeline {
       // verified, signaling "this task didn't contribute" to downstream
       // consumers (regression aggregation, summarizer, planner-feedback
       // retros). Skip after-snapshot — nothing was edited.
+      let phantomProbeHardCheckGateApplied = false;
       if (phantomWriteProbe) {
         // Before-presence check: a phantom-write probe-PASS is only
         // genuinely "redundant" if every declared file already existed
@@ -5896,22 +5897,56 @@ class Pipeline {
           // and execution reaches the "Verification failed" handling, where
           // the existing probe-FAIL branch dispatches the analyzer.
         } else {
-          this.onLog(`    Task ${task.id}: REDUNDANT — sibling work satisfied goal; marking invalidated (no executor edits made, verifier confirmed goal state holds)`);
-          console.warn(`[phantom-write-probe] Redundant task: ${task.id}. Possible planner over-decomposition. Verifier passed without executor delta.`);
-          await transitionTask(this.harnessDir, task.id, 'invalidated', { invalidationReason: 'redundant' });
-          appendInvalidationRecord(this.harnessDir, {
-            taskId: task.id,
-            reason: 'redundant',
-            site: 'phantom-write-probe',
-            detail: `declared file(s) already present, no executor delta: [${(task.targetFiles || []).join(', ')}]`,
-          }, { onLog: this.onLog });
+          // Before deciding this task is redundant, gate the probe-PASS
+          // through TWO independent arms — a probe-PASS alone is not
+          // sufficient evidence of redundancy:
+          //   ARM 1 — the task's deterministic hard checks (same
+          //   _applyHardCheckGate machinery the normal verification path
+          //   uses below), confirming the goal-state claim isn't itself
+          //   contradicted by the task's own hard checks.
+          //   ARM 2 — the verifier's cited evidence (redundancyCitations):
+          //   every cited file must exist and literally contain its cited
+          //   pattern, confirming the verifier's redundancy claim is
+          //   grounded rather than hallucinated.
+          const redundancyCitations = verifyResult.structured?.redundancyCitations;
+          const arm1Result = await this._applyHardCheckGate(task, verifyResult, 'verification');
+          phantomProbeHardCheckGateApplied = true;
+          const arm1Verified = arm1Result.verified;
+          const arm2Result = this._validateRedundancyCitations(redundancyCitations);
 
-          this._bumpProgress(task.id);
-          return;
+          if (arm1Verified && arm2Result.ok) {
+            this.onLog(`    Task ${task.id}: REDUNDANT — sibling work satisfied goal; marking invalidated (no executor edits made, verifier confirmed goal state holds)`);
+            console.warn(`[phantom-write-probe] Redundant task: ${task.id}. Possible planner over-decomposition. Verifier passed without executor delta.`);
+            await transitionTask(this.harnessDir, task.id, 'invalidated', { invalidationReason: 'redundant' });
+            appendInvalidationRecord(this.harnessDir, {
+              taskId: task.id,
+              reason: 'redundant',
+              site: 'phantom-write-probe',
+              detail: `declared file(s) already present, no executor delta: [${(task.targetFiles || []).join(', ')}]`,
+            }, { onLog: this.onLog });
+
+            this._bumpProgress(task.id);
+            return;
+          }
+
+          const failingArm = !arm1Verified ? 'hard-check' : 'redundancy-citation';
+          const failingReason = !arm1Verified
+            ? (arm1Result.evidence || 'hard-check gate failed')
+            : (arm2Result.reason || 'redundancy citation validation failed');
+          verifyResult = { verified: false, evidence: `phantom-write-probe: ${failingArm} arm failed — ${failingReason}` };
+          this._recordGateOverride(task.id, 'phantom-write-probe', verifyResult.evidence);
+          this.onLog(`    Task ${task.id}: phantom-write redundancy gate FAILED (${failingArm} arm) — ${failingReason}; treating as FAILED, not redundant`);
+          // Fall through (no return): verifyResult.verified is now false, so
+          // the remaining `if (verifyResult.verified)` gates below are
+          // skipped and execution reaches the "Verification failed"
+          // handling, where the existing probe-FAIL branch dispatches the
+          // analyzer.
         }
       }
 
-      verifyResult = await this._applyHardCheckGate(task, verifyResult, 'verification');
+      if (!phantomProbeHardCheckGateApplied) {
+        verifyResult = await this._applyHardCheckGate(task, verifyResult, 'verification');
+      }
 
       if (verifyResult.verified) {
         const testRegResult = await this._runTestRegistrationGate(task);
@@ -5983,6 +6018,58 @@ class Pipeline {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Deterministic, plain-JavaScript validation of "redundancy citations"
+   * (no regular expressions, no LLM/session call). Returns `{ ok: true }`
+   * only when `citations` is a non-empty array and every entry's `pattern`
+   * occurs as a literal substring in the current UTF-8 text of its `file`
+   * (resolved relative to `this.projectRoot`). Otherwise returns
+   * `{ ok: false, reason }` describing the first failing condition.
+   *
+   * @param {Array<{file: string, pattern: string}>} citations
+   * @returns {{ok: true}|{ok: false, reason: string}}
+   */
+  _validateRedundancyCitations(citations) {
+    if (!Array.isArray(citations) || citations.length === 0) {
+      return { ok: false, reason: 'citations is missing, not an array, or empty' };
+    }
+
+    for (const citation of citations) {
+      const file = citation && citation.file;
+      const pattern = citation && citation.pattern;
+
+      if (typeof file !== 'string' || file.length === 0) {
+        return { ok: false, reason: `citation is missing a valid file path: ${String(file)}` };
+      }
+
+      let contents;
+      try {
+        const resolvedPath = path.resolve(this.projectRoot, file);
+        // Confinement: a citation may only ground itself in files INSIDE the
+        // project root — an absolute path or ../ traversal that escapes the
+        // root is not admissible evidence for a redundancy claim.
+        const rel = path.relative(this.projectRoot, resolvedPath);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+          return { ok: false, reason: `cited file escapes the project root: ${file}` };
+        }
+        if (!fs.existsSync(resolvedPath)) {
+          return { ok: false, reason: `cited file does not exist: ${file}` };
+        }
+        contents = fs.readFileSync(resolvedPath, 'utf8');
+      } catch {
+        return { ok: false, reason: `cited file could not be read: ${file}` };
+      }
+
+      // An empty pattern is vacuously "included" in any file — reject it
+      // explicitly so a contentless citation cannot ground a redundancy claim.
+      if (typeof pattern !== 'string' || pattern.length === 0 || !contents.includes(pattern)) {
+        return { ok: false, reason: `pattern not found as a non-empty literal substring in ${file}: ${pattern}` };
+      }
+    }
+
+    return { ok: true };
   }
 
   /**

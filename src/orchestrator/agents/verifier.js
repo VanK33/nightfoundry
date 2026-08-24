@@ -239,6 +239,8 @@ class Verifier {
    * @param {string} [context.purpose] - Optional human-readable purpose label.
    * @param {boolean} [context.firstWrite] - If true, throw SidecarReuseError when the
    *   verification sidecar already exists.
+   * @param {boolean} [context.redundancyProbe] - If true, indicates this verification
+   *   run is a redundancy probe.
    * @returns {Promise<{ verified: boolean, report: string, reportPath: string, structured: object }>}
    * @throws {Error} If context.specPath is missing, empty, or the file does not exist.
    */
@@ -249,6 +251,7 @@ class Verifier {
       allowEscalation: true,
       includeFindingsPrompt: false,
       runSpecReadAudit: true,
+      redundancyProbe: Boolean(context.redundancyProbe),
     });
   }
 
@@ -285,6 +288,7 @@ class Verifier {
       allowEscalation: true,
       includeFindingsPrompt: true,
       runSpecReadAudit: false,
+      redundancyProbe: false,
     });
   }
 
@@ -296,6 +300,7 @@ class Verifier {
    *   - opts.allowEscalation      — whether the second stronger-model spawn runs
    *   - opts.includeFindingsPrompt — whether the findings prompt paragraph is included
    *   - opts.runSpecReadAudit     — whether the spec-read audit patch runs
+   *   - opts.redundancyProbe      — whether this verification run is a redundancy probe
    *
    * @throws {Error} If context.specPath is missing, empty, or the file does not exist.
    */
@@ -353,6 +358,8 @@ Steps:
 8. Return your verdict as the session's structured output.
 ${opts.includeFindingsPrompt ? `
 Regression findings (this is a regression gate task): additionally populate the \`findings\` array in the structured output. For each FAILING check, attribute the failure to the concrete file(s) responsible and emit { file, description, evidence, relatedFiles }. If a failure cannot be attributed to a specific file, emit the finding with file "unknown" and describe in the description what should be searched for. If nothing fails, return an empty findings array. Name only files that actually exist in the project — never invent a path. Exception: if a REQUIRED file is MISSING, the finding SHOULD name that file's intended path — naming the expected path of a required-but-absent file is evidence, not invention.
+` : ''}${opts.redundancyProbe ? `
+Redundancy probe (this is a redundancy probe run): additionally populate the \`redundancyCitations\` array in the structured output with one { claim, file, pattern } entry per deliverable of this task, citing where each deliverable already exists. \`claim\` is a short statement of what the deliverable is. \`file\` MUST be a project-root-relative path to the file where that deliverable already exists. \`pattern\` MUST be literal text quoted verbatim from that file — copy the exact characters that appear in the file; \`pattern\` is NEVER a regular expression.
 ` : ''}
 
 Your session has a JSON schema attached — return the final verdict as the session's structured output matching that schema exactly.
