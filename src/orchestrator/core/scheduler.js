@@ -15,7 +15,10 @@
  *         state (complete/invalidated), AND the task's targetFiles do
  *         not overlap with any currently-running task's targetFiles.
  *      b. If no task is assignable and there are no workers running,
- *         we have a deadlock — throw.
+ *         first re-scan the task index for tasks whose fresh on-disk
+ *         status is 'needs_revalidation' and re-enqueue any not already
+ *         rescued in this milestone run; only if that scan yields
+ *         nothing new do we have a genuine deadlock — throw.
  *      c. Wait for any worker to complete. When it does, drop it from
  *         the workers map and re-enter the loop.
  *
@@ -258,13 +261,22 @@ export class Scheduler {
    *     fail); or the slow-failure infra cap (MAX_TASK_INFRA_STREAK
    *     consecutive infra errors on the same task without tripping the
    *     fast-burst circuit).
+   *   - At the stall boundary (nothing running, tasks still pending, no
+   *     prior task failure), the scheduler re-reads each task's status
+   *     from disk and re-adds any freshly-'needs_revalidation' task to
+   *     the pending set for verifier-only re-dispatch; each rescued task
+   *     id is logged once at the moment it is rescued. The rescue set
+   *     (which ids have already been rescued) is reset at the start of
+   *     every runMilestone invocation. The rescue is bounded: a repeat
+   *     stall where the re-scan finds no newly-rescuable task falls
+   *     through to the unchanged 'Scheduler stall' throw below.
    *
    * @param {string} milestoneId - Identifier of the milestone being executed; passed through to onProgress events.
    * @param {object[]} taskDAG - Flat array of task objects, each carrying { id, missionId, subMissionId, targetFiles, dependencies, ... }.
    * @param {object} [opts={}]
    * @param {AbortSignal} [opts.signal] - Optional AbortSignal; when aborted, the scheduler stops assigning new work and drains in-flight workers before returning.
    * @returns {Promise<void>} Resolves when every task in taskDAG has reached a terminal state.
-   * @throws {Error} on a scheduling stall — either an unmet-dependency deadlock or a halt triggered by a prior task failure.
+   * @throws {Error} on a scheduling stall — either an unmet-dependency deadlock or a halt triggered by a prior task failure. The genuine-stall throw only fires after the stall-boundary needs_revalidation rescue scan finds nothing new to re-enqueue.
    * @throws {InfrastructureError} when the circuit breaker exhausts all backoff rounds, or the slow-failure infra streak cap is hit.
    */
   async runMilestone(milestoneId, taskDAG, opts = {}) {
@@ -345,6 +357,12 @@ export class Scheduler {
     // framing. Reset per runMilestone call (Scheduler instance is reused).
     this._firstFailedTaskId = null;
     this._firstFailedTaskDescription = null;
+    // Stall-boundary rescue: task ids already re-dispatched for
+    // verifier-only revalidation from a prior stall boundary within THIS
+    // runMilestone call. Reset per runMilestone call (Scheduler instance
+    // is reused across milestones) so a task rescued in a previous
+    // milestone can be rescued again.
+    this._rescuedRevalIds = new Set();
 
     const raceNextFinishedWorker = () => {
       // Race all current worker promises. The first to settle wins.
@@ -417,6 +435,33 @@ export class Scheduler {
               `${stalled.length} task(s) were pending and not dispatched: ${pendingPreview}.`,
               { cause: firstError }
             );
+          }
+
+          // Stall-boundary rescue: before concluding this is a genuine dep
+          // stall, re-scan every task's CURRENT on-disk status (never the
+          // preTerminal/build-time classification computed during the DAG
+          // build above) for any task that has since flipped to
+          // 'needs_revalidation' — e.g. a hard dependency invalidated by a
+          // downstream cascade after the DAG-build scan ran. Such a task is
+          // not in `pending` (it was classified pre-terminal or otherwise
+          // skipped at build time) and would otherwise cause a spurious
+          // stall throw even though it just needs a verifier-only rerun.
+          const rescued = [];
+          for (const id of tasksById.keys()) {
+            if (pending.has(id) || this._rescuedRevalIds.has(id)) continue;
+            const freshStatus = readTaskStatus(this.harnessDir, id);
+            if (freshStatus === 'needs_revalidation') {
+              rescued.push(id);
+            }
+          }
+
+          if (rescued.length > 0) {
+            for (const id of rescued) {
+              pending.add(id);
+              this._rescuedRevalIds.add(id);
+              this.onLog(`    Scheduler: rescuing task ${id} at stall boundary — needs revalidation, re-dispatching for verifier-only`);
+            }
+            continue;
           }
 
           // Genuine dep stall (no prior task failure): keep original framing.

@@ -308,6 +308,7 @@ export const TEST_FILES = [
   'test/test-pipeline-hard-check-gate.js',
   'test/test-pipeline-hard-check-reval-gate.js',
   'test/test-scheduler-reval-dispatch.js',
+  'test/test-scheduler-stall-rescue.js',
   'test/test-needs-revalidation-repass.js',
   'test/test-firstwrite-skip-executor.js',
   'test/test-usage-coverage.js',

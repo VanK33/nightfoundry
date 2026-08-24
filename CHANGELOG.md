@@ -1,3 +1,8 @@
+## [0.2.22] - 2026-08-24 — Add stall-boundary rescue for mid-run task demotion
+
+### Bug fixes
+- Scheduler now rescues tasks demoted to needs_revalidation mid-run by rescanning task index at stall boundary and re-adopting them into pending before throwing stall error, preventing deadlock on hard-dependent tasks. Includes regression test covering rescue behavior, genuine stall preservation, and boundedness enforcement.
+
 ## [0.2.21] - 2026-08-24 — Architect socket v0: gated context-bundle injection
 
 ### New features
