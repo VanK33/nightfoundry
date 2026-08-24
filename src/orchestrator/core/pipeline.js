@@ -93,6 +93,7 @@ import { runTestRegistrationGate, recordGateOverride, applyHardCheckGate, format
 import { enumerateSymbolConsumers, readChangedSymbols } from '../gates/blast-radius.js';
 import { expandCoupledTargets } from './coupled-files.js';
 import { buildDeclaredSet, lintPlanScope } from '../gates/plan-scope-lint.js';
+import { readBundle, deriveBundlePath } from '../gates/bundle-gate.js';
 import { lintPlanStructure, lintTaskCheckShapes } from '../gates/plan-structure-lint.js';
 
 // Re-export for external importers/tests that reference deriveSpecJsonPath
@@ -105,6 +106,45 @@ export { deriveSpecJsonPath };
 // exclusively by calling this function so it appears exactly once in the file.
 export function formatZeroDeltaLog(taskId, unchangedFiles) {
   return `[zero-delta-task] task=${taskId} unchanged=${JSON.stringify(unchangedFiles)}`;
+}
+
+// Copies the bundle sibling of a given spec.json path into
+// queue/<slug>/bundle.json under projectRoot. This is a best-effort, silent
+// no-op on any failure (no derivable bundle path, missing source file, or a
+// copy error) — it must never throw and must never block/fail queueing. The
+// destination basename is always the fixed 'bundle.json', regardless of the
+// source basename (e.g. '<slug>.bundle.json' -> 'bundle.json'). The source
+// bundle file is left in place; this function never unlinks it.
+export function copyBundleToQueueEntry(specJsonSourcePath, projectRoot, slug) {
+  try {
+    const bundleSourcePath = deriveBundlePath(specJsonSourcePath);
+    if (!bundleSourcePath) return;
+    if (!fs.existsSync(bundleSourcePath)) return;
+    const destDir = path.join(projectRoot, 'queue', slug);
+    fs.mkdirSync(destDir, { recursive: true });
+    const destPath = path.join(destDir, 'bundle.json');
+    fs.copyFileSync(bundleSourcePath, destPath);
+  } catch {
+    // Silent no-op: bundle copy is best-effort and must never fail queueing.
+  }
+}
+
+// Pure formatter for the bundle-injection telemetry record appended (as a
+// single JSON line) to <harnessDir>/logs/bundle-injection.jsonl by
+// Pipeline#_readBundleEntries. Exported as a testable seam. missionId is
+// included only when supplied — this is provenance-only telemetry and never
+// affects resume semantics (it is never written into state.json, mission-*
+// state files, or queue entry files).
+export function buildBundleInjectionRecord(phase, missionId, entries, droppedCount) {
+  const record = {
+    phase,
+    entryIds: (entries || []).map((entry) => entry.id),
+    droppedCount,
+  };
+  if (missionId !== undefined && missionId !== null) {
+    record.missionId = missionId;
+  }
+  return record;
 }
 
 // The exact HaltError sites raised by _gateMenu inside _reviewGate. In batch
@@ -725,6 +765,7 @@ class Pipeline {
             specScopeItems: scopeItems,
             specConstraints: this._getSpecConstraints(),
             specPlanStructure: this._getSpecPlanStructure(),
+            architectEntries: this._readBundleEntries('planGlobal'),
           });
         } finally {
           this.statusBar.updateAgent('planner', null);
@@ -1058,6 +1099,7 @@ class Pipeline {
           specScopeItems: scopeItems,
           specConstraints: this._getSpecConstraints(),
           specPlanStructure: this._getSpecPlanStructure(),
+          architectEntries: this._readBundleEntries('planGlobal', { prdPath: opts.prdPath }),
         });
       } finally {
         this.statusBar.updateAgent('planner', null);
@@ -1170,6 +1212,12 @@ class Pipeline {
         specJson: specJsonContent,
         status: 'pending',
       });
+
+      // Copy the bundle sibling of the spec.json (same true-sibling source
+      // path already resolved above) into queue/<slug>/bundle.json. Silent
+      // no-op when there is no derivable bundle, no source file, or on any
+      // copy error — never blocks or fails queueing.
+      copyBundleToQueueEntry(specJsonSourcePath, this.projectRoot, slug);
 
       // ── 6b. Remove original spec file (now copied into queue) ─────────
       const queueCopyPath = path.resolve(path.join(this.projectRoot, 'queue', slug, 'spec.md'));
@@ -5155,6 +5203,7 @@ class Pipeline {
               scopeItems: readState(this.harnessDir).projectMeta?.scopeItems || [],
               siblingMissionTaskTargets,
               priorMissionDigest: this._renderPriorMissionDigest(this._buildPriorMissionDigest(miId)),
+              architectEntries: this._readBundleEntries('planMission', { missionId: miId }),
             });
           } finally {
             this.statusBar.updateAgent('planner', null);
@@ -6450,6 +6499,57 @@ class Pipeline {
     const prdPath = state.projectMeta?.prdPath;
     this._specConstraintsCache = readSpecConstraints(prdPath, this.projectRoot);
     return this._specConstraintsCache;
+  }
+
+  /**
+   * _readBundleEntries(phase, opts = {}) — Read the architect bundle.json
+   * associated with the spec actually being consumed and return its
+   * surviving entries[] (never throws; unreadable state, a rejected bundle,
+   * or an absent bundle all yield []).
+   *
+   * The spec is resolved the same way as _getSpecConstraints: opts.prdPath
+   * when given, otherwise readState(this.harnessDir).projectMeta?.prdPath.
+   * Its spec.json is derived via deriveSpecJsonPath and readBundle
+   * (../gates/bundle-gate.js) is called against it.
+   *
+   * When at least one entry survives, this appends exactly one JSON line —
+   * JSON.stringify(buildBundleInjectionRecord(phase, opts.missionId, entries,
+   * dropped.length)) + '\n' — to <this.harnessDir>/logs/bundle-injection.jsonl
+   * (creating the logs directory if needed). This is provenance-only
+   * telemetry: it never writes into state.json, mission-*.json, queue entry
+   * files, or any other file that affects resume semantics, and it never
+   * reads or branches on the bundle's generatedBy value. A log-append
+   * failure is swallowed (fail-soft) rather than propagated.
+   *
+   * @param {string} phase
+   * @param {{ prdPath?: string, missionId?: string }} [opts]
+   * @returns {Array} the bundle's surviving entries (may be [])
+   */
+  _readBundleEntries(phase, opts = {}) {
+    let entries = [];
+    let droppedCount = 0;
+    try {
+      const prdPath = opts.prdPath || readState(this.harnessDir).projectMeta?.prdPath;
+      const specJsonPath = deriveSpecJsonPath(prdPath, this.projectRoot);
+      const result = readBundle(specJsonPath, this.projectRoot);
+      entries = result.entries || [];
+      droppedCount = (result.dropped || []).length;
+    } catch {
+      return [];
+    }
+
+    if (entries.length > 0) {
+      try {
+        const logsDir = path.join(this.harnessDir, 'logs');
+        fs.mkdirSync(logsDir, { recursive: true });
+        const record = buildBundleInjectionRecord(phase, opts.missionId, entries, droppedCount);
+        fs.appendFileSync(path.join(logsDir, 'bundle-injection.jsonl'), JSON.stringify(record) + '\n');
+      } catch {
+        // fail-soft: never let telemetry logging affect the bundle read result
+      }
+    }
+
+    return entries;
   }
 
   /**

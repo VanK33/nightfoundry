@@ -423,6 +423,7 @@ export const TEST_FILES = [
   'test/test-repoint-agent-rewire.js',
   'test/test-test-gate-honesty.js',
   'test/test-baseline-gate.js',
+  'test/test-bundle-gate.js',
   'test/test-batch-log-anchoring.js',
   'test/test-halt-aftermath.js',
   'test/test-init-onboarding.js',

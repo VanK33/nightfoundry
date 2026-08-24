@@ -6,8 +6,14 @@
  *
  * Public API:
  *   planGlobal(goal, projectRoot, opts?) → { milestones: [...], assumptions: [...] }  Phase 3a (BFS)
+ *     opts.architectEntries — optional array of gate-surviving architect-context
+ *     entries rendered (advisory, unverified) into the user prompt via
+ *     buildArchitectContextSection; absent/null/empty contributes nothing.
  *   verifyAssumptions(assumptions, projectRoot) → [{ assumption, status, evidence }]  Phase 3a steps 5-6
  *   planMission(missionId, projectRoot, context?) → { subMissions: [...] }            Phase 3b (lazy DFS)
+ *     context.architectEntries — optional array of gate-surviving architect-context
+ *     entries rendered (advisory, unverified) into the mission user prompt via
+ *     buildMissionUserPrompt; absent/null/empty contributes nothing.
  *   remediateScenarios(missionId, projectRoot, context?) → { newTasks, outOfScope }   Phase 3b-2.5
  *   remediateReviewFindings(milestoneId, findings, projectRoot) → { newTasks }         Post-review remediation
  *   remediateRegressionFailure(milestoneId, findings, projectRoot) → { newTasks }     Post-regression remediation
@@ -20,7 +26,7 @@ import config from '../infra/config.js';
 import { assumptionRemediationSchema, reviewRemediationSchema, regressionRemediationSchema, taskReplanSchema } from './_schemas.js';
 import { extractRejectedPhrases } from '../core/scope-parser.js';
 import { isTestTask } from '../core/state.js';
-import { buildMissionSystemPrompt, buildMissionUserPrompt, buildReplanSystemPrompt, buildPlanLintCorrectionPrompt, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS } from './planner-prompts.js';
+import { buildMissionSystemPrompt, buildMissionUserPrompt, buildReplanSystemPrompt, buildPlanLintCorrectionPrompt, buildArchitectContextSection, PROMPT_SECTION_TASK_SPECIFICITY, PROMPT_SECTION_SYMBOL_ANCHOR, PROMPT_SECTION_LITERAL_PATHS, PROMPT_SECTION_PRESERVE_PATH_ANCHOR, PROMPT_SECTION_NO_READONLY_TASKS } from './planner-prompts.js';
 import { InfrastructureError } from '../infra/session-manager.js';
 import { buildDeclaredSet, lintPlanScope, lintGlobalPlanScope, checkScopeMappingConsistency } from '../gates/plan-scope-lint.js';
 import { lintPlanStructure, lintTaskCheckShapes, warnCrossMissionDuplicates } from '../gates/plan-structure-lint.js';
@@ -395,10 +401,13 @@ ${opts.learningData ? `Historical decomposition patterns for calibration:\n${opt
         ? `\n## Spec constraints (binding)\nThese constraints are BINDING on the plan: they constrain the milestone/mission structure and every mission's scope. Carry any constraint that concerns test files, test-surface boundaries, or milestone structure INTO the description of every mission it affects, so downstream mission planning sees it.\n${constraintLines.map(c => `- ${c}`).join('\n')}\n`
         : '';
 
+    const architectContextSection = buildArchitectContextSection(opts.architectEntries);
+    const architectContextBlock = architectContextSection ? `\n${architectContextSection}\n` : '';
+
     const prompt = `Goal: ${goal}
 
 ${opts.prdPath ? `PRD file: ${opts.prdPath}` : ''}
-${targetFilesBlock}${acceptanceCriteriaBlock}${scopeItemsBlock}${constraintsBlock}
+${targetFilesBlock}${acceptanceCriteriaBlock}${scopeItemsBlock}${constraintsBlock}${architectContextBlock}
 Decompose this into milestones and missions. Output structured JSON.`;
 
     const schema = {
@@ -874,7 +883,7 @@ Return structured JSON with your findings.`;
     // and membership — never instanceof.
     const retryableLintRuleIds = new Set(['T1', 'T2', 'scope-excursion']);
     let lintRetriesUsed = 0;
-    const missionUserPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints);
+    const missionUserPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints, context.architectEntries);
     let userPrompt = (isFreshSession && hasDigest)
       ? `Previously planned missions (binding context):\n${priorMissionDigest}\n\n${missionUserPrompt}`
       : missionUserPrompt;

@@ -15,6 +15,7 @@ import { runFullTestSuite } from '../../orchestrator/gates/regression.js';
 import { computeTreeHash, readGreenMemo, recordGreenMemo } from '../../orchestrator/gates/test-memo.js';
 import config from '../../orchestrator/infra/config.js';
 import { deriveSpecJsonPath } from '../../orchestrator/core/spec-paths.js';
+import { deriveBundlePath } from '../../orchestrator/gates/bundle-gate.js';
 import { activeHarnessDir, clearActiveRunPointer, harnessRoot } from '../../orchestrator/core/run-context.js';
 
 // cc-orch's own root — scripts like bump.js and export-ccusage.js live here,
@@ -241,6 +242,25 @@ export function copySpecToArchive(specPath, projectRoot, archiveDir, preserveMod
         } catch { /* non-critical */ }
       } else {
         console.log(`[archive] Preserved spec at project root: ${path.basename(jsonSrc)}`);
+      }
+    }
+
+    // Also carry the bundle sibling (derived from jsonSrc) into the archive,
+    // under the fixed name bundle.json. Mirrors the spec.json leg above:
+    // copy-only-if-exists, log, and remove-unless-preserveMode (swallowed
+    // removal failures). deriveBundlePath returns null for non-spec.json
+    // sources, in which case this whole leg is a silent no-op.
+    const bundleSrc = deriveBundlePath(jsonSrc);
+    if (bundleSrc && fs.existsSync(bundleSrc)) {
+      fs.copyFileSync(bundleSrc, path.join(archiveDir, 'bundle.json'));
+      console.log(`[archive] Copied spec to archive: ${path.basename(bundleSrc)}`);
+      if (!preserveMode) {
+        try {
+          fs.unlinkSync(bundleSrc);
+          console.log(`[archive] Removed spec from project root: ${path.basename(bundleSrc)}`);
+        } catch { /* non-critical */ }
+      } else {
+        console.log(`[archive] Preserved spec at project root: ${path.basename(bundleSrc)}`);
       }
     }
   } catch {

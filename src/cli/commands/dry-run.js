@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { Pipeline } from '../../orchestrator/core/pipeline.js';
+import { Pipeline, copyBundleToQueueEntry } from '../../orchestrator/core/pipeline.js';
 import { usage as printUsage } from './usage.js';
 import { askYesNo, askMenu } from '../prompt.js';
 import { isUserSpecInvocation, prepareUserSpecInput, warnOnEngineSpecJson } from '../user-spec-input.js';
@@ -78,6 +78,11 @@ export async function dryRun(projectRoot, specPath, flags) {
     process.exit(1);
   }
 }
+
+// Re-export for external importers/tests that reference copyBundleToQueueEntry
+// from dry-run.js (the function lives in pipeline.js; this seam exposes the
+// queue-finalize bundle-copy path dry-run invokes for direct testing).
+export { copyBundleToQueueEntry };
 
 function createPipeline(projectRoot, flags) {
   const autoMode = flags.auto || flags.a;

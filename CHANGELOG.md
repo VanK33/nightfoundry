@@ -1,3 +1,11 @@
+## [0.2.21] - 2026-08-24 — Architect socket v0: gated context-bundle injection
+
+### New features
+- Architect context-bundle injection into planGlobal and planMission prompts with byte-identical output when bundles absent
+- Bundle validation gate with schema enforcement, anchor re-verification, and size-cap enforcement via architect.bundleMaxBytes
+- Bundle carriage from queue finalize to queue entries and from archive path to archive directories as fixed-name bundle.json
+- Bundle entry injection and rejection telemetry logged to .harness/logs/bundle-injection.jsonl with phase and missionId tracking
+
 ## [0.2.20] - 2026-08-23 — Add scope-negotiation protocol v0 with human approval for excursions
 
 ### New features

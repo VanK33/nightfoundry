@@ -3,7 +3,12 @@
  *
  * Asserts that the named exports of index.js exactly match the expected set,
  * that HarnessShell is absent, that package.json exports are pinned, and that
- * every schema/helper from _schemas.js is re-exported.
+ * every schema/helper from _schemas.js is re-exported. TC6-TC11 additionally
+ * pin the docs/STABILITY-CONTRACT.md "Pro integration surface" section —
+ * the v0 bundle schema shape, the memory/ lifecycle guarantee, the
+ * bundle-filename derivation rule, the fail-open whole-bundle rejection
+ * contract, and the existing Pro-facing data outlets — alongside the
+ * index.js/package.json surface pins in TC1-TC5.
  *
  * Run: node test/test-stability-contract.js
  */
@@ -146,6 +151,68 @@ test('TC7 every v0 bundle schema field is pinned in the doc', () => {
 test('TC8 memory/ lifecycle guarantee is documented', () => {
   assert.ok(STABILITY_DOC.includes('memory/'), "STABILITY-CONTRACT.md must contain the literal token 'memory/'");
   assert.ok(/survives every core cleanup operation/.test(STABILITY_DOC), 'STABILITY-CONTRACT.md must document that memory/ survives cleanup');
+});
+
+// ── TC9: bundle filename-derivation rule is pinned verbatim in the doc ────
+
+test('TC9 bundle filename-derivation rule is pinned verbatim in the doc', () => {
+  assert.ok(STABILITY_DOC.includes('spec.json'), "STABILITY-CONTRACT.md must contain the literal token 'spec.json'");
+  assert.ok(STABILITY_DOC.includes('bundle.json'), "STABILITY-CONTRACT.md must contain the literal token 'bundle.json'");
+  assert.ok(
+    STABILITY_DOC.includes('`<slug>.spec.json` yields `<slug>.bundle.json`'),
+    "STABILITY-CONTRACT.md must pin the project-root example: '<slug>.spec.json' yields '<slug>.bundle.json'"
+  );
+  assert.ok(
+    STABILITY_DOC.includes("queue entry's fixed-name `spec.json` yields `bundle.json`"),
+    "STABILITY-CONTRACT.md must pin the queue-entry fixed-name case: 'spec.json' yields 'bundle.json'"
+  );
+});
+
+// ── TC10: fail-open whole-bundle rejection contract is documented ─────────
+
+test('TC10 fail-open whole-bundle rejection contract is documented', () => {
+  assert.ok(
+    STABILITY_DOC.includes('a malformed, schema-invalid, or oversized bundle is rejected whole'),
+    'STABILITY-CONTRACT.md must document that a malformed, schema-invalid, or oversized bundle is rejected whole'
+  );
+  assert.ok(
+    STABILITY_DOC.includes('it is never truncated'),
+    'STABILITY-CONTRACT.md must document that a rejected bundle is never truncated'
+  );
+  assert.ok(
+    STABILITY_DOC.includes(
+      "Rejection emits a `console.warn` on the run's console output, and the run continues on the no-bundle path"
+    ),
+    "STABILITY-CONTRACT.md must document that rejection emits a console.warn on the run's console output and the run continues on the no-bundle path"
+  );
+  assert.ok(
+    STABILITY_DOC.includes('When no bundle file exists, prompts are byte-identical to pre-change output'),
+    'STABILITY-CONTRACT.md must document that when no bundle file exists, prompts are byte-identical to pre-change output'
+  );
+});
+
+// ── TC11: existing Pro-facing data outlets are enumerated in the doc ──────
+
+const PRO_FACING_DATA_OUTLETS = [
+  '.harness/logs/',
+  '.harness/logs/token-usage.json',
+  'archives/<id>/manifest.json',
+  'archives/candidates.jsonl',
+  'archives/warnings.jsonl',
+];
+
+test('TC11 existing Pro-facing data outlets are enumerated in the doc', () => {
+  for (const outlet of PRO_FACING_DATA_OUTLETS) {
+    assert.ok(STABILITY_DOC.includes(outlet), `STABILITY-CONTRACT.md must pin Pro-facing data outlet: ${outlet}`);
+  }
+  assert.ok(
+    STABILITY_DOC.includes('Injected-entry telemetry is append-only log data under'),
+    'STABILITY-CONTRACT.md must document that injected-entry telemetry is append-only log data'
+  );
+  assert.ok(
+    STABILITY_DOC.includes('never enters resume-affecting state files'),
+    'STABILITY-CONTRACT.md must document that injected-entry telemetry never enters resume-affecting state files'
+  );
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────
