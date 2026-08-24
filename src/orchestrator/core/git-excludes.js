@@ -32,6 +32,9 @@ const MARKER = '# cc-orch artifacts (auto-managed)';
 // `git clean -e archives`; without excluding them, an un-ignored ledger file
 // reads as an untracked change and would trip the next run's clean-tree
 // guard. Excluding the files (not the dir) keeps forensic archives trackable.
+// The *.bundle.json file (sibling of *.spec.json) is an ephemeral run input
+// — like the spec.json it accompanies, it is generated/consumed for a single
+// run and excluded at the project's own location rather than tracked.
 function patternLines(prefix) {
   return [
     `${prefix}/.harness/`,
@@ -39,6 +42,7 @@ function patternLines(prefix) {
     `${prefix}/spec-*.md`,
     `${prefix}/*.spec.md`,
     `${prefix}/*.spec.json`,
+    `${prefix}/*.bundle.json`,
     `${prefix}/*.uspec.json`,
     `${prefix}/archives/candidates.jsonl`,
     `${prefix}/archives/warnings.jsonl`,

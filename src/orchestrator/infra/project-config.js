@@ -67,11 +67,12 @@ import fs from 'fs';
 import path from 'path';
 import config from './config.js';
 
-const TOP_LEVEL_KEYS = new Set(['execution', 'budgets', 'scope']);
+const TOP_LEVEL_KEYS = new Set(['execution', 'budgets', 'scope', 'architect']);
 const EXECUTION_KEYS = new Set(['testCommand', 'testAllCommand']);
 const BUDGETS_KEYS = new Set(['runCeilingUsd']);
 const SCOPE_KEYS = new Set(['coupledFiles']);
 const COUPLED_FILE_RULE_KEYS = new Set(['when', 'alsoTarget']);
+const ARCHITECT_KEYS = new Set(['bundleMaxBytes']);
 
 /**
  * Returns true when value is a plain object (not null, not an array).
@@ -270,6 +271,34 @@ export function loadProjectConfig(projectRoot) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(parsed, 'architect')) {
+    const architect = parsed.architect;
+
+    if (!isPlainObject(architect)) {
+      throw new Error(
+        `Invalid config in ${filePath}: "architect" must be an object`
+      );
+    }
+
+    for (const key of Object.keys(architect)) {
+      if (!ARCHITECT_KEYS.has(key)) {
+        throw new Error(`Unknown key "architect.${key}" in ${filePath}`);
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(architect, 'bundleMaxBytes')) {
+      const value = architect.bundleMaxBytes;
+      const isValidNumber =
+        typeof value === 'number' && Number.isFinite(value) && value > 0;
+      if (!isValidNumber) {
+        throw new Error(
+          `Invalid value for "architect.bundleMaxBytes" in ${filePath}: must be a positive finite number`
+        );
+      }
+      validated.bundleMaxBytes = value;
+    }
+  }
+
   // Entire recognised shape has been validated — apply now. Only these
   // fields are ever mutated on the config singleton.
   if (Object.prototype.hasOwnProperty.call(validated, 'testCommand')) {
@@ -283,5 +312,8 @@ export function loadProjectConfig(projectRoot) {
   }
   if (Object.prototype.hasOwnProperty.call(validated, 'coupledFiles')) {
     config.scope.coupledFiles = validated.coupledFiles;
+  }
+  if (Object.prototype.hasOwnProperty.call(validated, 'bundleMaxBytes')) {
+    config.architect.bundleMaxBytes = validated.bundleMaxBytes;
   }
 }

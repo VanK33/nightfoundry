@@ -111,6 +111,43 @@ test('TC5 test is self-contained', () => {
   assert.ok(!/^export /m.test(src), 'test file must not contain top-level export statements');
 });
 
+const STABILITY_DOC = readFileSync(resolve(__dirname, '../docs/STABILITY-CONTRACT.md'), 'utf8');
+
+const BUNDLE_SCHEMA_FIELDS = [
+  'schemaVersion',
+  'generatedBy',
+  'baseCommit',
+  'entries',
+  'id',
+  'kind',
+  'text',
+  'evidence',
+  'file',
+  'symbol',
+  'lastScannedCommit',
+];
+
+// ── TC6: 'Pro integration surface' section heading is documented ──────────
+
+test("TC6 'Pro integration surface' section heading is documented", () => {
+  assert.ok(STABILITY_DOC.includes('Pro integration surface'), "STABILITY-CONTRACT.md must contain the 'Pro integration surface' heading");
+});
+
+// ── TC7: every v0 bundle schema field is pinned in the doc ────────────────
+
+test('TC7 every v0 bundle schema field is pinned in the doc', () => {
+  for (const field of BUNDLE_SCHEMA_FIELDS) {
+    assert.ok(STABILITY_DOC.includes(field), `STABILITY-CONTRACT.md must pin bundle schema field: ${field}`);
+  }
+});
+
+// ── TC8: memory/ lifecycle guarantee is documented ────────────────────────
+
+test('TC8 memory/ lifecycle guarantee is documented', () => {
+  assert.ok(STABILITY_DOC.includes('memory/'), "STABILITY-CONTRACT.md must contain the literal token 'memory/'");
+  assert.ok(/survives every core cleanup operation/.test(STABILITY_DOC), 'STABILITY-CONTRACT.md must document that memory/ survives cleanup');
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount} passed, ${failCount} failed`);

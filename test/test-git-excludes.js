@@ -34,6 +34,11 @@
  *       resolution (not a direct ensureGitExcludes call) suppresses cc-orch
  *       dirt created inside the subdir (ok:true) but still refuses genuine
  *       user dirt inside the subdir (ok:false, reason 'dirty-tree').
+ *   (j) bundle pattern — '/*.bundle.json' is written under the marker at the
+ *       git toplevel, carries the realpathed '/rel/' prefix when projectRoot
+ *       is a subdirectory (and the un-rooted form is then absent), and a
+ *       second ensureGitExcludes call is idempotent (byte-identical file,
+ *       pattern appears exactly once).
  *
  * Run: node test/test-git-excludes.js
  */
@@ -107,6 +112,7 @@ function sixPatterns(prefix) {
     `${prefix}/spec-*.md`,
     `${prefix}/*.spec.md`,
     `${prefix}/*.spec.json`,
+    `${prefix}/*.bundle.json`,
     `${prefix}/*.uspec.json`,
     `${prefix}/archives/candidates.jsonl`,
     `${prefix}/archives/warnings.jsonl`,
@@ -285,6 +291,7 @@ function acF_productionShapedFiring() {
     fs.writeFileSync(path.join(root, 'spec-foo.md'), 'a\n');
     fs.writeFileSync(path.join(root, 'a.spec.md'), 'a\n');
     fs.writeFileSync(path.join(root, 'a.spec.json'), 'a\n');
+    fs.writeFileSync(path.join(root, 'a.bundle.json'), 'a\n');
     fs.writeFileSync(path.join(root, 'a.uspec.json'), 'a\n');
     fs.mkdirSync(path.join(root, 'archives'), { recursive: true });
     fs.writeFileSync(path.join(root, 'archives', 'y'), 'a\n');
@@ -312,6 +319,8 @@ function acF_productionShapedFiring() {
       !porcelain.some((l) => l.includes('a.spec.md')));
     assert('AC(f): a.spec.json is suppressed (not in porcelain output)',
       !porcelain.some((l) => l.includes('a.spec.json')));
+    assert('AC(f): a.bundle.json is suppressed (not in porcelain output)',
+      !porcelain.some((l) => l.includes('a.bundle.json')));
     assert('AC(f): a.uspec.json is suppressed (not in porcelain output)',
       !porcelain.some((l) => l.includes('a.uspec.json')));
   } catch (err) {
@@ -454,6 +463,71 @@ function acH_unrelatedLinesPreserved() {
   }
 }
 
+// ── AC(j): bundle pattern — rooted, rel-prefixed, and idempotent ──────────
+
+function acJ_bundlePattern() {
+  console.log('\n=== AC(j): bundle pattern (/*.bundle.json) ===\n');
+
+  // Toplevel case: marker + '/*.bundle.json' after it; second call is
+  // idempotent (byte-identical, pattern appears exactly once).
+  const root = makeGitRoot();
+  try {
+    const result = ensureGitExcludes(root);
+    assert('AC(j): ensureGitExcludes returns true', result === true);
+
+    const excludePath = excludePathFor(root);
+    const content = fs.readFileSync(excludePath, 'utf8');
+
+    assert('AC(j): "/*.bundle.json" present as a whole line', hasLine(content, '/*.bundle.json'));
+
+    const lines = content.split('\n');
+    const markerIdx = lines.findIndex((l) => l.trim() === MARKER);
+    const bundleIdx = lines.findIndex((l) => l.trim() === '/*.bundle.json');
+    assert('AC(j): marker line found', markerIdx !== -1);
+    assert('AC(j): "/*.bundle.json" appears after the marker line', bundleIdx > markerIdx);
+
+    const result2 = ensureGitExcludes(root);
+    assert('AC(j): second ensureGitExcludes call returns true', result2 === true);
+    const content2 = fs.readFileSync(excludePath, 'utf8');
+    assert('AC(j): second call leaves file byte-identical', content2 === content);
+    assert('AC(j): "/*.bundle.json" appears exactly once after second call',
+      countLine(content2, '/*.bundle.json') === 1);
+  } catch (err) {
+    assert(`AC(j) (toplevel): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(root);
+  }
+
+  // Subdir case (fresh fixture, so the toplevel-rooted pattern was never
+  // written): ensureGitExcludes(subdir) → rel-prefixed '/<rel>/*.bundle.json'
+  // present, un-rooted '/*.bundle.json' absent.
+  const gitRoot2 = makeGitRoot();
+  try {
+    const realGitRoot2 = fs.realpathSync(gitRoot2);
+    const subRel2 = path.join('nested', 'project');
+    const subdir2 = path.join(realGitRoot2, subRel2);
+    fs.mkdirSync(subdir2, { recursive: true });
+    const realSubdir2 = fs.realpathSync(subdir2);
+
+    const result3 = ensureGitExcludes(realSubdir2);
+    assert('AC(j): ensureGitExcludes (subdir) returns true', result3 === true);
+
+    const excludePath2 = excludePathFor(realGitRoot2);
+    const content3 = fs.readFileSync(excludePath2, 'utf8');
+    const rel2 = path.relative(realGitRoot2, realSubdir2).split(path.sep).join('/');
+    const rootedBundle2 = `/${rel2}/*.bundle.json`;
+
+    assert('AC(j): rel-prefixed "/<rel>/*.bundle.json" present (subdir)',
+      hasLine(content3, rootedBundle2));
+    assert('AC(j): un-rooted "/*.bundle.json" absent (subdir)',
+      !hasLine(content3, '/*.bundle.json'));
+  } catch (err) {
+    assert(`AC(j) (subdir): unexpected exception — ${err && err.message}`, false);
+  } finally {
+    cleanup(gitRoot2);
+  }
+}
+
 // ── main ────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -473,6 +547,7 @@ async function main() {
   await acG_guardOrder();
   await acI_subdirGuardResolution();
   acH_unrelatedLinesPreserved();
+  acJ_bundlePattern();
 
   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
   process.exit(failCount > 0 ? 1 : 0);

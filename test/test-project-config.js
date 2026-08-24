@@ -52,16 +52,26 @@
  * TC14: malformed .cc-orch.json alone (no .nightfoundry.json) → throws
  *      naming the .cc-orch.json path
  * TC15: a no-file fixture AND a single-file fixture each emit zero warnings
+ * TC16: (architect) accepted override { architect: { bundleMaxBytes } } →
+ *      applied to config.architect.bundleMaxBytes
+ * TC17: (architect) unknown key inside "architect" → throws naming the key
+ * TC18: (architect) bundleMaxBytes 0 (non-positive) → throws
+ * TC19: (architect) bundleMaxBytes -1 (non-positive) → throws
+ * TC20: (architect) bundleMaxBytes non-finite (1e400 → Infinity, a
+ *      JSON-representable equivalent of Infinity since JSON has no
+ *      NaN/Infinity literals) → throws
+ * TC21: (architect) bundleMaxBytes 'big' (non-number) → throws
  * TC9: config.execution fields are restored to their pre-suite values after
  *      every case — run LAST so it observes state after TC1-TC8, TC-helper,
- *      and TC10-TC15 have all run
+ *      TC10-TC15, and TC16-TC21 have all run
  *
  * Every case saves config.execution.testCommand/testAllCommand before running
  * and restores them in a finally block: the loader mutates a config singleton
  * shared with the rest of the suite, so a leaked override would corrupt
- * sibling tests. Warnings (console.warn) are captured by temporarily
- * replacing console.warn and restoring it in a finally block (see
- * captureWarnings below).
+ * sibling tests. The architect cases (TC16-TC21) apply the same discipline
+ * to config.architect.bundleMaxBytes via withSavedArchitectFields. Warnings
+ * (console.warn) are captured by temporarily replacing console.warn and
+ * restoring it in a finally block (see captureWarnings below).
  *
  * Run: node test/test-project-config.js
  */
@@ -163,6 +173,22 @@ function withSavedExecutionFields(fn) {
   } finally {
     config.execution.testCommand = savedTestCommand;
     config.execution.testAllCommand = savedTestAllCommand;
+  }
+}
+
+/**
+ * Snapshots config.architect.bundleMaxBytes, runs fn, and restores it to its
+ * pre-call value in finally — regardless of whether fn throws. Mirrors
+ * withSavedExecutionFields's discipline for the architect namespace: the
+ * loader mutates the same shared config singleton, so a leaked override
+ * would corrupt sibling tests.
+ */
+function withSavedArchitectFields(fn) {
+  const savedBundleMaxBytes = config.architect.bundleMaxBytes;
+  try {
+    return fn({ bundleMaxBytes: savedBundleMaxBytes });
+  } finally {
+    config.architect.bundleMaxBytes = savedBundleMaxBytes;
   }
 }
 
@@ -701,6 +727,132 @@ await test('TC15: (dual-read) no-file and single-file fixtures → zero warnings
       );
     } finally {
       cleanup(singleFileFixture);
+    }
+  });
+});
+
+await test('TC16: (architect) accepted override bundleMaxBytes → applied to config.architect.bundleMaxBytes', () => {
+  withSavedArchitectFields(() => {
+    const fixture = createFixtureDir();
+    try {
+      writeJsonConfigFile(fixture, { architect: { bundleMaxBytes: 4096 } });
+      loadProjectConfig(fixture);
+      assert.strictEqual(
+        config.architect.bundleMaxBytes,
+        4096,
+        'config.architect.bundleMaxBytes must be overridden by the fixture file'
+      );
+    } finally {
+      cleanup(fixture);
+    }
+  });
+});
+
+await test('TC17: (architect) unknown key inside "architect" → throws naming the key', () => {
+  withSavedArchitectFields(() => {
+    const fixture = createFixtureDir();
+    try {
+      writeJsonConfigFile(fixture, { architect: { unknownArchitectKey: 'x' } });
+      assert.throws(
+        () => loadProjectConfig(fixture),
+        (err) => {
+          assert.ok(
+            err.message.includes('unknownArchitectKey'),
+            `error message must name the offending key, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      cleanup(fixture);
+    }
+  });
+});
+
+await test('TC18: (architect) bundleMaxBytes 0 (non-positive) → throws', () => {
+  withSavedArchitectFields(() => {
+    const fixture = createFixtureDir();
+    try {
+      writeJsonConfigFile(fixture, { architect: { bundleMaxBytes: 0 } });
+      assert.throws(
+        () => loadProjectConfig(fixture),
+        (err) => {
+          assert.ok(
+            err.message.includes('bundleMaxBytes'),
+            `error message must name the offending key, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      cleanup(fixture);
+    }
+  });
+});
+
+await test('TC19: (architect) bundleMaxBytes -1 (non-positive) → throws', () => {
+  withSavedArchitectFields(() => {
+    const fixture = createFixtureDir();
+    try {
+      writeJsonConfigFile(fixture, { architect: { bundleMaxBytes: -1 } });
+      assert.throws(
+        () => loadProjectConfig(fixture),
+        (err) => {
+          assert.ok(
+            err.message.includes('bundleMaxBytes'),
+            `error message must name the offending key, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      cleanup(fixture);
+    }
+  });
+});
+
+await test('TC20: (architect) bundleMaxBytes non-finite (1e400 → Infinity, JSON-representable) → throws', () => {
+  withSavedArchitectFields(() => {
+    const fixture = createFixtureDir();
+    try {
+      // JSON has no NaN/Infinity literals of its own; 1e400 is a
+      // syntactically valid JSON number token that overflows the IEEE-754
+      // double range on parse, yielding Infinity — a JSON-representable way
+      // to exercise the non-finite branch of the bundleMaxBytes validator.
+      writeConfigFile(fixture, '{"architect":{"bundleMaxBytes":1e400}}');
+      assert.throws(
+        () => loadProjectConfig(fixture),
+        (err) => {
+          assert.ok(
+            err.message.includes('bundleMaxBytes'),
+            `error message must name the offending key, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      cleanup(fixture);
+    }
+  });
+});
+
+await test("TC21: (architect) bundleMaxBytes 'big' (non-number) → throws", () => {
+  withSavedArchitectFields(() => {
+    const fixture = createFixtureDir();
+    try {
+      writeJsonConfigFile(fixture, { architect: { bundleMaxBytes: 'big' } });
+      assert.throws(
+        () => loadProjectConfig(fixture),
+        (err) => {
+          assert.ok(
+            err.message.includes('bundleMaxBytes'),
+            `error message must name the offending key, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      cleanup(fixture);
     }
   });
 });

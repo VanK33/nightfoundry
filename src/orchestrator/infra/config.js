@@ -324,6 +324,19 @@ const config = {
     coupledFiles: [],
   },
 
+  // --- Architect bundle limits ---
+  /**
+   * architect: limits governing the architect's bundle-file ingestion.
+   *
+   * bundleMaxBytes (65536): the maximum accepted size, in bytes, of a
+   * single bundle file. An oversized bundle is rejected whole — it is
+   * never truncated — so downstream processing never operates on a
+   * silently-cut-off bundle.
+   */
+  architect: {
+    bundleMaxBytes: 65536,
+  },
+
   /**
    * Resolve the .harness dir for a given project root.
    */
