@@ -594,7 +594,13 @@ Decompose this into milestones and missions. Output structured JSON.`;
           // plan-structure-lint: mission/milestone leg counts + same-milestone
           // declared-duplicate targetFiles (L1/L2/L3), plus tree-purity check
           // shapes on any tasks the global plan already carries. Both throw a
-          // plain Error prefixed '[plan-structure-lint]' on violation.
+          // plain Error prefixed '[plan-structure-lint]' on violation. Only
+          // the spec plan_structure overrides are forwarded here — no cap
+          // values are threaded from config — because the lint falls back to
+          // its engine defaults internally when its options omit the caps.
+          // retryableLintRuleIds above deliberately omits 'structure-cap-tasks':
+          // this planGlobal plan shape carries no tasks, so that rule can
+          // never fire here and there is nothing to retry against.
           lintPlanStructure(plan, opts.specPlanStructure, { projectRoot });
           lintTaskCheckShapes(plan, { projectRoot });
         } catch (err) {
@@ -882,7 +888,11 @@ Return structured JSON with your findings.`;
     // Retryable rule ids are the planner-fixable violations reachable at
     // this call site; classification is duck-typed on err.ruleId presence
     // and membership — never instanceof.
-    const retryableLintRuleIds = new Set(['T1', 'T2', 'scope-excursion']);
+    // Note: the lintPlanStructure(plan, context.specPlanStructure, { projectRoot })
+    // call below forwards only the spec plan_structure overrides — no cap
+    // values are threaded from config — because the lint falls back to the
+    // engine defaults internally when its options omit the caps.
+    const retryableLintRuleIds = new Set(['T1', 'T2', 'scope-excursion', 'structure-cap-tasks']);
     let lintRetriesUsed = 0;
     const missionUserPrompt = buildMissionUserPrompt(missionId, context.missionPlan, context.specConstraints, context.architectEntries);
     let userPrompt = (isFreshSession && hasDigest)
@@ -1151,7 +1161,10 @@ Each task's subMissionId must name an EXISTING sub-mission of this mission — n
       // plan-structure-lint: no-op on L1/L2/L3 (this plan carries no
       // milestones/missions) but still lints this remediation's newTasks[]
       // for tree-purity check shapes. Throws a plain Error prefixed
-      // '[plan-structure-lint]' on violation.
+      // '[plan-structure-lint]' on violation. Only the spec plan_structure
+      // overrides are forwarded here — no cap values are threaded from
+      // config. This call site has NO retry loop, so a cap breach here
+      // fails the plan directly instead of spending a corrective turn.
       lintPlanStructure(plan, context.specPlanStructure, { projectRoot });
       lintTaskCheckShapes(plan, { projectRoot });
       return plan;

@@ -1,3 +1,9 @@
+## [0.2.26] - 2026-08-26 — Add task-count caps: always-on per-mission fuse, plan-wide floor
+
+### New features
+- Always-on per-mission task-count enforcement with engine default of 24 tasks per mission; exceeding the cap triggers one automatic retry turn to correct the plan
+- Plan-wide task-count cap mechanism via plan_structure.max_tasks spec field (disabled by default via null); enforced at dry-run validation via guaranteed-breach floor
+
 ## [0.2.25] - 2026-08-26 — Add [context] marker for pre-implemented scope items
 
 ### New features

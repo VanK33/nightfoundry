@@ -5124,6 +5124,14 @@ class Pipeline {
               specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
             });
           }
+          // This site forwards only the spec plan_structure overrides read
+          // via _getSpecPlanStructure() — no cap values are threaded through
+          // from config here; lintPlanStructure applies its own engine
+          // defaults internally for any cap not present in that override.
+          // The promotion re-lint also runs inside no retry loop: a cap
+          // breach here throws straight into the surrounding planPhase catch
+          // and fails the plan, rather than looping back for another
+          // decomposition attempt.
           if (pendingArms.includes('structure-cap')) {
             lintPlanStructure(missionDecomp, this._getSpecPlanStructure(), { projectRoot: this.projectRoot });
           }

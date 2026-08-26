@@ -26,6 +26,33 @@
  *         declare path-equivalent `targetFiles` (exemption:
  *         `scripts/run-tests.js`). Cross-milestone duplication is legal
  *         and not checked here.
+ *       Leg A (always-on) — the plan's total task count (summed across
+ *         `_collectTaskArrays`'s shapes) exceeds the effective per-mission
+ *         cap. The cap is resolved by `_resolveEffectiveCap` from
+ *         `specPlanStructure.max_tasks_per_mission`: an integer override
+ *         wins (source 'spec override'); a literal `null` override
+ *         disables Leg A entirely (that leg off, per the `runCeilingUsd`
+ *         off-switch convention — no throw); any other value (absent,
+ *         non-integer, non-null) falls back to the engine default (source
+ *         'engine default'), taken from `opts.maxTasksPerMissionDefault`
+ *         when supplied, otherwise resolved internally from
+ *         `config.execution.maxTasksPerMissionDefault` — no call-site
+ *         plumbing required.
+ *       Leg B (guaranteed-breach floor) — the plan's total mission count
+ *         (from `_collectMilestoneMissionGroups`) exceeds the effective
+ *         plan-wide cap resolved by `_resolveEffectiveCap` (same semantics
+ *         as Leg A) from `specPlanStructure.max_tasks`: an integer override
+ *         wins (source 'spec override'); a literal `null` override
+ *         disables Leg B; any other value falls back to the engine default
+ *         (source 'engine default'), taken from `opts.maxPlanTasksDefault`
+ *         when supplied, otherwise resolved internally from
+ *         `config.execution.maxPlanTasksDefault` — no call-site plumbing
+ *         required. The leg runs ONLY when the effective cap is non-null;
+ *         a `null` cap (including the engine default, which is `null`) is
+ *         a no-op end to end. On breach, throws with ruleId
+ *         `'structure-cap-tasks-projected'` and a message naming the
+ *         mission count, the cap, and its source, plus guidance to split
+ *         the spec into an ordered series with additive groundwork first.
  *     Returns undefined ("pass") otherwise.
  *   lintTaskCheckShapes(plan, opts) → void
  *     THROWS a PlanLintError prefixed `[plan-structure-lint]` when a task's
@@ -101,6 +128,7 @@
  */
 import path from 'path';
 import { extractPathTokens, resolveSpecPathAnchor } from '../agents/planner.js';
+import config from '../infra/config.js';
 
 /**
  * PlanLintError — structured lint rejection carrying a rule id and the
@@ -279,14 +307,35 @@ function _collectMilestoneMissionGroups(globalPlan) {
 }
 
 /**
+ * Resolves the effective cap (and its source label) for a spec-declared
+ * override against an engine default, per the `runCeilingUsd` off-switch
+ * convention:
+ *   - an integer `override` wins outright → `{ cap: override, source: 'spec override' }`
+ *   - a literal `null` override disables the corresponding lint leg →
+ *     `{ cap: null, source: 'off' }`
+ *   - any other value (absent/`undefined`, non-integer, non-null) falls
+ *     back to `engineDefault` → `{ cap: engineDefault, source: 'engine default' }`
+ * Never throws.
+ *
+ * @param {*} override - The spec-declared override value (integer, `null`, or absent/malformed).
+ * @param {number} engineDefault - The engine's default cap.
+ * @returns {{ cap: (number|null), source: string }}
+ */
+function _resolveEffectiveCap(override, engineDefault) {
+  if (Number.isInteger(override)) return { cap: override, source: 'spec override' };
+  if (override === null) return { cap: null, source: 'off' };
+  return { cap: engineDefault, source: 'engine default' };
+}
+
+/**
  * planGlobal-time structural lint: mission/milestone leg counts (L1/L2,
  * conditional on a spec-declared `specPlanStructure`) and same-milestone
  * declared-duplicate `targetFiles` across missions (L3, unconditional).
  *
  * @param {object} globalPlan - Planner planGlobal output (milestones[].missions[] or flattened missions[]).
- * @param {*} specPlanStructure - Spec-declared `{ max_missions, max_milestones }`, or absent/malformed.
- * @param {{ projectRoot?: string }} [opts]
- * @throws {Error} Prefixed `[plan-structure-lint]` on an L1/L2 or L3 violation.
+ * @param {*} specPlanStructure - Spec-declared `{ max_missions, max_milestones, max_tasks_per_mission }`, or absent/malformed.
+ * @param {{ projectRoot?: string, maxTasksPerMissionDefault?: number }} [opts]
+ * @throws {Error} Prefixed `[plan-structure-lint]` on an L1/L2, Leg A, or L3 violation.
  */
 export function lintPlanStructure(globalPlan, specPlanStructure, opts = {}) {
   const projectRoot = typeof opts?.projectRoot === 'string' && opts.projectRoot.length > 0
@@ -320,6 +369,65 @@ export function lintPlanStructure(globalPlan, specPlanStructure, opts = {}) {
       throw new PlanLintError(message, 'structure-cap-milestones', [
         { ruleId: 'structure-cap-milestones', taskId: null, offending: message },
       ]);
+    }
+  }
+
+  // Leg A (always-on) — total task count across the plan's task arrays vs.
+  // the effective per-mission cap. The engine default is taken from opts
+  // when the caller supplies it, otherwise resolved internally from
+  // config so this leg needs no call-site plumbing.
+  {
+    const engineDefault = Number.isInteger(opts?.maxTasksPerMissionDefault)
+      ? opts.maxTasksPerMissionDefault
+      : config.execution.maxTasksPerMissionDefault;
+    const override = _isPlainObject(specPlanStructure) ? specPlanStructure.max_tasks_per_mission : undefined;
+    const { cap, source } = _resolveEffectiveCap(override, engineDefault);
+
+    if (cap !== null) {
+      const taskArrays = _collectTaskArrays(globalPlan);
+      let taskCount = 0;
+      for (const tasks of taskArrays) taskCount += tasks.length;
+
+      if (taskCount > cap) {
+        const message =
+          `[plan-structure-lint] task count ${taskCount} exceeds ` +
+          `max_tasks_per_mission cap ${cap} (${source})`;
+        throw new PlanLintError(message, 'structure-cap-tasks', [
+          { ruleId: 'structure-cap-tasks', taskId: null, offending: message },
+        ]);
+      }
+    }
+  }
+
+  // Leg B (guaranteed-breach floor) — the plan's total mission count vs.
+  // the effective plan-wide task cap. Even at one task per mission, a
+  // mission count exceeding this cap cannot possibly fit, so this is a
+  // provable breach at planGlobal time (not retryable, unlike Leg A). The
+  // engine default is taken from opts when the caller supplies it,
+  // otherwise resolved internally from config so this leg needs no
+  // call-site plumbing. The engine default is `null` (no plan-wide cap),
+  // so this leg runs ONLY when the effective cap resolves to a non-null
+  // value — a null cap makes it a no-op end to end.
+  {
+    const engineDefault = Number.isInteger(opts?.maxPlanTasksDefault)
+      ? opts.maxPlanTasksDefault
+      : config.execution.maxPlanTasksDefault;
+    const override = _isPlainObject(specPlanStructure) ? specPlanStructure.max_tasks : undefined;
+    const { cap, source } = _resolveEffectiveCap(override, engineDefault);
+
+    if (cap !== null) {
+      let missionCount = 0;
+      for (const missions of milestoneGroups) missionCount += missions.length;
+
+      if (missionCount > cap) {
+        const message =
+          `[plan-structure-lint] mission count ${missionCount} exceeds ` +
+          `max_tasks cap ${cap} (${source}); even one task per mission cannot fit — ` +
+          'split the spec into an ordered series of smaller specs, with additive groundwork first.';
+        throw new PlanLintError(message, 'structure-cap-tasks-projected', [
+          { ruleId: 'structure-cap-tasks-projected', taskId: null, offending: message },
+        ]);
+      }
     }
   }
 

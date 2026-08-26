@@ -47,6 +47,22 @@
  *          retried).
  *   TC16 — existing behavior (passes today): a ruleId-less validation error
  *          (path-anchor violation) propagates unchanged after one turn.
+ *   TC21 — structure-cap-tasks violation (spec-override task cap tripped by
+ *          the first scripted plan) then a clean plan → resolves with the
+ *          SECOND plan, EXACTLY two planner turns, corrective prompt names
+ *          'structure-cap-tasks' and carries the offending message verbatim,
+ *          [plan-lint-retry] line(s) emitted via this.logger.warn.
+ *   TC22 — structure-cap-tasks violation on BOTH scripted plans → rethrows
+ *          the structured PlanLintError (ruleId 'structure-cap-tasks',
+ *          violations[] elements shaped exactly {ruleId, taskId, offending}
+ *          with taskId null), exactly two planner turns.
+ *   TC23 — planner.js source pins the two retryableLintRuleIds Set literals:
+ *          the _planMissionReusable (planMission) Set lists
+ *          'structure-cap-tasks'; the planGlobal Set lists exactly
+ *          'structure-cap-missions', 'structure-cap-milestones',
+ *          'declared-duplicate', 'T1', 'T2' with no 'structure-cap-tasks'
+ *          entry; and 'structure-cap-tasks-projected' appears in neither
+ *          literal.
  *
  * AC3 — ledger signature granularity:
  *   TC17 — lintErrorClass maps a ruleId-bearing error (duck-typed, not
@@ -760,6 +776,134 @@ await test('TC20: failed-plan emit records errorClass Error for a ruleId-less pl
   } finally {
     cleanup(root);
   }
+});
+
+// ── TC21 / TC22 fixtures ─────────────────────────────────────────────────────
+// structure-cap-tasks (Leg A of lintPlanStructure) via a spec-declared
+// specPlanStructure.max_tasks_per_mission override that caps below the
+// scripted plan's task count.
+
+function makeMultiTaskMissionPlan(targetFiles) {
+  return {
+    subMissions: [{
+      id: 'sm1',
+      ordering: 'parallel',
+      tasks: targetFiles.map((targetFile, i) => ({
+        id: `t${i + 1}`,
+        description: `implement change ${i + 1}`,
+        targetFiles: [targetFile],
+        testCases: [`node ${targetFile} exits 0`],
+      })),
+    }],
+  };
+}
+
+// ── TC21 ──────────────────────────────────────────────────────────────────────
+
+await test('TC21: structure-cap-tasks violation then clean plan converges in exactly two turns', async () => {
+  const capped = makeMultiTaskMissionPlan(['src/a.js', 'src/b.js']); // 2 tasks > cap 1
+  const clean = makeMultiTaskMissionPlan(['src/a.js']); // 1 task <= cap 1
+  const session = makeScriptedSession([capped, clean]);
+  const { planner, warns, summaries, recorded } = makeStubbedPlanner(session);
+
+  const plan = await planner._planMissionReusable('001-001', '/fake/root', {
+    missionPlan: 'mission plan text',
+    specTargetFiles: ['src/a.js', 'src/b.js'],
+    specPlanStructure: { max_tasks_per_mission: 1 },
+  }, 7);
+
+  assert.strictEqual(session.prompts.length, 2,
+    `TC21: exactly TWO planner turns expected (initial + one corrective), got ${session.prompts.length}`);
+  assert.strictEqual(plan.subMissions[0].tasks.length, 1,
+    'TC21: the corrected (second, clean) plan must be the one returned');
+  assert.strictEqual(plan.subMissions[0].tasks[0].targetFiles[0], 'src/a.js',
+    'TC21: the returned plan must be the second scripted plan');
+
+  const offendingMessage =
+    '[plan-structure-lint] task count 2 exceeds max_tasks_per_mission cap 1 (spec override)';
+  const corrective = session.prompts[1];
+  assert.ok(corrective.includes('structure-cap-tasks'),
+    'TC21: corrective turn prompt must name the violated ruleId (structure-cap-tasks)');
+  assert.ok(corrective.includes(offendingMessage),
+    `TC21: corrective turn prompt must carry the offending violation text verbatim. Got: ${corrective}`);
+
+  assert.strictEqual(recorded.length, 2,
+    `TC21: recordSession must run once per turn (2 turns), got ${recorded.length}`);
+  assert.strictEqual(summaries.length, 2,
+    `TC21: writeSessionSummary must run once per turn (2 turns), got ${summaries.length}`);
+
+  const retryLines = warns.filter((w) => w.includes('[plan-lint-retry]'));
+  assert.ok(retryLines.length >= 1,
+    `TC21: at least one [plan-lint-retry] line must be emitted via this.logger.warn. Got warns: ${JSON.stringify(warns)}`);
+});
+
+// ── TC22 ──────────────────────────────────────────────────────────────────────
+
+await test('TC22: structure-cap-tasks violation on both scripted plans rethrows after exactly two turns', async () => {
+  const capped1 = makeMultiTaskMissionPlan(['src/a.js', 'src/b.js']); // 2 tasks > cap 1
+  const capped2 = makeMultiTaskMissionPlan(['src/c.js', 'src/d.js']); // still 2 tasks > cap 1
+  const session = makeScriptedSession([capped1, capped2]);
+  const { planner, warns } = makeStubbedPlanner(session);
+
+  let thrown = null;
+  try {
+    await planner._planMissionReusable('001-001', '/fake/root', {
+      missionPlan: 'mission plan text',
+      specTargetFiles: ['src/a.js', 'src/b.js', 'src/c.js', 'src/d.js'],
+      specPlanStructure: { max_tasks_per_mission: 1 },
+    }, 7);
+  } catch (err) {
+    thrown = err;
+  }
+  assert.ok(thrown, 'TC22: the second structure-cap-tasks violation must propagate');
+  assertStructuredLintError(thrown, 'structure-cap-tasks', 'TC22');
+  for (const v of thrown.violations) {
+    assert.strictEqual(v.taskId, null, 'TC22: violations[] taskId must be null (no task applies)');
+  }
+  assert.strictEqual(session.prompts.length, 2,
+    `TC22: exactly TWO planner turns expected (retry budget is one), got ${session.prompts.length}`);
+  const retryLines = warns.filter((w) => w.includes('[plan-lint-retry]'));
+  assert.ok(retryLines.length >= 1,
+    'TC22: the corrective turn and its outcome must be recorded via [plan-lint-retry] warn lines');
+});
+
+// ── TC23 ──────────────────────────────────────────────────────────────────────
+// Source-level pin on the two retryableLintRuleIds Set literals in
+// planner.js: planGlobal must NOT retry structure-cap-tasks (its plan shape
+// carries no tasks), while planMission (_planMissionReusable) must.
+
+await test('TC23: planner.js pins retryableLintRuleIds Set membership for planMission vs planGlobal', () => {
+  const plannerSrc = fs.readFileSync(
+    new URL('../src/orchestrator/agents/planner.js', import.meta.url),
+    'utf8',
+  );
+  const setLiterals = [...plannerSrc.matchAll(
+    /const retryableLintRuleIds = new Set\(\[([\s\S]*?)\]\)/g,
+  )];
+  assert.strictEqual(setLiterals.length, 2,
+    `TC23: expected exactly two retryableLintRuleIds Set literals in planner.js, found ${setLiterals.length}`);
+
+  const parseIds = (body) => (body.match(/'([^']*)'/g) || []).map((s) => s.slice(1, -1));
+
+  // First literal in source order is planGlobal's (defined before
+  // _planMissionReusable's single-line literal further down the file).
+  const [globalBody, missionBody] = [setLiterals[0][1], setLiterals[1][1]];
+  const globalIds = parseIds(globalBody);
+  const missionIds = parseIds(missionBody);
+
+  assert.ok(missionIds.includes('structure-cap-tasks'),
+    `TC23: the planMission (_planMissionReusable) retryableLintRuleIds Set must list 'structure-cap-tasks'. Got: ${JSON.stringify(missionIds)}`);
+
+  assert.deepStrictEqual([...globalIds].sort(), [
+    'T1', 'T2', 'declared-duplicate', 'structure-cap-milestones', 'structure-cap-missions',
+  ].sort(), `TC23: the planGlobal retryableLintRuleIds Set must list exactly 'structure-cap-missions', 'structure-cap-milestones', 'declared-duplicate', 'T1', 'T2'. Got: ${JSON.stringify(globalIds)}`);
+  assert.ok(!globalIds.includes('structure-cap-tasks'),
+    'TC23: the planGlobal retryableLintRuleIds Set must NOT list structure-cap-tasks');
+
+  assert.ok(!globalBody.includes('structure-cap-tasks-projected'),
+    'TC23: \'structure-cap-tasks-projected\' must not appear in the planGlobal Set literal');
+  assert.ok(!missionBody.includes('structure-cap-tasks-projected'),
+    'TC23: \'structure-cap-tasks-projected\' must not appear in the planMission Set literal');
 });
 
 // ── Summary ──────────────────────────────────────────────────────────────────

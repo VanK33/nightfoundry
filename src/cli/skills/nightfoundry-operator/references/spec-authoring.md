@@ -100,7 +100,9 @@ If the same ripple pair recurs across specs, declare it once via `scope.coupledF
 {
   "plan_structure": {
     "max_milestones": 1,
-    "max_missions": 1
+    "max_missions": 1,
+    "max_tasks_per_mission": 1,
+    "max_tasks": 1
   }
 }
 ```
@@ -109,10 +111,14 @@ If the same ripple pair recurs across specs, declare it once via `scope.coupledF
 |---|---|
 | `max_milestones` | Upper bound on the number of milestones the plan may contain. |
 | `max_missions` | Upper bound on the total number of missions across the whole plan. |
+| `max_tasks_per_mission` | Upper bound on the number of tasks within a single mission's plan. |
+| `max_tasks` | Upper bound on the plan-wide total task count. |
 
-When present with integer values, the plan-structure lint throws if the emitted plan exceeds either cap — e.g. use `{ "max_milestones": 1, "max_missions": 1 }` to pin a small, single-mission change and get an early, clear failure instead of an unexpectedly large decomposition. When `plan_structure` is absent, or present but malformed (not an object, or non-integer fields), the lint is skipped entirely — no cap is enforced.
+These four fields behave in three distinct ways. `max_milestones` and `max_missions` remain opt-in: when `plan_structure` is absent, or present but malformed (not an object, or non-integer fields), that leg is skipped entirely and no cap is enforced — e.g. use `{ "max_milestones": 1, "max_missions": 1 }` to pin a small, single-mission change and get an early, clear failure instead of an unexpectedly large decomposition. `max_tasks_per_mission` is always-on: when absent, the engine default of 24 applies; an integer overrides that default; and the literal `null` disables the leg. It is checked against a mission's actual task count, and the planner gets one corrective retry turn on a breach. `max_tasks` is off by default: when absent, the engine default `null` means no plan-wide cap; an integer enables the guaranteed-breach floor at planGlobal, where a mission count exceeding the cap cannot fit even at one task per mission. That breach is not retryable and fails the plan directly, so dry-run rejects such a spec.
 
-**Set caps as a runaway fuse, not a prescription: leave roughly 2x headroom over the decomposition you expect.** The planner's grouping instincts legitimately differ from a spec author's guess — it may split by src-vs-test, or emit one mission per scope item — and a cap written to the exact expected shape turns that ordinary variance into a hard failed-plan, with every retry re-paying the full baseline gate. Reserve the tight `{ "max_milestones": 1, "max_missions": 1 }` pin for changes that genuinely touch a single file in a single mission.
+**Set caps as a runaway fuse, not a prescription: leave roughly 2x headroom over the decomposition you expect.** The planner's grouping instincts legitimately differ from a spec author's guess — it may split by src-vs-test, or emit one mission per scope item — and a cap written to the exact expected shape turns that ordinary variance into a hard failed-plan, with every retry re-paying the full baseline gate. That same 2x-headroom guidance applies to the task dimension too: `max_tasks_per_mission` and `max_tasks` should leave roughly 2x headroom over the task count you expect a mission (or the whole plan) to actually need, for the same reason — a planner may reasonably split work into more tasks than a spec author's guess, and a tight task cap turns that variance into an avoidable failed-plan. Reserve the tight `{ "max_milestones": 1, "max_missions": 1 }` pin for changes that genuinely touch a single file in a single mission.
+
+Measured calibration: observed single-mission task maxima on successful runs were 17, 16, and 14, while a run that hit a task cap and failed reached 19 — the basis for the engine default of 24 on `max_tasks_per_mission`.
 
 ## (f) Check-shape
 

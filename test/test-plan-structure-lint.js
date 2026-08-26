@@ -89,6 +89,41 @@
  *      real planGlobal method — and its specPlanStructure wiring from both
  *      dryRunValidate's and run()'s _getSpecPlanStructure() call sites —
  *      is what's under test.
+ * TC13: lintPlanStructure Leg A — the always-on total-task-count-vs-
+ *      effective-per-mission-cap leg, and _resolveEffectiveCap's cap-
+ *      resolution semantics: a 25-task plan against an empty spec (no
+ *      override) throws ruleId 'structure-cap-tasks' naming the actual
+ *      count 25, the resolved engine-default cap 24, and the source label
+ *      'engine default'; a 24-task plan (at, not over, the cap) does not
+ *      throw; an integer spec override ({ max_tasks_per_mission: 4 })
+ *      against a 5-task plan throws naming the override cap 4 and source
+ *      'spec override'; a literal null override against a 100-task plan
+ *      disables the leg entirely (no throw, the off-switch convention); a
+ *      non-integer, non-null override ('ten') is malformed and falls back
+ *      to the engine default, so a 25-task plan still throws naming 24 and
+ *      'engine default'; and omitting opts altogether (a two-argument
+ *      call) still resolves the engine default internally from config and
+ *      throws on the 25-task plan, proving Leg A needs no call-site
+ *      plumbing.
+ * TC14: lintPlanStructure Leg B — the guaranteed-breach-floor total-
+ *      mission-count-vs-effective-plan-wide-cap leg: a 5-mission plan
+ *      against a spec override ({ max_tasks: 3 }) throws ruleId
+ *      'structure-cap-tasks-projected' naming the actual mission count 5,
+ *      the override cap 3, source 'spec override', and the split-guidance
+ *      wording (an ordered series of smaller specs, with additive
+ *      groundwork first); the same 5-mission plan against an empty spec
+ *      (no override) does not throw, because the engine default
+ *      (config.execution.maxPlanTasksDefault) is a literal null — Leg B is
+ *      a no-op end to end when no spec override is declared; and a
+ *      literal null override ({ max_tasks: null }) also does not throw
+ *      (the explicit off-switch, same effect as the null engine default).
+ * TC15: dryRunValidate → planner.planGlobal → lintPlanStructure Leg B
+ *      wiring — mirrors TC12's end-to-end precedent, but against
+ *      spec.json's plan_structure.max_tasks instead of max_missions: a
+ *      dry-run against a fixture spec declaring plan_structure.max_tasks
+ *      below the (stubbed) planner sessionManager's resolved mission count
+ *      is rejected with a '[plan-structure-lint]'-prefixed Error; no
+ *      queue/{slug}/ entry is written.
  *
  * Run: node test/test-plan-structure-lint.js
  */
@@ -137,6 +172,25 @@ function test(name, fn) {
 /** Builds a task carrying a single testCase string for lintTaskCheckShapes fixtures. */
 function taskWith(id, targetFiles, testCase) {
   return { id, targetFiles, testCases: [testCase] };
+}
+
+/**
+ * Builds an N-length array of minimal task objects for lintPlanStructure's
+ * Leg A (total-task-count) fixtures. The array is wrapped as a single
+ * subMissions[0].tasks group by the caller — _collectTaskArrays sums task
+ * array lengths, it does not care about task content.
+ */
+function makeTaskArray(n) {
+  const tasks = [];
+  for (let i = 0; i < n; i++) {
+    tasks.push({ id: `t${i}`, targetFiles: [] });
+  }
+  return tasks;
+}
+
+/** Wraps an N-task array as a lintPlanStructure plan fixture (single subMission). */
+function makeTaskCountPlan(n) {
+  return { subMissions: [{ id: 'sm1', tasks: makeTaskArray(n) }] };
 }
 
 // ── TC1: lintPlanStructure L1/L2 leg-count violations throw; absent/ ───────
@@ -1011,6 +1065,241 @@ await test('TC12: dryRunValidate-max_missions-rejection — a 2-mission plan is 
   } finally {
     teardownLedgerPipeline(pipeline);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ── TC13: lintPlanStructure Leg A — total-task-count-vs-effective-cap; ────
+// ── _resolveEffectiveCap's spec-override / off / engine-default legs ──────
+
+await test('TC13: lintPlanStructure Leg A — 25 over engine-default 24 throws naming both + source; 24 passes; spec override/null/malformed-override/omitted-opts', async () => {
+  const plan25 = makeTaskCountPlan(25);
+  const plan24 = makeTaskCountPlan(24);
+
+  // No override (empty spec) → falls back to the engine default (24). A
+  // 25-task plan exceeds it → throws naming the actual count (25), the
+  // resolved cap (24), and the source label ('engine default').
+  assert.throws(
+    () => lintPlanStructure(plan25, {}),
+    (err) => {
+      assert.strictEqual(err.ruleId, 'structure-cap-tasks', `expected ruleId 'structure-cap-tasks', got: ${err.ruleId}`);
+      assert.ok(err.message.includes('25'), `message should name the actual task count 25, got: ${err.message}`);
+      assert.ok(err.message.includes('24'), `message should name the resolved engine-default cap 24, got: ${err.message}`);
+      assert.ok(err.message.includes('engine default'), `message should name the source 'engine default', got: ${err.message}`);
+      return true;
+    },
+    'a 25-task plan against an empty spec should throw via the engine-default cap (24)',
+  );
+
+  // 24 tasks — AT the cap, not over it — must not throw.
+  assert.doesNotThrow(
+    () => lintPlanStructure(plan24, {}),
+    'a 24-task plan (at, not over, the engine-default cap) must not throw',
+  );
+
+  // Integer spec override (max_tasks_per_mission: 4) wins outright over the
+  // engine default; a 5-task plan exceeds it → throws naming the override
+  // cap (4) and source 'spec override'.
+  assert.throws(
+    () => lintPlanStructure(makeTaskCountPlan(5), { max_tasks_per_mission: 4 }),
+    (err) => {
+      assert.ok(err.message.includes('spec override'), `message should name the source 'spec override', got: ${err.message}`);
+      return true;
+    },
+    'a 5-task plan against a max_tasks_per_mission:4 spec override should throw naming the override cap and its source',
+  );
+
+  // A literal null override disables Leg A entirely (off-switch
+  // convention) — a 100-task plan must not throw.
+  assert.doesNotThrow(
+    () => lintPlanStructure(makeTaskCountPlan(100), { max_tasks_per_mission: null }),
+    'a literal null max_tasks_per_mission override must disable Leg A entirely, no throw even at 100 tasks',
+  );
+
+  // A non-integer, non-null override ('ten') is malformed → falls back to
+  // the engine default (24); a 25-task plan still throws naming 24 and
+  // 'engine default'.
+  assert.throws(
+    () => lintPlanStructure(plan25, { max_tasks_per_mission: 'ten' }),
+    (err) => {
+      assert.ok(err.message.includes('24'), `message should name the engine-default cap 24, got: ${err.message}`);
+      assert.ok(err.message.includes('engine default'), `message should name the source 'engine default', got: ${err.message}`);
+      return true;
+    },
+    'a malformed (non-integer, non-null) override should fall back to the engine default, still throwing on 25 tasks',
+  );
+
+  // Omitting opts altogether (a two-argument call) still resolves the
+  // engine default internally from config — Leg A needs no call-site
+  // plumbing.
+  assert.throws(
+    () => lintPlanStructure(plan25, {}),
+    (err) => err.ruleId === 'structure-cap-tasks',
+    'omitting opts (two-argument call) should still resolve the engine default internally and throw on 25 tasks',
+  );
+});
+
+// ── TC14: lintPlanStructure Leg B — total-mission-count-vs-effective- ─────
+// ── plan-wide-cap (guaranteed-breach floor); the null-engine-default ──────
+// ── no-op and the explicit null-override off-switch ───────────────────────
+
+/** Wraps N missions (flattened missions[] fixture shape) as a lintPlanStructure plan fixture. */
+function makeMissionCountPlan(n) {
+  const missions = [];
+  for (let i = 0; i < n; i++) {
+    missions.push({ id: `m${i}`, targetFiles: [] });
+  }
+  return { missions };
+}
+
+await test('TC14: lintPlanStructure Leg B — 5 missions over a max_tasks:3 spec override throws ruleId structure-cap-tasks-projected with split guidance; empty spec / null override no-op', async () => {
+  const plan5 = makeMissionCountPlan(5);
+
+  // Spec override (max_tasks: 3) wins outright over the (null) engine
+  // default; 5 missions exceeds it → throws naming the actual mission
+  // count (5), the override cap (3), source ('spec override'), and the
+  // split-guidance wording.
+  assert.throws(
+    () => lintPlanStructure(plan5, { max_tasks: 3 }),
+    (err) => {
+      assert.strictEqual(
+        err.ruleId,
+        'structure-cap-tasks-projected',
+        `expected ruleId 'structure-cap-tasks-projected', got: ${err.ruleId}`,
+      );
+      assert.ok(err.message.includes('5'), `message should name the actual mission count 5, got: ${err.message}`);
+      assert.ok(err.message.includes('3'), `message should name the override cap 3, got: ${err.message}`);
+      assert.ok(err.message.includes('spec override'), `message should name the source 'spec override', got: ${err.message}`);
+      assert.ok(err.message.includes('ordered series'), `message should carry the 'ordered series' split guidance, got: ${err.message}`);
+      assert.ok(err.message.includes('groundwork'), `message should carry the 'groundwork' split guidance, got: ${err.message}`);
+      return true;
+    },
+    'a 5-mission plan against a max_tasks:3 spec override should throw naming the count, cap, source, and split guidance',
+  );
+
+  // Empty spec (no override) → falls back to the engine default, which is
+  // a literal null (config.execution.maxPlanTasksDefault) — Leg B is a
+  // no-op end to end, no throw even though the same 5-mission plan would
+  // breach the max_tasks:3 cap above.
+  assert.doesNotThrow(
+    () => lintPlanStructure(plan5, {}),
+    'a 5-mission plan against an empty spec must not throw — the null engine default makes Leg B a no-op',
+  );
+
+  // Explicit null override — same off-switch effect as the null engine
+  // default, no throw.
+  assert.doesNotThrow(
+    () => lintPlanStructure(plan5, { max_tasks: null }),
+    'a literal null max_tasks override must disable Leg B entirely, no throw',
+  );
+});
+
+// ── TC15: dryRunValidate → planner.planGlobal → lintPlanStructure Leg B ───
+// ── wiring — mirrors TC12, against spec.json's plan_structure.max_tasks ───
+
+function createDryRunMaxTasksFixture() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-structure-lint-dry-run-tasks-'));
+  bootstrap(tmpDir, {});
+  const specPath = path.join(tmpDir, 'spec.md');
+  fs.writeFileSync(specPath, '# Test Spec\n\nBuild something.');
+  // Sibling spec.json: passes the uncheckable-spec gate (target_files +
+  // acceptance_criteria present) and declares plan_structure.max_tasks
+  // BELOW the stubbed planner's resolved mission count (2).
+  fs.writeFileSync(
+    path.join(tmpDir, 'spec.json'),
+    JSON.stringify({
+      goal: 'Build something.',
+      target_files: ['src/foo.js'],
+      acceptance_criteria: [{ description: 'it works', verification: { kind: 'manual' } }],
+      plan_structure: { max_tasks: 1 },
+    }),
+  );
+  return { tmpDir, specPath };
+}
+
+await test('TC15: dryRunValidate-max_tasks-rejection — a 2-mission plan is rejected against a max_tasks:1 spec, no queue entry written', async () => {
+  const { tmpDir, specPath } = createDryRunMaxTasksFixture();
+  const pipeline = new Pipeline(tmpDir, {
+    onLog: () => {},
+    onConfirm: async () => true,
+  });
+  pipeline._runPreflight = () => {};
+
+  // Stub the planner's SESSION MANAGER (never planner.planGlobal itself) so
+  // the real planGlobal method executes, including its
+  // specPlanStructure-driven lintPlanStructure call.
+  const twoMissionPlan = {
+    milestones: [
+      {
+        id: '001',
+        description: 'ms1',
+        missions: [
+          { id: '001-001', description: 'm1' },
+          { id: '001-002', description: 'm2' },
+        ],
+      },
+    ],
+    assumptions: [],
+  };
+  pipeline.planner.sessionManager = makeFakeGlobalSpawnSessionManagerForDryRun(twoMissionPlan);
+
+  try {
+    let threw = null;
+    try {
+      await pipeline.dryRunValidate('Build a sample app', { prdPath: specPath });
+    } catch (err) {
+      threw = err;
+    }
+
+    assert.ok(threw, 'expected dryRunValidate to throw when the plan exceeds spec-declared max_tasks, but it resolved');
+    assert.ok(
+      threw.message.startsWith('[plan-structure-lint]'),
+      `expected a [plan-structure-lint] error, got: ${threw.message}`,
+    );
+
+    const queueDir = path.join(tmpDir, 'queue', 'spec');
+    assert.ok(!fs.existsSync(queueDir), 'no queue/{slug}/ entry should be written when validation is rejected');
+  } finally {
+    teardownLedgerPipeline(pipeline);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ── Re-assertion: the malformed-value skip pin and the flow-through pin ───
+// ── still hold under the new (TC14/TC15) defaults ─────────────────────────
+
+await test('TC16: re-assert the malformed-value skip pin and the readSpecPlanStructure flow-through pin', async () => {
+  // Malformed-value skip pin (from TC1): a non-integer max_missions ('1',
+  // a string) must skip L1 entirely, no throw — re-asserted here alongside
+  // the new Leg B fixtures above.
+  assert.strictEqual(
+    lintPlanStructure(
+      { missions: [{ id: 'm1', targetFiles: [] }, { id: 'm2', targetFiles: [] }] },
+      { max_missions: '1' },
+    ),
+    undefined,
+    'lintPlanStructure with a malformed (string) max_missions override must return undefined (skip, no throw)',
+  );
+
+  // Flow-through pin (from TC8): a present plan_structure section,
+  // including an unknown key, is returned verbatim.
+  const dir = mkTmpSpecDir();
+  try {
+    const prdPath = path.join(dir, 'spec.md');
+    fs.writeFileSync(prdPath, '# spec\n');
+    fs.writeFileSync(
+      path.join(dir, 'spec.json'),
+      JSON.stringify({
+        plan_structure: { max_missions: 2, max_milestones: 1, some_unknown_key: 'x' },
+      }),
+    );
+    const result = readSpecPlanStructure(prdPath, dir);
+    assert.deepStrictEqual(
+      result,
+      { max_missions: 2, max_milestones: 1, some_unknown_key: 'x' },
+      `an unknown plan_structure key must be returned verbatim alongside known keys, got: ${JSON.stringify(result)}`,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

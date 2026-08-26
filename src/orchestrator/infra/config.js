@@ -158,6 +158,24 @@ const config = {
     maxTasksPerSubMission: 7,
 
     /**
+     * maxTasksPerMissionDefault (24) / maxPlanTasksDefault (null): the
+     * measured calibration for a single mission's task count. Successful
+     * single-mission archives topped out at 17 (archive 164), 16 (archive
+     * 234), and 14 (archive 225) tasks; failed-075 reached 19 tasks before
+     * it broke down. 24 gives roughly 1.25x headroom above the highest
+     * observed failure point (19) and well above the highest successful
+     * maxima (17/16/14), so the lint leg flags plans that drift meaningfully
+     * past the calibrated range without constraining normal-sized missions.
+     *
+     * maxPlanTasksDefault is a literal `null` by default, matching the
+     * off-switch convention already used by budgets.runCeilingUsd: a
+     * literal `null` disables the corresponding lint leg (the whole-plan
+     * task-count check) entirely rather than applying any numeric ceiling.
+     */
+    maxTasksPerMissionDefault: 24,
+    maxPlanTasksDefault: null,
+
+    /**
      * maxConcurrentSessions (default 5): upper bound on parallel SDK
      * sessions active at once across all agent types when the
      * scheduler is enabled. Set to 1 to serialize execution inside
