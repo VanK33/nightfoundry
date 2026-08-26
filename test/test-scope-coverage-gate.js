@@ -17,6 +17,19 @@
  * (The old TC5 "missing spec file returns without error" is gone: the gate no
  *  longer reads the spec file, so the premise no longer exists.)
  *
+ * TC-CTX-1: a contextOnly:true item omitted from scopeMapping (every other
+ *           item mapped) → no throw, "all ... covered" success log
+ * TC-CTX-2: same plan with the contextOnly flag removed from that item →
+ *           throws IncompleteScopeError, uncoveredLabels includes its label
+ * TC-CTX-3: same plan mapping the contextOnly item to a valid mission id too
+ *           → no throw, "all ... covered" success log
+ * TC-CTX-4: scopeItems key absent entirely (legacy) → allow=false throws
+ *           IncompleteScopeError (fail-closed); allow=true logs "legacy run"
+ *           and does not throw
+ * TC-CTX-5: a contextOnly item (unmapped) mixed with a plain unmapped item →
+ *           throws IncompleteScopeError whose uncoveredLabels contains only
+ *           the plain item's label
+ *
  * Run: node test/test-scope-coverage-gate.js
  */
 
@@ -155,6 +168,84 @@ function planGoalOnly() {
     ],
     scopeItems: [],
     scopeMapping: [],
+  };
+}
+
+/**
+ * Plan with a contextOnly:true item (s1) plus two plain items (s2/s3).
+ * By default s1 is unmapped (contextOnly exempts it) and s2/s3 are mapped to
+ * real mission ids. Options let callers strip the contextOnly flag and/or
+ * additionally map s1 to a valid mission, for the TC-CTX-1/2/3 variants.
+ */
+function planContextOnlyVariant({ contextOnly = true, mapContextItem = false } = {}) {
+  return {
+    milestones: [
+      {
+        id: '001',
+        description: 'Milestone 1',
+        missions: [
+          { id: '001-001', description: 'Background context note for reviewers' },
+          { id: '001-002', description: 'Build Cache layer for performance' },
+          { id: '001-003', description: 'Add Logging service integration' },
+        ],
+      },
+    ],
+    scopeItems: [
+      {
+        id: 's1',
+        label: 'Background context note',
+        source: 'numbered-bold-item',
+        ...(contextOnly ? { contextOnly: true } : {}),
+      },
+      { id: 's2', label: 'Cache layer', source: 'numbered-subsection' },
+      { id: 's3', label: 'Logging service', source: 'numbered-subsection' },
+    ],
+    scopeMapping: [
+      ...(mapContextItem ? [{ scopeItemId: 's1', missionIds: ['001-001'] }] : []),
+      { scopeItemId: 's2', missionIds: ['001-002'] },
+      { scopeItemId: 's3', missionIds: ['001-003'] },
+    ],
+  };
+}
+
+/** Legacy plan: scopeItems key is absent entirely (fail-closed / escape leg). */
+function planLegacyNoScopeItemsKey() {
+  return {
+    milestones: [
+      {
+        id: '001',
+        description: 'Milestone 1',
+        missions: [
+          { id: '001-001', description: 'Some mission' },
+        ],
+      },
+    ],
+    // scopeItems intentionally omitted — legacy run, scope set not persisted.
+  };
+}
+
+/**
+ * Plan mixing a contextOnly:true item (s1, unmapped) with a plain item (s2,
+ * also unmapped). Only s2 should surface as uncovered.
+ */
+function planMixedContextAndPlainUnmapped() {
+  return {
+    milestones: [
+      {
+        id: '001',
+        description: 'Milestone 1',
+        missions: [
+          { id: '001-001', description: 'Implement Auth module for users' },
+        ],
+      },
+    ],
+    scopeItems: [
+      { id: 's1', label: 'Background context note', source: 'numbered-bold-item', contextOnly: true },
+      { id: 's2', label: 'Auth module', source: 'numbered-subsection' },
+    ],
+    scopeMapping: [
+      // both s1 and s2 are unmapped
+    ],
   };
 }
 
@@ -307,6 +398,191 @@ await test('TC4: goal-only plan (scopeItems = []) emits skip log, no throw', asy
     if (!skipLog) {
       throw new Error(
         `Expected a "no scope items, skipping" log.\nLogs received:\n${logs.join('\n') || '(none)'}`
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-CTX-1: contextOnly item omitted from scopeMapping, everything else
+// mapped → no throw, "all ... covered" success log.
+// ─────────────────────────────────────────────────────────────────────────────
+await test('TC-CTX-1: contextOnly item omitted from scopeMapping — no throw, success log emitted', async () => {
+  const { tmpDir, harnessDir } = createTmpHarness();
+
+  try {
+    const { fakeThis, logs } = makeFakePipeline(harnessDir, { allowIncompleteScope: false });
+
+    try {
+      await scopeCoverageGate.call(fakeThis, planContextOnlyVariant({ contextOnly: true, mapContextItem: false }), { prdPath: path.join(tmpDir, 'spec.md') });
+    } catch (err) {
+      throw new Error(`Expected no throw, but got: ${err.message}`);
+    }
+
+    const successLog = logs.find((msg) => msg.includes('all') && msg.includes('covered'));
+    if (!successLog) {
+      throw new Error(
+        `Expected a success log containing "all" and "covered".\nLogs received:\n${logs.join('\n') || '(none)'}`
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-CTX-2: same plan with the contextOnly flag removed from that item →
+// throws IncompleteScopeError, uncoveredLabels includes its label.
+// ─────────────────────────────────────────────────────────────────────────────
+await test('TC-CTX-2: contextOnly flag removed from unmapped item throws IncompleteScopeError with its label', async () => {
+  const { tmpDir, harnessDir } = createTmpHarness();
+
+  try {
+    const { fakeThis } = makeFakePipeline(harnessDir, { allowIncompleteScope: false });
+
+    let thrownErr = null;
+    try {
+      await scopeCoverageGate.call(fakeThis, planContextOnlyVariant({ contextOnly: false, mapContextItem: false }), { prdPath: path.join(tmpDir, 'spec.md') });
+    } catch (err) {
+      thrownErr = err;
+    }
+
+    if (!thrownErr) {
+      throw new Error('Expected IncompleteScopeError to be thrown, but no error was thrown');
+    }
+    if (!(thrownErr instanceof IncompleteScopeError)) {
+      throw new Error(
+        `Expected IncompleteScopeError, got: ${thrownErr.constructor.name}: ${thrownErr.message}`
+      );
+    }
+
+    const { uncoveredLabels } = thrownErr;
+    if (!Array.isArray(uncoveredLabels) || !uncoveredLabels.includes('Background context note')) {
+      throw new Error(
+        `Expected uncoveredLabels to include "Background context note".\nGot: ${JSON.stringify(uncoveredLabels)}`
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-CTX-3: same plan mapping the contextOnly item to a valid mission id too
+// → no throw, "all ... covered" success log.
+// ─────────────────────────────────────────────────────────────────────────────
+await test('TC-CTX-3: contextOnly item mapped to a valid mission id — no throw, success log emitted', async () => {
+  const { tmpDir, harnessDir } = createTmpHarness();
+
+  try {
+    const { fakeThis, logs } = makeFakePipeline(harnessDir, { allowIncompleteScope: false });
+
+    try {
+      await scopeCoverageGate.call(fakeThis, planContextOnlyVariant({ contextOnly: true, mapContextItem: true }), { prdPath: path.join(tmpDir, 'spec.md') });
+    } catch (err) {
+      throw new Error(`Expected no throw, but got: ${err.message}`);
+    }
+
+    const successLog = logs.find((msg) => msg.includes('all') && msg.includes('covered'));
+    if (!successLog) {
+      throw new Error(
+        `Expected a success log containing "all" and "covered".\nLogs received:\n${logs.join('\n') || '(none)'}`
+      );
+    }
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-CTX-4: scopeItems key absent entirely (legacy) — allow=false throws
+// IncompleteScopeError (fail-closed); allow=true logs "legacy run" and does
+// not throw.
+// ─────────────────────────────────────────────────────────────────────────────
+await test('TC-CTX-4: scopeItems key absent — allow=false fail-closed throw, allow=true logs "legacy run" and does not throw', async () => {
+  // Leg 1: allow=false → fail-closed throw of IncompleteScopeError.
+  {
+    const { tmpDir, harnessDir } = createTmpHarness();
+    try {
+      const { fakeThis } = makeFakePipeline(harnessDir, { allowIncompleteScope: false });
+
+      let thrownErr = null;
+      try {
+        await scopeCoverageGate.call(fakeThis, planLegacyNoScopeItemsKey(), { prdPath: path.join(tmpDir, 'spec.md') });
+      } catch (err) {
+        thrownErr = err;
+      }
+
+      if (!thrownErr) {
+        throw new Error('Expected IncompleteScopeError to be thrown, but no error was thrown');
+      }
+      if (!(thrownErr instanceof IncompleteScopeError)) {
+        throw new Error(
+          `Expected IncompleteScopeError, got: ${thrownErr.constructor.name}: ${thrownErr.message}`
+        );
+      }
+    } finally {
+      cleanup(tmpDir);
+    }
+  }
+
+  // Leg 2: allow=true → no throw, "legacy run" log emitted.
+  {
+    const { tmpDir, harnessDir } = createTmpHarness();
+    try {
+      const { fakeThis, logs } = makeFakePipeline(harnessDir, { allowIncompleteScope: true });
+
+      try {
+        await scopeCoverageGate.call(fakeThis, planLegacyNoScopeItemsKey(), { prdPath: path.join(tmpDir, 'spec.md') });
+      } catch (err) {
+        throw new Error(`Expected no throw when allowIncompleteScope=true, but gate threw: ${err.message}`);
+      }
+
+      const legacyLog = logs.find((msg) => msg.includes('legacy run'));
+      if (!legacyLog) {
+        throw new Error(
+          `Expected a log containing "legacy run".\nLogs received:\n${logs.join('\n') || '(none)'}`
+        );
+      }
+    } finally {
+      cleanup(tmpDir);
+    }
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-CTX-5: a contextOnly item (unmapped) mixed with a plain unmapped item →
+// throws IncompleteScopeError whose uncoveredLabels contains only the plain
+// item's label.
+// ─────────────────────────────────────────────────────────────────────────────
+await test('TC-CTX-5: contextOnly item mixed with a plain unmapped item — uncoveredLabels contains only the plain label', async () => {
+  const { tmpDir, harnessDir } = createTmpHarness();
+
+  try {
+    const { fakeThis } = makeFakePipeline(harnessDir, { allowIncompleteScope: false });
+
+    let thrownErr = null;
+    try {
+      await scopeCoverageGate.call(fakeThis, planMixedContextAndPlainUnmapped(), { prdPath: path.join(tmpDir, 'spec.md') });
+    } catch (err) {
+      thrownErr = err;
+    }
+
+    if (!thrownErr) {
+      throw new Error('Expected IncompleteScopeError to be thrown, but no error was thrown');
+    }
+    if (!(thrownErr instanceof IncompleteScopeError)) {
+      throw new Error(
+        `Expected IncompleteScopeError, got: ${thrownErr.constructor.name}: ${thrownErr.message}`
+      );
+    }
+
+    const { uncoveredLabels } = thrownErr;
+    if (!Array.isArray(uncoveredLabels) || uncoveredLabels.length !== 1 || uncoveredLabels[0] !== 'Auth module') {
+      throw new Error(
+        `Expected uncoveredLabels to contain only "Auth module".\nGot: ${JSON.stringify(uncoveredLabels)}`
       );
     }
   } finally {

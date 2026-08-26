@@ -50,6 +50,15 @@ A hand-written spec's markdown file follows one six-section skeleton, in this or
 
 Each `## Scope — in` entry MUST use the numbered-bold shape — `N. **<label>** — <behavior>` followed by indented file bullets (`   - <path>`) — because this is the exact shape the scope-parsing and scope-coverage gates read back out. Free-form prose in `## Scope — in` will not be recognized as scope items. `## Scope — out` is optional but recommended whenever there's an adjacent file or behavior a reader might otherwise assume is in scope.
 
+A `## Scope — in` numbered-bold item's label may start with a `[context]` marker to flag it as existing behavior the plan builds on, rather than new work the plan must implement:
+
+```markdown
+N. **[context] label** — existing behavior the plan builds on; no mission will be required
+   - path/to/file/existing.js
+```
+
+The marker is the exact literal `[context]` at the start of the bold label, matched case-insensitively, and it must be followed by whitespace — so `**[context]foo**` (no whitespace after the marker) is NOT recognized as a context item and is instead read as an ordinary label starting with the literal text `[context]foo`. The marker is only recognized on `## Scope — in` numbered-bold items; the label the plan sees has the marker stripped out. A context item is exempt from the requirement that every scope id be mapped to a mission — no mission or task will be created for it. However, a context item's indented file sub-bullets still project into `target_files` / the declared-authorized file set exactly like any other scope file bullet, so other missions may legitimately touch those files.
+
 ## (b) Sibling `.spec.md` / `.spec.json` naming
 
 A hand-written spec is always a pair of sibling files sharing one slug, both at the project root (not nested under a state directory):

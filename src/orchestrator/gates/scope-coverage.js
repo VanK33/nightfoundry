@@ -14,6 +14,16 @@
  * Public API:
  *   checkScopeCoverageByMapping(scopeItems, scopeMapping, validMissionIds)
  *     → { covered: { id, label }[], uncovered: string[] (labels) }
+ *
+ * Context-only exemption: a scope item whose `contextOnly` property is
+ * strictly `true` is treated as covered-by-declaration. Such items are never
+ * pushed to `uncovered` — regardless of whether they are unmapped, mapped
+ * with an empty `missionIds` array, or mapped to a dangling/invalid mission
+ * id — and are always reported in `covered` as `{ id, label }`. Mapping a
+ * context-only item to valid missions is not an error either; it is still
+ * simply covered, with no additional output field. Items without
+ * `contextOnly: true` are unaffected and keep the strict ALL-valid decision
+ * described below.
  */
 
 /**
@@ -27,9 +37,14 @@
  * schema cannot enforce). Mis-assignment to a wrong-but-existing mission is an
  * accepted residual (防漏 not 防错配).
  *
+ * Exception: a scope item whose `contextOnly` property is strictly `true` is
+ * exempt from the above and is ALWAYS covered-by-declaration, regardless of
+ * mapping state (unmapped, empty missionIds, or dangling missionIds). It is
+ * reported in `covered` and never in `uncovered`.
+ *
  * Never throws.
  *
- * @param {Array<{ id: string, label: string, source: string }>} scopeItems
+ * @param {Array<{ id: string, label: string, source: string, contextOnly?: boolean }>} scopeItems
  * @param {Array<{ scopeItemId: string, missionIds: string[] }>} scopeMapping
  *   May be undefined or [].
  * @param {Set<string>|string[]} validMissionIds
@@ -60,6 +75,11 @@ export function checkScopeCoverageByMapping(scopeItems, scopeMapping, validMissi
   const uncovered = [];
 
   for (const item of items) {
+    if (item.contextOnly === true) {
+      covered.push({ id: item.id, label: item.label });
+      continue;
+    }
+
     const entry = byScopeItemId.get(item.id);
     const missionIds = entry && Array.isArray(entry.missionIds) ? entry.missionIds : null;
     const isCovered =

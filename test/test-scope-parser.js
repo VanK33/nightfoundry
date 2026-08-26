@@ -421,6 +421,111 @@ test('TC-NBI-4: regression — numbered-subsection, named-bug, and comment-marke
   assert.deepEqual(boldItems, [], 'no numbered-bold-item should be present in regression spec');
 });
 
+// ---------- TC-CTX-1: [context] marker strips prefix and sets contextOnly ----------
+
+test('TC-CTX-1: 1. **[context] Docs refresh** yields contextOnly true with stripped label', () => {
+  const spec = `
+# My Feature
+
+## Scope — in
+
+1. **[context] Docs refresh**
+
+## Other Section
+`;
+  const items = extractScopeItems(spec);
+  assert.deepEqual(items, [
+    { id: 's1', label: 'Docs refresh', source: 'numbered-bold-item', contextOnly: true },
+  ]);
+});
+
+// ---------- TC-CTX-2: marker is case-insensitive ----------
+
+test('TC-CTX-2: 1. **[Context] Docs refresh** is recognised case-insensitively', () => {
+  const spec = `
+# My Feature
+
+## Scope — in
+
+1. **[Context] Docs refresh**
+
+## Other Section
+`;
+  const items = extractScopeItems(spec);
+  assert.equal(items[0].label, 'Docs refresh');
+  assert.equal(items[0].contextOnly, true);
+});
+
+// ---------- TC-CTX-3: no-whitespace form is not recognised ----------
+
+test('TC-CTX-3: 1. **[context]foo** (no whitespace) is not recognised as the marker', () => {
+  const spec = `
+# My Feature
+
+## Scope — in
+
+1. **[context]foo**
+
+## Other Section
+`;
+  const items = extractScopeItems(spec);
+  assert.equal(items[0].label, '[context]foo');
+  assert.equal(Object.prototype.hasOwnProperty.call(items[0], 'contextOnly'), false);
+});
+
+// ---------- TC-CTX-4: label merely containing the word "context" is untouched ----------
+
+test('TC-CTX-4: 1. **contextual parser work** is untouched (label just contains "context")', () => {
+  const spec = `
+# My Feature
+
+## Scope — in
+
+1. **contextual parser work**
+
+## Other Section
+`;
+  const items = extractScopeItems(spec);
+  assert.deepEqual(items, [
+    { id: 's1', label: 'contextual parser work', source: 'numbered-bold-item' },
+  ]);
+});
+
+// ---------- TC-CTX-5: unmarked items carry no contextOnly field ----------
+
+test('TC-CTX-5: plain 1. **Alpha** item has exactly the keys id/label/source', () => {
+  const spec = `
+# My Feature
+
+## Scope — in
+
+1. **Alpha**
+
+## Other Section
+`;
+  const items = extractScopeItems(spec);
+  assert.deepEqual(Object.keys(items[0]).sort(), ['id', 'label', 'source'].sort());
+});
+
+// ---------- TC-CTX-6: dedupe on stripped label, first-seen decides ----------
+
+test('TC-CTX-6: [context] Alpha then Alpha dedupes to one item with contextOnly true', () => {
+  const spec = `
+# My Feature
+
+## Scope — in
+
+1. **[context] Alpha**
+2. **Alpha**
+
+## Other Section
+`;
+  const items = extractScopeItems(spec);
+  const alphaItems = items.filter((i) => i.label === 'Alpha');
+  assert.equal(alphaItems.length, 1, 'Alpha should appear exactly once');
+  assert.equal(alphaItems[0].contextOnly, true);
+});
+
 // ---------- Summary ----------
 
 console.log(`\n${passCount} passed, ${failCount} failed`);

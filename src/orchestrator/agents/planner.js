@@ -389,8 +389,9 @@ ${opts.learningData ? `Historical decomposition patterns for calibration:\n${opt
 
     const scopeItemsBlock =
       Array.isArray(opts.specScopeItems) && opts.specScopeItems.length > 0
-        ? `\n## Declared scope items\n${opts.specScopeItems.map(s => `- ${s.id}: ${s.label}`).join('\n')}\n` +
-          `\nEVERY scope id above MUST be mapped to at least one mission id you emit, via the top-level \`scopeMapping\` array (one entry per scope id, each with \`scopeItemId\` and a non-empty \`missionIds\`). A scope id with no mission, or a mission id that is not in your plan, fails the coverage gate.\n`
+        ? `\n## Declared scope items\n${opts.specScopeItems.map(s => s.contextOnly ? `- ${s.id}: ${s.label} (context-only — no mission required)` : `- ${s.id}: ${s.label}`).join('\n')}\n` +
+          `\nEVERY non-context scope id above MUST be mapped to at least one mission id you emit, via the top-level \`scopeMapping\` array (one entry per scope id, each with \`scopeItemId\` and a non-empty \`missionIds\`). A scope id with no mission, or a mission id that is not in your plan, fails the coverage gate.\n` +
+          `context-only items describe existing landed work — do not create missions or tasks for them; their files may still appear in other missions' work where genuinely needed\n`
         : '';
 
     const constraintLines = Array.isArray(opts.specConstraints)

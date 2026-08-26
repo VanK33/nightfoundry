@@ -1,3 +1,8 @@
+## [0.2.25] - 2026-08-26 — Add [context] marker for pre-implemented scope items
+
+### New features
+- Add [context] marker on scope items to indicate pre-implemented work; marked items are exempt from mission mapping requirements and annotated in planner prompts as "(context-only — no mission required)"
+
 ## [0.2.24] - 2026-08-24 — Route secondary findings through explicit disposition validation
 
 ### New features

@@ -19,11 +19,24 @@
  *       1. **Foo bar**
  *     → { label: 'Foo bar', source: 'numbered-bold-item' }
  *
+ *     If the bold label starts with a leading `[context]` marker (case-
+ *     insensitive) followed by at least one whitespace character, the marker
+ *     and that whitespace are stripped from the label and the item carries
+ *     an additional `contextOnly: true` field, e.g.
+ *       1. **[context] Docs refresh**
+ *     → { label: 'Docs refresh', source: 'numbered-bold-item', contextOnly: true }
+ *     A marker with no following whitespace (e.g. `[context]foo`) or a label
+ *     that merely contains the word "context" (e.g. `contextual foo`) is NOT
+ *     recognised as the marker; the label is left unstripped and no
+ *     `contextOnly` field is added. This marker is only recognised on
+ *     numbered-bold-item labels — not on numbered-subsection, named-bug, or
+ *     comment-marker items.
+ *
  * Deduplicates by label (case-sensitive), preserving first-seen order.
  * Returns [] when no scope items are found.
  *
  * Public API:
- *   extractScopeItems(specMarkdown)      → Array<{ id: string, label: string, source: string }>
+ *   extractScopeItems(specMarkdown)      → Array<{ id: string, label: string, source: string, contextOnly?: boolean }>
  *   extractRejectedPhrases(constraints)  → Array<{ phrase: string, tokens: Set<string> }>
  *   STOPWORDS                            → Set<string> (consumed by extractRejectedPhrases)
  */
@@ -45,12 +58,16 @@ const NAMED_BUG_RE = /\*\*(Bug\s+\S.*?)\*\*/;
 const COMMENT_MARKER_RE = /<!--\s*scope-item:\s*(.+?)\s*-->/g;
 // Matches "1. **Bold text**" — a numbered list item whose label is entirely bold
 const NUMBERED_BOLD_ITEM_RE = /^\s*\d+\.\s+\*\*(.+?)\*\*/;
+// Matches a leading "[context] " marker (case-insensitive) at the start of a
+// numbered-bold-item label — requires at least one whitespace char after the
+// marker to be recognised. Capturing group holds the remainder of the label.
+const CONTEXT_MARKER_RE = /^\[context\]\s+(.+)$/i;
 
 /**
  * Extract scope items from spec markdown.
  *
  * @param {string} specMarkdown
- * @returns {Array<{ id: string, label: string, source: string }>}
+ * @returns {Array<{ id: string, label: string, source: string, contextOnly?: boolean }>}
  */
 export function extractScopeItems(specMarkdown) {
   if (typeof specMarkdown !== 'string' || specMarkdown.length === 0) {
@@ -109,7 +126,13 @@ export function extractScopeItems(specMarkdown) {
     if (inScopeIn) {
       const numberedBoldMatch = line.match(NUMBERED_BOLD_ITEM_RE);
       if (numberedBoldMatch) {
-        items.push({ label: numberedBoldMatch[1], source: 'numbered-bold-item' });
+        const rawLabel = numberedBoldMatch[1];
+        const contextMatch = rawLabel.match(CONTEXT_MARKER_RE);
+        if (contextMatch) {
+          items.push({ label: contextMatch[1], source: 'numbered-bold-item', contextOnly: true });
+        } else {
+          items.push({ label: rawLabel, source: 'numbered-bold-item' });
+        }
       }
     }
   }
@@ -122,7 +145,11 @@ export function extractScopeItems(specMarkdown) {
   for (const item of items) {
     if (!seen.has(item.label)) {
       seen.add(item.label);
-      unique.push({ id: `s${unique.length + 1}`, label: item.label, source: item.source });
+      const rebuilt = { id: `s${unique.length + 1}`, label: item.label, source: item.source };
+      if (item.contextOnly) {
+        rebuilt.contextOnly = true;
+      }
+      unique.push(rebuilt);
     }
   }
   return unique;
