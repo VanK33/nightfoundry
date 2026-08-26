@@ -224,6 +224,82 @@ ${lines.join('\n')}`;
 }
 
 /**
+ * Returns the deduplicated, ascending-sorted list of targetFiles paths
+ * declared by OTHER (non-terminal, non-`ownMissionId`) missions, with any
+ * path that also appears in `ownMissionId`'s own targetFiles subtracted out.
+ *
+ * Traverses state.milestones[].missions the same way
+ * buildPendingDeliverablesBlock does (mission id is the object KEY).
+ * A mission contributes its targetFiles iff its status is neither
+ * 'complete' nor 'invalidated' (see TERMINAL) and its key differs from
+ * ownMissionId; only string entries of a mission's targetFiles are
+ * collected. ownMissionId's own targetFiles (found by key, regardless of
+ * its own status) are then removed path-level from that collection.
+ *
+ * Fail-soft: a missing/unreadable/unparseable state.json, a missing or
+ * non-object `milestones`/`missions`, a missing or non-array
+ * `targetFiles`, or a falsy/empty ownMissionId yields `[]`. Never throws
+ * for any input.
+ *
+ * @param {string} harnessDir
+ * @param {string} ownMissionId
+ * @returns {string[]}
+ */
+export function buildForeignPendingFiles(harnessDir, ownMissionId) {
+  try {
+    if (!ownMissionId) return [];
+
+    let state;
+    try {
+      state = readState(harnessDir);
+    } catch {
+      return [];
+    }
+
+    if (!state || typeof state.milestones !== 'object' || state.milestones === null) return [];
+
+    const milestoneList = Object.values(state.milestones);
+
+    // Foreign, non-terminal targetFiles.
+    const foreignSet = new Set();
+    for (const ms of milestoneList) {
+      if (!ms || typeof ms.missions !== 'object' || ms.missions === null) continue;
+      for (const [miId, mi] of Object.entries(ms.missions)) {
+        if (!mi) continue;
+        if (miId === ownMissionId) continue;
+        if (TERMINAL.has(mi.status)) continue;
+        if (!Array.isArray(mi.targetFiles)) continue;
+        for (const f of mi.targetFiles) {
+          if (typeof f !== 'string') continue;
+          foreignSet.add(f);
+        }
+      }
+    }
+
+    // Own mission's targetFiles, subtracted path-level from the foreign set.
+    const ownSet = new Set();
+    for (const ms of milestoneList) {
+      if (!ms || typeof ms.missions !== 'object' || ms.missions === null) continue;
+      const own = ms.missions[ownMissionId];
+      if (!own || !Array.isArray(own.targetFiles)) continue;
+      for (const f of own.targetFiles) {
+        if (typeof f !== 'string') continue;
+        ownSet.add(f);
+      }
+    }
+
+    const result = [];
+    for (const f of foreignSet) {
+      if (!ownSet.has(f)) result.push(f);
+    }
+
+    return result.sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Builds a text block naming the mission's own target files — the
  * deduplicated union of missionState.subMissions[].tasks[].targetFiles,
  * preserving first-seen order — together with one sentence stating that

@@ -977,6 +977,15 @@ class SessionManager {
    * @param {Set}    [readFiles] - Set that tracks files Read by the agent; shared
    *                               with the SessionHandle so it persists across turns.
    *                               Defaults to a fresh Set (used when called without a handle).
+   * @param {boolean} [options.denyForeignPendingBash] - Opt-in flag: when true (together
+   *                               with a non-empty options.foreignPendingFiles), deny any
+   *                               Bash command whose command string contains one of those
+   *                               paths (verbatim or './'-prefixed), steering the agent to
+   *                               Read/Grep instead of shelling out to another mission's
+   *                               in-flight files.
+   * @param {string[]} [options.foreignPendingFiles] - Project-root-relative paths owned by
+   *                               another in-flight mission; used only when
+   *                               options.denyForeignPendingBash is truthy.
    */
   _buildSdkOptions(options, readFiles = new Set()) {
     const sdkOpts = {
@@ -1093,6 +1102,27 @@ class SessionManager {
           behavior: 'deny',
           message: 'File removal is not available to read-only judging roles — inspect and report; never alter the tree.',
         };
+      }
+      // Opt-in foreign-pending-file Bash deny (spawn-level flag; passed
+      // together with options.foreignPendingFiles — the project-root-relative
+      // paths another in-flight mission currently owns). Deterministic string
+      // containment only (verbatim path or its './'-prefixed form) — no
+      // globbing, no regex path building, no basename matching — so a
+      // sibling's untouched deliverable can't be shelled out to ahead of its
+      // own review path.
+      if (options.denyForeignPendingBash
+          && Array.isArray(options.foreignPendingFiles) && options.foreignPendingFiles.length > 0
+          && toolName === 'Bash') {
+        const command = toolInput?.command || '';
+        const hitsForeignPending = options.foreignPendingFiles.some(
+          (f) => command.includes(f) || command.includes(`./${f}`),
+        );
+        if (hitsForeignPending) {
+          return {
+            behavior: 'deny',
+            message: 'That path belongs to another in-flight mission — mission ownership means it is not yours to shell out to yet. Use Read or Grep to inspect it instead.',
+          };
+        }
       }
       // Thread the session cwd through to the guard so the project-root
       // boundary check (D1) can enforce that every Edit/Write resolves

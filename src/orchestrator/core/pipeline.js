@@ -66,7 +66,7 @@ import {
 import { archive, TestGateError, runFinalTestGate } from '../../cli/commands/archive.js';
 import { auditVerification } from '../gates/audit.js';
 import { checkMilestoneCoverage, mergeRemediationTasks } from '../gates/coverage.js';
-import { verifyMission, verifyMilestone } from '../gates/regression.js';
+import { verifyMission, verifyMilestone, buildForeignPendingFiles } from '../gates/regression.js';
 import { shouldDowngradeRegressionFail } from '../gates/regression-verdict-filter.js';
 import { extractScopeItems } from '../core/scope-parser.js';
 import { checkScopeCoverageByMapping } from '../gates/scope-coverage.js';
@@ -5673,7 +5673,7 @@ class Pipeline {
       await transitionTask(this.harnessDir, task.id, 'awaiting_verification');
 
       const revalStart = Date.now();
-      let verifyResult = await this.verifier.verifyTask(task, this.projectRoot, { purpose: task.description, specPath: readState(this.harnessDir)?.projectMeta?.prdPath, firstWrite: false, ...this._buildVerifierSpecContext(task) });
+      let verifyResult = await this.verifier.verifyTask(task, this.projectRoot, { purpose: task.description, specPath: readState(this.harnessDir)?.projectMeta?.prdPath, firstWrite: false, ...this._buildVerifierSpecContext(task), foreignPendingFiles: this._buildForeignPendingFiles(task) });
       this.onLog(`    Task ${task.id}: verifier finished in ${this._formatElapsed(Date.now() - revalStart)}`);
       this._writeElapsedToSidecar(task.id, 'verifierElapsedMs', Date.now() - revalStart);
 
@@ -5865,7 +5865,7 @@ class Pipeline {
     this.statusBar.updateAgent('verifier-'+task.id, { role: 'verifier', taskId: task.id, description: task.description, status: 'active', startedAt: verifyStart, cost: this.tokenTracker.getUsageByType('verifier').totalCostUsd });
     let verifyResult;
     try {
-      verifyResult = await this.verifier.verifyTask(task, this.projectRoot, { purpose: task.description, specPath: readState(this.harnessDir)?.projectMeta?.prdPath, firstWrite: skipExecutor ? false : (preExecStatus === 'pending'), ...this._buildVerifierSpecContext(task), ...(phantomWriteProbe ? { redundancyProbe: true } : {}) });
+      verifyResult = await this.verifier.verifyTask(task, this.projectRoot, { purpose: task.description, specPath: readState(this.harnessDir)?.projectMeta?.prdPath, firstWrite: skipExecutor ? false : (preExecStatus === 'pending'), ...this._buildVerifierSpecContext(task), foreignPendingFiles: this._buildForeignPendingFiles(task), ...(phantomWriteProbe ? { redundancyProbe: true } : {}) });
     } catch (err) {
       if (err instanceof WallClockExceededError || err.name === 'WallClockExceededError') {
         this.onLog(`Task ${task.id}: wall-clock exceeded (${err.message}) — non-retryable, dispatching analyzer`);
@@ -6761,6 +6761,31 @@ class Pipeline {
   _buildVerifierSpecContext(task) {
     const ctx = buildVerifierSpecContext(this.harnessDir, task, this._getSpecAcceptanceCriteria(), config);
     return { specGoal: this._getSpecGoal(), relevantCriteria: ctx.relevantCriteria };
+  }
+
+  /**
+   * _buildForeignPendingFiles(task) — Derive the task's own mission id (the
+   * first two dash-separated segments of task.id, e.g. '001-002-001-003' and
+   * '001-002-001-003-rp-001' both map to '001-002') and delegate to
+   * buildForeignPendingFiles(harnessDir, ownMissionId) to compute the sorted,
+   * deduplicated list of target files pending in OTHER missions. Never
+   * throws: returns [] when task.id is absent, has fewer than two
+   * dash-separated segments, or the underlying helper errors.
+   *
+   * @param {object} task — The task being verified.
+   * @returns {string[]}
+   */
+  _buildForeignPendingFiles(task) {
+    try {
+      const taskId = task?.id;
+      if (typeof taskId !== 'string') return [];
+      const parts = taskId.split('-');
+      if (parts.length < 2) return [];
+      const ownMissionId = `${parts[0]}-${parts[1]}`;
+      return buildForeignPendingFiles(this.harnessDir, ownMissionId);
+    } catch {
+      return [];
+    }
   }
 
   /**

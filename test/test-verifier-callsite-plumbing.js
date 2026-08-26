@@ -15,6 +15,11 @@
  * anyway, mirroring scripts/run-tests.js and test/helpers/make-run.js, so
  * this file stays re-entrancy-neutral regardless of launch context.
  *
+ * The verifier/verifyTask context and the options forwarded from it may now
+ * also carry `denyForeignPendingBash` and `foreignPendingFiles` as options
+ * keys; the fixtures below accept both keys wherever they appear without
+ * asserting on them.
+ *
  * Run: node test/test-verifier-callsite-plumbing.js
  */
 delete process.env.CC_ORCH_ACTIVE_RUN;

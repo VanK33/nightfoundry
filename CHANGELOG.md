@@ -1,3 +1,15 @@
+## [0.2.27] - 2026-08-26 — Add foreign-pending-files gate to prevent verification deadlock
+
+### New features
+- Add buildForeignPendingFiles helper that computes list of non-terminal foreign missions' targetFiles with path-level subtraction of own mission's files, fail-soft on malformed state
+- Add opt-in denyForeignPendingBash flag in session-manager that denies Bash commands accessing foreign-pending file paths with educational message about mission ownership
+- Implement Pipeline._buildForeignPendingFiles method that derives mission id from task id and computes foreign-pending list, passed to both verifyTask call sites
+- Inject FOREIGN-PENDING-FILES prompt block in verifier when foreign-pending list is non-empty; pass flag and list to both primary and escalation spawn options; maintain byte-identical prompt when empty
+- Add test/test-verifier-foreign-pending.js with 14 comprehensive test cases covering helper function, deny behavior, verifier spawn plumbing, and prompt block rendering; register in scripts/run-tests.js
+
+### Bug fixes
+- Update test-verifier-callsite-plumbing.js docblock to document tolerance for denyForeignPendingBash and foreignPendingFiles context options without rewriting test scenarios
+
 ## [0.2.26] - 2026-08-26 — Add task-count caps: always-on per-mission fuse, plan-wide floor
 
 ### New features

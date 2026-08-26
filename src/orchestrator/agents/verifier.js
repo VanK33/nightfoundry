@@ -241,6 +241,12 @@ class Verifier {
    *   verification sidecar already exists.
    * @param {boolean} [context.redundancyProbe] - If true, indicates this verification
    *   run is a redundancy probe.
+   * @param {string[]} [context.foreignPendingFiles] - Optional list of file paths that
+   *   belong to sibling missions that have not completed yet. When a non-empty array of
+   *   strings is given, a FOREIGN-PENDING-FILES section is added to the prompt telling
+   *   the verifier not to run those files and that a failing result from them is not
+   *   grounds for failure. Any other value (missing, non-array, non-string entries) is
+   *   ignored fail-soft and yields no such section.
    * @returns {Promise<{ verified: boolean, report: string, reportPath: string, structured: object }>}
    * @throws {Error} If context.specPath is missing, empty, or the file does not exist.
    */
@@ -340,13 +346,37 @@ Relevant acceptance criteria:
 ${relevantCriteria.map(c => `- ${c.description}`).join('\n')}\n`
       : '';
 
+    // Foreign-pending-files: paths belonging to sibling missions that have not
+    // completed yet (e.g. a shared file this task references but does not own).
+    // Normalized fail-soft: only an array yields entries, and only non-empty
+    // string entries survive — any other value (missing key, non-array, etc.)
+    // yields an empty list and the block below is the empty string, keeping the
+    // prompt byte-identical to today for every current caller (none pass this key).
+    const foreignPendingFiles = Array.isArray(context.foreignPendingFiles)
+      ? context.foreignPendingFiles.filter((f) => typeof f === 'string' && f.length > 0)
+      : [];
+
+    const foreignPendingFilesBlock = foreignPendingFiles.length === 0
+      ? ''
+      : `\nFOREIGN-PENDING-FILES:
+The following paths belong to missions that have NOT completed yet. Do NOT run them, and a failing/red result from them is NOT grounds for failure:
+${foreignPendingFiles.map((f) => `- ${f}`).join('\n')}\n`;
+
+    // Rules-list companion line for the block above — conditional on the same
+    // normalized list so an empty/absent/non-array foreignPendingFiles produces
+    // a prompt with no 'FOREIGN-PENDING-FILES' substring anywhere (byte-identical
+    // to today for every current caller).
+    const foreignPendingFilesRuleLine = foreignPendingFiles.length === 0
+      ? ''
+      : '\n- Files named in the FOREIGN-PENDING-FILES section must not be run, and a failing result from them is not grounds for failure.';
+
     const prompt = `Verify task ${task.id}.
 
 Verify file: ${verifyJsonPath}
 ${hasStandards ? `Standards: ${standardsPath}` : 'No standards file — skip soft verification.'}
 Spec: ${specPath}
 Task-scope: { description: "${task.description}", targetFiles: [${(task.targetFiles || []).map(f => `"${f}"`).join(', ')}], purpose: "${context.purpose || task.description}" }
-${specBackReferenceBlock}
+${specBackReferenceBlock}${foreignPendingFilesBlock}
 Steps:
 1. Read the verify.json file — note the hardChecks and testCases.
 2. Run each hardCheck command in ${projectRoot} and confirm it passes.
@@ -371,7 +401,7 @@ ${/* NOTE: the whole-suite prompt rule below is a non-load-bearing token
    enforcement that a whole-suite FAIL cannot fail a per-task verdict lives in
    the verdict override (extractVerdict above) plus the final test gate
    (runFinalTestGate); this rule only nudges the prompt and is safe to ignore. */''}- Whole-suite / full test-suite commands (the project's test / test:all command) are run once by the final integration gate after the whole run completes. Do NOT run them yourself and do NOT add them as a taskScopeCheck or fail this task on them — sibling missions may not have run yet.
-- Any acceptance criterion whose target file is listed in the prompt's pending-deliverables block (the PENDING-DELIVERABLES section, when present in the purpose/context) must NOT be judged at this gate — its absence is expected and is not grounds for failure.
+- Any acceptance criterion whose target file is listed in the prompt's pending-deliverables block (the PENDING-DELIVERABLES section, when present in the purpose/context) must NOT be judged at this gate — its absence is expected and is not grounds for failure.${foreignPendingFilesRuleLine}
 - Judge PASS/FAIL ONLY against the declared hardChecks, the listed acceptance criteria, and (for milestone regression) the stated milestone goal. Do NOT run extra investigative commands such as git (git status / git log / git ls-files), and do NOT invent acceptance criteria of your own. The project's git commit for this work happens AFTER verification, so uncommitted/untracked files (git status '??') are EXPECTED at this step and are NEVER grounds for failure.
 - Do NOT author a hardCheck or taskScopeCheck that asserts modification status or tree cleanliness — for example, an "only X was modified" assertion, a "no other files changed" assertion, or a git-status/git-diff cleanliness check. Tree state (which files are modified, staged, or untracked) is outside this verification's scope and cannot be verified in this session. Judge only the content and behavior of the mission's own files.
 - If hardChecks fail, set result to "FAILED" immediately; standardsChecks may be empty
@@ -416,6 +446,13 @@ Rules:
         // false-FAILED; removal is never a judging role's business.
         denyGitReadsBash: true,
         denyFileRemovalBash: true,
+        // Mirrors the prompt's FOREIGN-PENDING-FILES section (see
+        // foreignPendingFiles above): the normalized list is forwarded so the
+        // spawn can enforce it at the tool layer too, and the deny flag is only
+        // truthy when that list is non-empty — an absent/empty list keeps
+        // today's behavior byte-identical for every current caller.
+        foreignPendingFiles,
+        denyForeignPendingBash: foreignPendingFiles.length > 0,
         // regression-gate callers (verifyRegression) carry the findings-extended
         // schema so the remediation path receives structured {file, description}
         // entries. The escalation spawn below re-uses the same opts.jsonSchema,
@@ -492,6 +529,9 @@ Rules:
             // Same structural denies as attempt 1 (see there).
             denyGitReadsBash: true,
             denyFileRemovalBash: true,
+            // Same foreign-pending-files forwarding as attempt 1 (see there).
+            foreignPendingFiles,
+            denyForeignPendingBash: foreignPendingFiles.length > 0,
             // Same schema as attempt 1: per-task callers escalate under plain
             // verifierSchema, regression-gate callers under the findings-
             // extended regressionVerifierSchema the remediation path needs.
