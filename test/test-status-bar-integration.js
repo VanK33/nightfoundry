@@ -147,7 +147,7 @@ function makePipelineStub(overrides = {}) {
   stub._restoreSnapshot = () => 0;
   // Same constructor-bypass gap for the phantom-write predicate seam:
   // an all-clear verdict keeps the disambiguation-probe route dormant.
-  stub._assertChangesLanded = () => ({ ok: true, unchanged: [], bothMissing: [] });
+  stub._assertChangesLanded = () => ({ ok: true, unchanged: [], bothMissing: [], allUnchanged: false });
   // run() re-points the harness seam into the per-run dir via _repointHarness,
   // which re-injects the rebuilt tokenTracker into sessionManager; the real
   // constructor sets sessionManager but the stub bypasses construction.

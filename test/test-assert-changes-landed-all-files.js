@@ -9,8 +9,8 @@
  *
  * TC-ALL-1: all declared files changed → result.ok === true, result.unchanged deepStrictEqual []
  * TC-ALL-2: one of two files byte-identical → result.ok === false and result.unchanged includes that file
- * TC-ALL-3: empty-input [] → deepStrictEqual { ok: true, unchanged: [], bothMissing: [] }
- * TC-ALL-4: falsy files (undefined) → deepStrictEqual { ok: true, unchanged: [], bothMissing: [] }
+ * TC-ALL-3: empty-input [] → deepStrictEqual { ok: true, unchanged: [], bothMissing: [], allUnchanged: false }
+ * TC-ALL-4: falsy files (undefined) → deepStrictEqual { ok: true, unchanged: [], bothMissing: [], allUnchanged: false }
  * TC-ALL-5: both-missing declared file → result.bothMissing deepStrictEqual ['ghost.js'] AND result.ok === false
  *
  * Run: node test/test-assert-changes-landed-all-files.js
@@ -65,6 +65,7 @@ await test('TC-ALL-1: all declared files changed → ok:true, unchanged:[]', asy
     writeFile(projectRoot, 'b.js', 'modified-b');
     const result = assertChangesLanded(harnessDir, projectRoot, 'task-all-1', ['a.js', 'b.js']);
     assert.strictEqual(result.ok, true, 'all files changed → ok:true');
+    assert.strictEqual(result.allUnchanged, false, 'all files changed → allUnchanged:false');
     assert.deepStrictEqual(result.unchanged, []);
   } finally { cleanup(root); }
 });
@@ -79,23 +80,38 @@ await test('TC-ALL-2: one of two files byte-identical → ok:false, unchanged in
     writeFile(projectRoot, 'b.js', 'modified-b');
     const result = assertChangesLanded(harnessDir, projectRoot, 'task-all-2', ['a.js', 'b.js']);
     assert.strictEqual(result.ok, false, 'one unchanged file → ok:false (partial deliverable)');
+    assert.strictEqual(result.allUnchanged, false, 'partial delta → allUnchanged:false (NOT a phantom write)');
     assert.ok(result.unchanged.includes('a.js'), `unchanged should include 'a.js', got ${JSON.stringify(result.unchanged)}`);
   } finally { cleanup(root); }
 });
 
-await test('TC-ALL-3: empty-input [] → { ok: true, unchanged: [], bothMissing: [] }', async () => {
+await test('TC-ALL-6: ALL files byte-identical → allUnchanged:true (the phantom-write signature)', async () => {
   const { root, projectRoot, harnessDir } = createEnv();
   try {
-    const result = assertChangesLanded(harnessDir, projectRoot, 'task-all-3', []);
-    assert.deepStrictEqual(result, { ok: true, unchanged: [], bothMissing: [] });
+    writeFile(projectRoot, 'a.js', 'original-a');
+    writeFile(projectRoot, 'b.js', 'original-b');
+    snapshotFiles(harnessDir, projectRoot, 'task-all-6', 'before', ['a.js', 'b.js']);
+    // No modifications at all — zero byte delta across every checked file.
+    const result = assertChangesLanded(harnessDir, projectRoot, 'task-all-6', ['a.js', 'b.js']);
+    assert.strictEqual(result.ok, false, 'zero delta → ok:false');
+    assert.strictEqual(result.allUnchanged, true, 'zero delta → allUnchanged:true');
+    assert.deepStrictEqual(result.unchanged.sort(), ['a.js', 'b.js']);
   } finally { cleanup(root); }
 });
 
-await test('TC-ALL-4: falsy files (undefined) → { ok: true, unchanged: [], bothMissing: [] }', async () => {
+await test('TC-ALL-3: empty-input [] → { ok: true, unchanged: [], bothMissing: [], allUnchanged: false }', async () => {
+  const { root, projectRoot, harnessDir } = createEnv();
+  try {
+    const result = assertChangesLanded(harnessDir, projectRoot, 'task-all-3', []);
+    assert.deepStrictEqual(result, { ok: true, unchanged: [], bothMissing: [], allUnchanged: false });
+  } finally { cleanup(root); }
+});
+
+await test('TC-ALL-4: falsy files (undefined) → { ok: true, unchanged: [], bothMissing: [], allUnchanged: false }', async () => {
   const { root, projectRoot, harnessDir } = createEnv();
   try {
     const result = assertChangesLanded(harnessDir, projectRoot, 'task-all-4', undefined);
-    assert.deepStrictEqual(result, { ok: true, unchanged: [], bothMissing: [] });
+    assert.deepStrictEqual(result, { ok: true, unchanged: [], bothMissing: [], allUnchanged: false });
   } finally { cleanup(root); }
 });
 

@@ -749,7 +749,7 @@ await test('TC3 the pipeline calls the injected predicate and the disposition fo
   const envPass = buildDependencyRoutingEnv();
   const passCalls = [];
   const predicatePass = (harnessDir, projectRoot, taskId, files) => {
-    const verdict = { ok: true, unchanged: [], bothMissing: [] };
+    const verdict = { ok: true, unchanged: [], bothMissing: [], allUnchanged: false };
     passCalls.push({ args: [harnessDir, projectRoot, taskId, files], returned: verdict });
     return verdict;
   };
@@ -777,7 +777,7 @@ await test('TC3 the pipeline calls the injected predicate and the disposition fo
   const envFail = buildDependencyRoutingEnv();
   const failCalls = [];
   const predicateFail = (harnessDir, projectRoot, taskId, files) => {
-    const verdict = { ok: false, unchanged: files, bothMissing: [] };
+    const verdict = { ok: false, unchanged: files, bothMissing: [], allUnchanged: true };
     failCalls.push({ args: [harnessDir, projectRoot, taskId, files], returned: verdict });
     return verdict;
   };

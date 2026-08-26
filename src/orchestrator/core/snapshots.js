@@ -15,7 +15,7 @@
  *   restoreSnapshot(harnessDir, projectRoot, taskId, phase, overrides?) → number of files restored
  *   cleanupSnapshots(harnessDir, milestoneId) → number of snapshots removed
  *   readAffectedFiles(harnessDir, taskId) → string[]
- *   assertChangesLanded(harnessDir, projectRoot, taskId, files) → { ok, unchanged, bothMissing }
+ *   assertChangesLanded(harnessDir, projectRoot, taskId, files) → { ok, allUnchanged, unchanged, bothMissing }
  */
 import fs from 'fs';
 import path from 'path';
@@ -91,7 +91,7 @@ export function readAffectedFiles(harnessDir, taskId) {
 // is vacuously ok (caller skips the check). Both-missing counts as
 // unchanged (the executor's claim of writing the file is unsubstantiated).
 export function assertChangesLanded(harnessDir, projectRoot, taskId, files) {
-  if (!files || files.length === 0) return { ok: true, unchanged: [], bothMissing: [] };
+  if (!files || files.length === 0) return { ok: true, unchanged: [], bothMissing: [], allUnchanged: false };
   const snapshotDir = path.join(harnessDir, 'snapshots', taskId, 'before');
   const unchanged = [];
   const bothMissing = [];
@@ -103,7 +103,13 @@ export function assertChangesLanded(harnessDir, projectRoot, taskId, files) {
     // (_fileHash returns null for a non-existent path) → never produced.
     if (beforeHash === null && currentHash === null) bothMissing.push(file);
   }
-  return { ok: unchanged.length === 0, unchanged, bothMissing };
+  // allUnchanged: ZERO byte delta across every checked file — the actual
+  // lying-executor signature (Defect #17). Distinct from !ok (ANY file
+  // unchanged): a task with a real delta on its main file and an untouched
+  // declared sibling (e.g. a co-declared test manifest) is a partial
+  // deliverable for `ok` purposes but NOT a phantom write. The phantom-write
+  // probe keys on this field, not on ok.
+  return { ok: unchanged.length === 0, unchanged, bothMissing, allUnchanged: unchanged.length === files.length };
 }
 
 function _fileHash(filePath) {

@@ -5815,8 +5815,16 @@ class Pipeline {
       const filesToCheck = [...new Set([...(task.targetFiles || []), ...affectedFromExec])];
       const diff = execResult.status === 'COMPLETED'
         ? this._assertChangesLanded(this.harnessDir, this.projectRoot, task.id, filesToCheck)
-        : { ok: true, unchanged: [] };
-      if (!diff.ok) {
+        : { ok: true, unchanged: [], allUnchanged: false };
+      if (diff.allUnchanged) {
+        // Probe trigger keys on ZERO byte delta across every checked file
+        // (allUnchanged), NOT on any-single-file-unchanged (!ok). A task
+        // with a real delta on its main file and an untouched co-declared
+        // sibling (the test-manifest enrichment declares scripts/run-tests.js
+        // on every test task) did real work — routing it through the
+        // redundancy probe produced circuit-breaker false positives on
+        // 9/9 tasks in one field run (2026-08-25 Pro dogfood; recurred on
+        // 3/6 entries of the 2026-08-26 batch).
         // Defect #17: phantom-write is deterministic — retrying an
         // executor session against the same task description produces
         // the same SHA-256 match. Treat as a no-op disambiguation
@@ -5828,6 +5836,12 @@ class Pipeline {
         this.onLog(`    Task ${task.id}: NO-OP detected — declared file(s) unchanged: ${diff.unchanged.join(', ')}; routing to verifier as disambiguation probe (skipping retry — phantom-write is deterministic)`);
         this.onLog(formatZeroDeltaLog(task.id, diff.unchanged));
         phantomWriteProbe = true;
+      } else if (!diff.ok) {
+        // Partial delta: real work landed on some checked file while another
+        // declared file is untouched (commonly the enriched test manifest).
+        // NOT a phantom write — no probe, no routing change — but keep a
+        // deterministic breadcrumb for forensics.
+        this.onLog(`    Task ${task.id}: partial delta — unchanged declared file(s): ${diff.unchanged.join(', ')} (real delta present; not probed)`);
       }
     }
 

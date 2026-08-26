@@ -684,7 +684,7 @@ export function buildReplayDeps(bundle) {
     // never performs real file snapshots (see snapshotFiles/restoreSnapshot
     // below), so there is nothing to compare — always report "changes
     // landed" and hand the pipeline the same verdict shape the real
-    // assertChangesLanded returns (`{ ok, unchanged, bothMissing }`), for it
+    // assertChangesLanded returns (`{ ok, unchanged, bothMissing, allUnchanged }`), for it
     // to act on exactly as it would a genuine passing check.
     assertChangesLanded: (_harnessDir, _projectRoot, _taskId, _files) => ({
       ok: true,
