@@ -1,3 +1,13 @@
+## [0.2.28] - 2026-08-26 — Unify park statuses, track forensic archives, enhance clean
+
+### New features
+- Park scenes now carry forensicArchiveDir field; park show displays archive location as 'run logs archived at:' line when present
+- clean --help flag now prints usage and exits, with correct precedence before --runs processing
+
+### Bug fixes
+- Export LIVE_PARK_STATUSES from state.js as single source of truth for park statuses, fixing drift between reaper's shield and park CLI's resolvable set and adding missing 'halted-scope' coverage
+- clean command now resolves per-run harness state in explicit order, correctly detecting active milestones in runId-layout harnesses instead of reporting false negatives
+
 ## [0.2.27] - 2026-08-26 — Add foreign-pending-files gate to prevent verification deadlock
 
 ### New features

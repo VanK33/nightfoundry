@@ -64,6 +64,18 @@
  *   TC-AP4 — --approve refuses a 'parked' (non-halted-scope) entry; park show
  *          renders the proposal (files + reasons + taskIds, proposedBy,
  *          missionId, lintArmsPending); park list shows a halted-scope row
+ *   TC-SOT1 — (shared-source-of-truth mission 001-002) park list's
+ *          resolvable set is the behavioral image of LIVE_PARK_STATUSES
+ *          (imported directly from state.js, not re-declared locally): for
+ *          every member a queue entry with a readable scene is created and a
+ *          single `park list` run must surface every one of those slugs;
+ *          additionally, the halted-scope entry from that set resolves via
+ *          --reject to 'failed-plan', while a 'pending'-status entry (not a
+ *          LIVE_PARK_STATUSES member) is refused by --requeue, unchanged
+ *   TC-FA1 — park show renders a 'run logs archived at:' line naming the
+ *          scene's forensicArchiveDir when the scene carries that field
+ *   TC-FA2 — park show prints no 'run logs archived at:' line (and still
+ *          prints the scene site) when the scene omits forensicArchiveDir
  *
  * Run: node test/test-cli-park.js
  *
@@ -81,7 +93,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { writeQueueEntry, readQueueEntry, stateToDecomp } from '../src/orchestrator/core/state.js';
+import { writeQueueEntry, readQueueEntry, stateToDecomp, LIVE_PARK_STATUSES } from '../src/orchestrator/core/state.js';
 import { Pipeline } from '../src/orchestrator/core/pipeline.js';
 import { pendingLintArms } from '../src/orchestrator/gates/plan-scope-lint.js';
 
@@ -1418,6 +1430,133 @@ await test("TC-PR4: a promotion whose re-run lint arms hit a fresh excursion re-
       reparkedScene.proposedFiles.some((f) => f && f.path === 'src/new/fresh-excursion.js'),
       `the new scope-proposal scene must name the fresh offending path 'src/new/fresh-excursion.js' in proposedFiles (got ${JSON.stringify(reparkedScene.proposedFiles)})`
     );
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-SOT1: park's resolvable set is the behavioral image of LIVE_PARK_STATUSES ──
+// (shared-source-of-truth mission 001-002). LIVE_PARK_STATUSES is imported
+// DIRECTLY from state.js (not re-declared here), so this case only passes if
+// park.js's own resolvable set actually tracks that shared array rather than
+// a locally-duplicated list that could silently drift. For every status
+// named in LIVE_PARK_STATUSES a queue entry is created with a scene readable
+// for that status, and each is asserted individually against a single `park
+// list` run — so if park.js's resolvable set omits any member, the failure
+// names exactly that status. It additionally drives the halted-scope entry
+// from that set end-to-end through `park resolve --reject` (→
+// 'failed-plan'), and confirms a 'pending'-status entry — not a
+// LIVE_PARK_STATUSES member — is refused by `park resolve --requeue`,
+// unchanged.
+
+await test("TC-SOT1: park list surfaces every LIVE_PARK_STATUSES member (named individually); halted-scope resolves via --reject to 'failed-plan'; 'pending' is refused by --requeue", async () => {
+  const root = makeTmpRoot();
+  try {
+    const sceneForStatus = (status) => {
+      switch (status) {
+        case 'parked':
+          return makeScene();
+        case 'halted-review':
+          return makeScene({ site: 'review-gate', round1: [], questions: ['HALT-QUESTION-X'] });
+        case 'halted-analyzer':
+          return makeScene({ site: 'analyzer-human', round1: [], questions: ['ANALYZER-QUESTION-X'] });
+        case 'halted-scope':
+          return makeScopeProposalScene();
+        default:
+          throw new Error(`TC-SOT1 fixture: no scene builder registered for LIVE_PARK_STATUSES member '${status}'`);
+      }
+    };
+
+    for (const status of LIVE_PARK_STATUSES) {
+      const slug = `sot1-${status}`;
+      const isScope = status === 'halted-scope';
+      createQueueEntry(root, slug, {
+        status,
+        spec: isScope ? SCOPE_SPEC_MD : SPEC_MD,
+        specJson: isScope ? scopeSpecJson(['existing/declared.js']) : SPEC_JSON,
+      });
+      writeScene(root, slug, sceneForStatus(status));
+    }
+
+    const res = runCli(root, ['park', 'list']);
+    assert.strictEqual(res.status, 0,
+      `park list must exit 0 across every LIVE_PARK_STATUSES entry (got ${res.status}; output: ${res.out.trim().slice(0, 300)})`);
+
+    for (const status of LIVE_PARK_STATUSES) {
+      const slug = `sot1-${status}`;
+      assert.ok(res.stdout.includes(slug),
+        `park list's resolvable set omits LIVE_PARK_STATUSES member '${status}' — expected slug '${slug}' in output: ${res.stdout.trim().slice(0, 500)}`);
+    }
+
+    // The halted-scope entry from the set above is resolvable end-to-end:
+    // --reject transitions it to 'failed-plan'.
+    const scopeSlug = 'sot1-halted-scope';
+    const resReject = runCli(root, ['park', 'resolve', scopeSlug, '--reject']);
+    assert.strictEqual(resReject.status, 0,
+      `resolve --reject must succeed on the LIVE_PARK_STATUSES halted-scope entry (got exit ${resReject.status}; output: ${resReject.out.trim().slice(0, 300)})`);
+    assert.strictEqual(readStatus(root, scopeSlug), 'failed-plan',
+      "resolve --reject on the LIVE_PARK_STATUSES halted-scope entry must leave the status file reading 'failed-plan'");
+
+    // A 'pending'-status entry is NOT a LIVE_PARK_STATUSES member and must be
+    // refused, state unchanged.
+    createQueueEntry(root, 'sot1-pending', { status: 'pending' });
+    writeScene(root, 'sot1-pending', makeScene());
+    const resPending = runCli(root, ['park', 'resolve', 'sot1-pending', '--requeue']);
+    assertNonSilentFailure(resPending, "resolve --requeue on a 'pending'-status entry");
+    assert.strictEqual(readStatus(root, 'sot1-pending'), 'pending',
+      "an illegal transition on a 'pending'-status entry must leave the status unchanged");
+  } finally {
+    cleanup(root);
+  }
+});
+
+// ── TC-FA1/TC-FA2: forensic-archive pointer render on park show ────────────
+
+const FORENSIC_ARCHIVED_RE = /run logs archived at:/;
+
+await test("TC-FA1: park show renders a 'run logs archived at:' line naming the scene's forensicArchiveDir", async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'forensic-entry', { status: 'halted-review' });
+    writeScene(root, 'forensic-entry', makeScene({
+      site: 'review-gate',
+      round1: [],
+      questions: ['HALT-QUESTION-X'],
+      forensicArchiveDir: 'archives/failed-999-forensic',
+    }));
+
+    const res = runCli(root, ['park', 'show', 'forensic-entry']);
+    assert.strictEqual(res.status, 0, `park show must exit 0 (got ${res.status}; output: ${res.out.trim().slice(0, 200)})`);
+
+    const archivedLine = res.stdout.split('\n').find((line) => FORENSIC_ARCHIVED_RE.test(line));
+    assert.ok(archivedLine,
+      `park show must print a line matching /run logs archived at:/ for a scene carrying forensicArchiveDir (output: ${res.stdout.trim().slice(0, 400)})`);
+    assert.ok(archivedLine.includes('archives/failed-999-forensic'),
+      `the 'run logs archived at:' line must include the scene's forensicArchiveDir (got: ${archivedLine})`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+await test("TC-FA2: park show prints no 'run logs archived at:' line (but still prints the scene site) when the scene omits forensicArchiveDir", async () => {
+  const root = makeTmpRoot();
+  try {
+    createQueueEntry(root, 'no-forensic-entry', { status: 'halted-review' });
+    const scene = makeScene({
+      site: 'review-gate',
+      round1: [],
+      questions: ['HALT-QUESTION-X'],
+    });
+    delete scene.forensicArchiveDir; // explicitly ensure the key is absent, not just falsy
+    writeScene(root, 'no-forensic-entry', scene);
+
+    const res = runCli(root, ['park', 'show', 'no-forensic-entry']);
+    assert.strictEqual(res.status, 0, `park show must exit 0 (got ${res.status}; output: ${res.out.trim().slice(0, 200)})`);
+
+    const archivedLine = res.stdout.split('\n').find((line) => FORENSIC_ARCHIVED_RE.test(line));
+    assert.ok(!archivedLine,
+      `park show must NOT print a 'run logs archived at:' line for a scene lacking forensicArchiveDir (found: ${JSON.stringify(archivedLine)})`);
+    assert.ok(res.stdout.includes('review-gate'), 'show must still print the scene site');
   } finally {
     cleanup(root);
   }

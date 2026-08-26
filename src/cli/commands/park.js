@@ -7,6 +7,7 @@ import {
   readParkScene,
   writeParkScene,
   writeParkResumeMarker,
+  LIVE_PARK_STATUSES,
 } from '../../orchestrator/core/state.js';
 import {
   showParkSnapshot,
@@ -21,7 +22,7 @@ import {
 
 /** Resolve verbs and the queue statuses each one may act on. */
 const RESOLVE_ACTIONS = ['requeue', 'waive', 'reject', 'approve'];
-const RESOLVABLE_STATUSES = ['parked', 'halted-review', 'halted-analyzer', 'halted-scope'];
+const RESOLVABLE_STATUSES = LIVE_PARK_STATUSES;
 
 /** Matches "#{1,6} Heading text" markdown headings. */
 const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/;
@@ -383,6 +384,10 @@ export function parkShow(projectRoot, slug) {
 
   const warning = divergenceWarning(projectRoot, slug, scene.parkedAt);
   if (warning) console.log(`\n${warning}`);
+
+  if (typeof scene.forensicArchiveDir === 'string' && scene.forensicArchiveDir.length > 0) {
+    console.log(`\nrun logs archived at: ${scene.forensicArchiveDir}`);
+  }
 }
 
 /**

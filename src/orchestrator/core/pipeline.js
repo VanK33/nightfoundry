@@ -2732,6 +2732,12 @@ class Pipeline {
           // later `park resolve --requeue` re-attaches it instead of forcing a
           // full re-validation + re-execution. Classification matches ONLY the
           // _reviewGate sites; any other HaltError keeps failed-execution.
+          // forensicArchiveDir: the forensic archive's directory (from
+          // failedArchiveDir, captured above) expressed relative to
+          // this.projectRoot, or null when the archive call produced nothing.
+          const forensicArchiveDir = failedArchiveDir
+            ? path.relative(this.projectRoot, failedArchiveDir)
+            : null;
           if (isReviewHalt) {
             this._parkEntry(entry, {
               site: 'review-gate',
@@ -2746,6 +2752,7 @@ class Pipeline {
               round2: [],
               appliedSpecEdits: [],
               questions: [err.reason],
+              forensicArchiveDir,
               ...(parkSnapshot ?? {}),
             }, { status: 'halted-review' });
           } else if (isAnalyzerHumanHalt) {
@@ -2786,6 +2793,7 @@ class Pipeline {
               round2: [],
               appliedSpecEdits: [],
               questions,
+              forensicArchiveDir,
               ...(parkSnapshot ?? {}),
             }, { status: 'halted-analyzer' });
           } else {

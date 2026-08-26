@@ -908,6 +908,52 @@ await test(
   },
 );
 
+// ── TC8 ──────────────────────────────────────────────────────────────────
+
+await test(
+  'TC8: a halted-scope queue entry\'s park.json runId shields a matching run dir from mechanicallySafe rm on the automatic sweep path; a same-shape unshielded dir is still rm\'d',
+  async () => {
+    const root = makeTmpRoot('cc-hh-tc8-');
+    try {
+      const parkedRunId = 'run-tc8-halted-scope-shield';
+      const shieldedDir = path.join(harnessRoot(root), parkedRunId);
+      fs.mkdirSync(shieldedDir, { recursive: true });
+      // No parseable state.json — otherwise mechanicallySafe on its own; the
+      // halted-scope-shield must be applied BEFORE that disposition.
+      fs.writeFileSync(path.join(shieldedDir, 'state.json'), '{ not valid json');
+
+      createQueueEntry(root, 'tc8-slug', { status: 'halted-scope' });
+      writeParkScene(root, 'tc8-slug', { runId: parkedRunId });
+
+      const classified = classifyOrphanRunDirs(root, { includeMarkerDirs: false });
+      assert.ok(
+        classified.kept.map((d) => path.resolve(d)).includes(path.resolve(shieldedDir)),
+        'a run dir named after a LIVE halted-scope queue entry\'s park.json runId must be classified kept (shielded)',
+      );
+      assert.ok(
+        !classified.mechanicallySafe.map((d) => path.resolve(d)).includes(path.resolve(shieldedDir)),
+        'the shielded dir must NOT appear in mechanicallySafe despite its unparseable state.json',
+      );
+
+      const logs = [];
+      sweepOrphanRunDirs(root, { log: (m) => logs.push(m) });
+      assert.ok(fs.existsSync(shieldedDir), 'the halted-scope-shielded dir must survive the automatic sweep');
+
+      // Negative control: same shape (unparseable state.json, run-* name),
+      // but no park.json anywhere references it — not shielded, still rm'd.
+      const unshieldedDir = path.join(harnessRoot(root), 'run-tc8-unshielded');
+      fs.mkdirSync(unshieldedDir, { recursive: true });
+      fs.writeFileSync(path.join(unshieldedDir, 'state.json'), '{ not valid json');
+
+      sweepOrphanRunDirs(root, { log: (m) => logs.push(m) });
+      assert.ok(!fs.existsSync(unshieldedDir), 'an unshielded same-shape orphan dir must still be rm\'d');
+      assert.ok(fs.existsSync(shieldedDir), 'the shielded dir must still survive the second sweep pass');
+    } finally {
+      cleanup(root);
+    }
+  },
+);
+
 // ── Summary ──────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount} passed, ${failCount} failed`);

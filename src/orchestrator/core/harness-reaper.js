@@ -42,10 +42,7 @@ import path from 'path';
 import { listSnapshotRefs } from './park-snapshot.js';
 import { harnessRoot, resolveActiveHarnessDir } from './run-context.js';
 import { SHARED_SUBDIRS } from './bootstrap.js';
-import { readParkScene } from './state.js';
-
-/** Queue statuses whose park.json scene carries a LIVE (recoverable) runId. */
-const PARKED_STATUSES = ['parked', 'halted-review', 'halted-analyzer'];
+import { readParkScene, LIVE_PARK_STATUSES } from './state.js';
 
 /**
  * Build a Map from a completed/failed archive's projectMeta.prdPath to the
@@ -245,7 +242,7 @@ export function collectParkedRunIds(projectRoot) {
       if (!fs.statSync(entryDir).isDirectory()) continue;
 
       const status = fs.readFileSync(path.join(entryDir, 'status'), 'utf8').trim();
-      if (!PARKED_STATUSES.includes(status)) continue;
+      if (!LIVE_PARK_STATUSES.includes(status)) continue;
 
       const scene = readParkScene(projectRoot, name);
       const runId = scene?.runId;

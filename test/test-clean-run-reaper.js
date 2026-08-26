@@ -56,7 +56,7 @@ import { execFileSync } from 'child_process';
 // what case (b)'s fixture constructs.
 delete process.env.CC_ORCH_ACTIVE_RUN;
 
-import { reapOrphanRunDirs } from '../src/cli/commands/clean.js';
+import { reapOrphanRunDirs, clean } from '../src/cli/commands/clean.js';
 import { bootstrap, SHARED_SUBDIRS } from '../src/orchestrator/core/bootstrap.js';
 import {
   harnessRoot,
@@ -145,6 +145,27 @@ async function runReap(root, flags) {
   return { output: chunks.join('\n'), threw, err };
 }
 
+/**
+ * Run clean(root, flags, deps) while capturing everything console.log
+ * emits. Mirrors runReap's capture/restore shape. Returns { output, threw, err }.
+ */
+async function runClean(root, flags, deps) {
+  const chunks = [];
+  const origLog = console.log;
+  console.log = (...args) => { chunks.push(args.join(' ')); };
+  let threw = false;
+  let err = null;
+  try {
+    await clean(root, flags, deps);
+  } catch (e) {
+    threw = true;
+    err = e;
+  } finally {
+    console.log = origLog;
+  }
+  return { output: chunks.join('\n'), threw, err };
+}
+
 // ── superseded-classifier fixture helpers (appended below; TC1–TC7 above and
 // every helper they use are UNTOUCHED) ─────────────────────────────────────
 //
@@ -199,6 +220,10 @@ async function runReap(root, flags) {
 //        (classifyOrphanRunDirs, includeMarkerDirs:true) and DELETED via the
 //        interactive reapOrphanRunDirs path, with the reaped-log line naming
 //        it.
+// TC28 — AC-2/C4 parity: a 'halted-scope' parked-runId (rather than
+//        TC21/TC26's 'parked') shields a matching run dir through the
+//        wrapper with a corrupt state.json; a same-shape unshielded control
+//        dir is still reaped.
 
 /** Run git with argv (no shell) in cwd; throws on non-zero exit. */
 function git(args, cwd) {
@@ -264,12 +289,14 @@ function staleDir(root) {
  * (one of collectParkedRunIds' PARKED_STATUSES) plus a park.json carrying the
  * given runId. Only what collectParkedRunIds actually reads (status +
  * park.json) — no spec.md/plan.json/validated-at.json needed for the
- * parked-runId shield fixtures below.
+ * parked-runId shield fixtures below. `status` defaults to 'parked' (the
+ * TC21/TC26 shape) but may be overridden with any other PARKED_STATUSES
+ * value, e.g. 'halted-scope' (TC28).
  */
-function plantParkedQueueEntry(root, slug, runId) {
+function plantParkedQueueEntry(root, slug, runId, status = 'parked') {
   const entryDir = path.join(root, 'queue', slug);
   fs.mkdirSync(entryDir, { recursive: true });
-  fs.writeFileSync(path.join(entryDir, 'status'), 'parked');
+  fs.writeFileSync(path.join(entryDir, 'status'), status);
   fs.writeFileSync(path.join(entryDir, 'park.json'), JSON.stringify({ runId }));
 }
 
@@ -764,6 +791,39 @@ async function runCliPathCanonicalIdentityTests() {
       cleanup(root);
     }
   }
+
+  // ── TC28 / AC-2 C4 parity: 'halted-scope' parked-runId SHIELD ───────────
+  console.log("\nTC28: a 'halted-scope' parked-runId shields a matching run dir through the wrapper (corrupt state.json); a same-shape unshielded dir is still reaped\n");
+  {
+    const root = makeTmpRoot();
+    try {
+      const parkedRunId = 'run-tc28-halted-scope-shield';
+      const shieldedDir = path.join(harnessRoot(root), parkedRunId);
+      fs.mkdirSync(shieldedDir, { recursive: true });
+      // Corrupt state.json — otherwise mechanically-safe on its own; the
+      // parked-runId shield must win, applied before that disposition.
+      fs.writeFileSync(path.join(shieldedDir, 'state.json'), '{ not valid json');
+      plantParkedQueueEntry(root, 'tc28-slug', parkedRunId, 'halted-scope');
+
+      // Negative control: same shape, no matching park.json anywhere.
+      const unshieldedDir = path.join(harnessRoot(root), 'run-tc28-unshielded');
+      fs.mkdirSync(unshieldedDir, { recursive: true });
+      fs.writeFileSync(path.join(unshieldedDir, 'state.json'), '{ not valid json');
+
+      const baseUnshielded = path.basename(unshieldedDir);
+      const { output, threw, err } = await runReap(root, { force: true });
+      assert('TC28: reapOrphanRunDirs did not throw', !threw);
+      if (threw) console.log(`       error: ${err && err.stack}`);
+      assert('TC28a: halted-scope parked-runId-shielded dir survives the wrapper', fs.existsSync(shieldedDir));
+      assert('TC28b: shielded dir is NOT under .harness/stale/',
+        !fs.existsSync(path.join(staleDir(root), parkedRunId)));
+      assert('TC28c: unshielded same-shape dir was reaped', !fs.existsSync(unshieldedDir));
+      assert('TC28d: output logs "[clean] Reaped orphan run dir" naming the unshielded dir',
+        output.includes(`[clean] Reaped orphan run dir ${baseUnshielded}.`));
+    } finally {
+      cleanup(root);
+    }
+  }
 }
 
 /**
@@ -871,6 +931,56 @@ async function runDifferentiatedLabelTests() {
     );
   } finally {
     cleanup(root);
+  }
+}
+
+/**
+ * TC29–TC30 — clean() wrapper tests (scope items 3 and 4): the runId-layout
+ * active-milestone-detection path and the --help usage path. These exercise
+ * clean() itself (not reapOrphanRunDirs), so each case gets its own
+ * fs.mkdtempSync root, kept separate from the reaper-focused TC1–TC28 shared
+ * roots above.
+ */
+async function runCleanWrapperTests() {
+  console.log('\n=== clean() wrapper Tests (TC29–TC30) ===\n');
+
+  // ── TC29: runId-layout active milestone detection ──────────────────────
+  console.log('TC29: .harness/run-*/state.json carrying an in-progress milestone → clean() reports active milestone(s) found\n');
+  {
+    const root = makeTmpRoot();
+    try {
+      const { harnessDir: dir } = bootstrap(root, { runId: 'run-tc29-inprogress' });
+      markInProgress(dir);
+
+      const { output, threw, err } = await runClean(root, { force: true });
+      assert('TC29: clean() did not throw', !threw);
+      if (threw) console.log(`       error: ${err && err.stack}`);
+      assert('TC29a: output includes active milestone(s) found with unarchived state',
+        output.includes('active milestone(s) found with unarchived state'));
+    } finally {
+      cleanup(root);
+    }
+  }
+
+  // ── TC30: --help usage output ───────────────────────────────────────────
+  console.log('\nTC30: clean(root, { help: true }) prints usage naming "clean" and "--force", never prompts, and leaves .harness/ untouched\n');
+  {
+    const root = makeTmpRoot();
+    try {
+      bootstrap(root, { runId: 'run-tc30-help' });
+
+      const { output, threw, err } = await runClean(root, { help: true });
+      assert('TC30: clean() did not throw', !threw);
+      if (threw) console.log(`       error: ${err && err.stack}`);
+      assert('TC30a: output names "clean"', output.includes('clean'));
+      assert('TC30b: output names "--force"', output.includes('--force'));
+      assert('TC30c: output does not print the "Remove .harness/? (y/n)" prompt',
+        !output.includes('Remove .harness/? (y/n)'));
+      assert('TC30d: .harness/ still exists on disk afterward',
+        fs.existsSync(path.join(root, '.harness')));
+    } finally {
+      cleanup(root);
+    }
   }
 }
 
@@ -993,6 +1103,7 @@ async function main() {
   await runSupersededClassifierTests();
   await runCliPathCanonicalIdentityTests();
   await runDifferentiatedLabelTests();
+  await runCleanWrapperTests();
 
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);

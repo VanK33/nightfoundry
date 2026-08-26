@@ -89,14 +89,68 @@ function countEntries(dir) {
 }
 
 /**
- * Read state.json and return active milestones (status !== 'complete' and !== 'archived').
+ * Resolve the state.json path that reflects the harness's actual layout, in
+ * explicit precedence order:
  *
- * @param {string} harnessDir - Absolute path to the .harness directory
+ *   1. The active-run pointer's per-run harness dir
+ *      (.harness/<runId>/state.json via readActiveRunPointer/runHarnessDir),
+ *      when the pointer resolves to a runId whose state.json exists.
+ *   2. A scan of .harness/run-* directories for a state.json (first match,
+ *      sorted by dir name for determinism), for run-scoped layouts with no
+ *      live pointer.
+ *   3. The flat legacy .harness/state.json, retained as the last fallback
+ *      (used whether or not it actually exists on disk).
+ *
+ * @param {string} projectRoot - Absolute path to the project root
+ * @returns {string} Absolute path to the state.json to read (may not exist)
+ */
+function resolveStateJsonPath(projectRoot) {
+  const root = harnessRoot(projectRoot);
+
+  // 1. Active-run pointer's per-run harness dir
+  try {
+    const pointer = readActiveRunPointer(projectRoot);
+    if (pointer && pointer.runId) {
+      const pointerStatePath = path.join(runHarnessDir(projectRoot, pointer.runId), 'state.json');
+      if (fs.existsSync(pointerStatePath)) {
+        return pointerStatePath;
+      }
+    }
+  } catch {
+    // Unreadable/corrupt pointer — fall through to the run-dir scan.
+  }
+
+  // 2. Scan .harness/run-*/state.json
+  try {
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    const runDirNames = entries
+      .filter((e) => e.isDirectory() && e.name.startsWith('run-'))
+      .map((e) => e.name)
+      .sort();
+    for (const name of runDirNames) {
+      const candidate = path.join(root, name, 'state.json');
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  } catch {
+    // .harness/ missing or unreadable — fall through to the legacy path.
+  }
+
+  // 3. Flat legacy .harness/state.json
+  return path.join(root, 'state.json');
+}
+
+/**
+ * Read state.json (resolved per resolveStateJsonPath's precedence order) and
+ * return active milestones (status !== 'complete' and !== 'archived').
+ *
+ * @param {string} projectRoot - Absolute path to the project root
  * @returns {{ hasActive: boolean, activeCount: number }}
  */
-function detectActiveMilestones(harnessDir) {
+function detectActiveMilestones(projectRoot) {
   try {
-    const statePath = path.join(harnessDir, 'state.json');
+    const statePath = resolveStateJsonPath(projectRoot);
     const raw = fs.readFileSync(statePath, 'utf8');
     const state = JSON.parse(raw);
     const milestones = Object.values(state.milestones ?? {});
@@ -249,6 +303,16 @@ function reapOrphanActiveRunPointer(projectRoot) {
  *   dependency-injection seam (e.g. deps.summarize to suppress a real Summarizer in tests)
  */
 export async function clean(projectRoot, flags = {}, deps = {}) {
+  if (flags.help) {
+    console.log('Usage: cc-orch clean [--force] [--runs]');
+    console.log('');
+    console.log('Remove .harness/ from a project.');
+    console.log('');
+    console.log('  --force   Skip all confirmation prompts');
+    console.log('  --runs    Reap orphan run-scoped harness directories (.harness/run-*)');
+    return;
+  }
+
   if (flags.runs) {
     await reapOrphanRunDirs(projectRoot, flags);
     reapOrphanActiveRunPointer(projectRoot);
@@ -273,7 +337,7 @@ export async function clean(projectRoot, flags = {}, deps = {}) {
   console.log(`Found .harness/ with ${entryCount} item(s).`);
 
   // Step 3: Detect active milestones
-  const { hasActive, activeCount } = detectActiveMilestones(harnessDir);
+  const { hasActive, activeCount } = detectActiveMilestones(projectRoot);
 
   if (hasActive) {
     // Step 4: Active milestones — offer archive-first flow

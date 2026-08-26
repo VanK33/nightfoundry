@@ -536,6 +536,19 @@ export const VALID_QUEUE_STATUSES = Object.freeze([
 ]);
 
 /**
+ * The canonical set of queue statuses whose park.json scene carries a LIVE
+ * (recoverable) runId. These are the statuses under which an entry was
+ * parked mid-flight with a live run that can potentially be resumed, as
+ * opposed to statuses that represent a terminal or non-live state.
+ */
+export const LIVE_PARK_STATUSES = Object.freeze([
+  'parked',
+  'halted-review',
+  'halted-analyzer',
+  'halted-scope',
+]);
+
+/**
  * Write a queue entry for a project slug.
  *
  * Creates queue/{slug}/ directory under projectRoot with files:
