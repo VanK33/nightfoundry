@@ -1,3 +1,9 @@
+## [0.2.29] - 2026-08-27 — Extend file-removal deny patterns and add read-only audit recovery
+
+### New features
+- Widened file-removal pattern deny set to cover node fs APIs, rimraf, and python deletion functions in addition to shell rm
+- Added read-only audit recovery with automatic detection and restoration of tracked file deletions in verifier, reviewer, and analyzer sessions
+
 ## [0.2.28] - 2026-08-26 — Unify park statuses, track forensic archives, enhance clean
 
 ### New features

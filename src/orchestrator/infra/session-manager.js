@@ -1097,7 +1097,9 @@ class SessionManager {
       // global dangerous-pattern list (which covers only -r/-rf and globs)
       // and destroys uncommitted deliverables.
       if (options.denyFileRemovalBash && toolName === 'Bash'
-          && /\brm\s/.test(toolInput?.command || '')) {
+          && SessionManager.FILE_REMOVAL_BASH_PATTERNS.some(
+            (p) => p.test(toolInput?.command || ''),
+          )) {
         return {
           behavior: 'deny',
           message: 'File removal is not available to read-only judging roles — inspect and report; never alter the tree.',
@@ -1286,6 +1288,47 @@ class SessionManager {
     /\b(kill|killall|pkill)\b/,
     /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
     /^\s*sudo\b/,
+  ];
+
+  // --- File-removal Bash command patterns (CLOSED set, opt-in) ---
+  //
+  // Consulted only by the opt-in spawn-level removal deny (not wired into
+  // any guard branch by this task — this constant is the declaration only).
+  // Unlike DANGEROUS_BASH_PATTERNS (always-on for every sub-agent), this
+  // list is CLOSED: it covers exactly the deletion primitives enumerated
+  // below and MUST NOT be speculatively extended.
+  //
+  // Coverage (one primitive per bullet; node fs APIs combine the bare and
+  // `fs.promises.`-qualified spellings via an optional group):
+  //   - `rm`                                      — shell removal command
+  //   - `fs.rm` / `fs.promises.rm`                 — recursive/force remover
+  //   - `fs.rmSync` / `fs.promises.rmSync`         — recursive/force remover (sync)
+  //   - `fs.rmdir` / `fs.promises.rmdir`           — directory remover
+  //   - `fs.rmdirSync` / `fs.promises.rmdirSync`   — directory remover (sync)
+  //   - `fs.unlink` / `fs.promises.unlink`         — file remover
+  //   - `fs.unlinkSync` / `fs.promises.unlinkSync` — file remover (sync)
+  //   - `rimraf`                                   — recursive-delete npm package (command word)
+  //   - `shutil.rmtree`                            — Python recursive tree deleter
+  //   - `os.remove`                                — Python os-module file deleter
+  //   - `os.unlink`                                — Python os-module symlink deleter
+  //   - `os.rmdir`                                 — Python os-module directory deleter
+  //
+  // Every entry is word-boundary disciplined so the two-letter shell stem
+  // `rm` never matches inside a longer word or a path segment (e.g. the
+  // word `confirm`, or a path like `src/form/x.js`).
+  static FILE_REMOVAL_BASH_PATTERNS = [
+    /\brm\b/,
+    /\bfs\.(promises\.)?rm\b/,
+    /\bfs\.(promises\.)?rmSync\b/,
+    /\bfs\.(promises\.)?rmdir\b/,
+    /\bfs\.(promises\.)?rmdirSync\b/,
+    /\bfs\.(promises\.)?unlink\b/,
+    /\bfs\.(promises\.)?unlinkSync\b/,
+    /\brimraf\b/,
+    /\bshutil\.rmtree\b/,
+    /\bos\.remove\b/,
+    /\bos\.unlink\b/,
+    /\bos\.rmdir\b/,
   ];
 
   /**

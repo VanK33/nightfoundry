@@ -29,6 +29,8 @@ import config from '../infra/config.js';
 import { analyzerSchema, extractStructured, validateStructured } from './_schemas.js';
 import { canonicalTaskId } from '../core/scheduler.js';
 import { activeHarnessDir } from '../core/run-context.js';
+import { captureTrackedSnapshot, auditTrackedDeletions } from '../infra/read-only-audit.js';
+import { appendWarnings } from '../core/warnings-ledger.js';
 
 // ── Analysis history (de-amnesia) ────────────────────────────────────────
 //
@@ -335,6 +337,18 @@ Rules:
 
     const log = this.logger.createSessionLog(`analyzer-${opts.taskId}`);
 
+    // Read-only-audit snapshot: captured exactly once, before the single
+    // spawn this invocation performs. Fail-soft: captureTrackedSnapshot is
+    // documented never to throw, but this catch is a defensive backstop so
+    // a future change there (or a non-git projectRoot) can never turn into
+    // an analyzeFailure rejection.
+    let trackedSnapshot = null;
+    try {
+      trackedSnapshot = captureTrackedSnapshot(projectRoot);
+    } catch {
+      trackedSnapshot = null;
+    }
+
     try {
       const spawnPromise = this.sessionManager.spawn({
         name: `analyzer-${opts.taskId}`,
@@ -389,6 +403,53 @@ Rules:
         systemPromptTokens: handle.systemPromptTokens,
         toolCallCount: handle._toolCallCount,
       });
+
+      // Read-only-audit check: runs exactly once, after this invocation's
+      // single spawn has settled. Fail-soft end-to-end: nothing here may
+      // throw, reject, or alter the analysis already computed above —
+      // including when projectRoot is a non-git directory, the snapshot is
+      // unusable, the audit helper itself throws, or the logger's warn
+      // throws.
+      try {
+        const auditReport = auditTrackedDeletions(projectRoot, trackedSnapshot, {
+          onLog: (msg) => this.logger.warn(msg),
+        });
+        const hasAuditContent = !!auditReport && (
+          (auditReport.deleted?.length ?? 0) > 0 ||
+          (auditReport.restored?.length ?? 0) > 0 ||
+          (auditReport.reportOnly?.length ?? 0) > 0 ||
+          (auditReport.failed?.length ?? 0) > 0
+        );
+        if (hasAuditContent) {
+          const restoredPaths = (auditReport.restored || []).map((r) => r.path);
+          const reportOnlyPaths = auditReport.reportOnly || [];
+          // Per-session-unique identifier (taskId + eventId): a second,
+          // distinct incident for the same task must never be silently
+          // swallowed by the ledger's content-hash dedup, which keys off
+          // (among other fields) this description string.
+          const sessionIdentifier = `${opts.taskId}:${eventId}`;
+          try {
+            this.logger.warn(
+              `[analyzer] task ${opts.taskId}: READ-ONLY AUDIT ALERT — role 'analyzer' session ${sessionIdentifier} left tracked-file deletions on disk. ` +
+              `restored paths: [${restoredPaths.join(', ')}]; report-only paths: [${reportOnlyPaths.join(', ')}]`
+            );
+          } catch {
+            // fail-soft: a throwing logger must never abort analyzeFailure
+          }
+          try {
+            appendWarnings(projectRoot, [{
+              severity: 'warning',
+              category: 'read-only-audit',
+              description: `role 'analyzer' read-only audit for session ${sessionIdentifier} (task ${opts.taskId}) detected tracked-file deletions during the analyzer session — restored paths: [${restoredPaths.join(', ')}]; report-only paths: [${reportOnlyPaths.join(', ')}]`,
+            }]);
+          } catch {
+            // fail-soft: a ledger write failure must never abort analyzeFailure
+          }
+        }
+      } catch {
+        // fail-soft: the read-only audit never invalidates, retries, or
+        // alters the analysis already computed above.
+      }
 
       return analysis;
     } finally {

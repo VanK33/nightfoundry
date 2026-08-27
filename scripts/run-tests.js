@@ -452,6 +452,7 @@ export const TEST_FILES = [
   'test/test-parallel-runner.js',
   'test/test-replay-lib.js',
   'test/test-replay-driver.js',
+  'test/test-readonly-deletion-guard.js',
 ];
 
 // Per-child captured-output ceiling, matching the old spawnSync maxBuffer:

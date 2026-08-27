@@ -30,6 +30,8 @@ import config from '../infra/config.js';
 import { verifierSchema, regressionVerifierSchema, verifierContextSchema, extractStructured, validateStructured } from './_schemas.js';
 import { SidecarReuseError } from '../core/sidecar-reuse-error.js';
 import { activeHarnessDir, harnessRoot } from '../core/run-context.js';
+import { captureTrackedSnapshot, auditTrackedDeletions } from '../infra/read-only-audit.js';
+import { appendWarnings } from '../core/warnings-ledger.js';
 
 /**
  * Decide whether a single taskScopeCheck is a "whole-suite" check — i.e. the
@@ -251,14 +253,93 @@ class Verifier {
    * @throws {Error} If context.specPath is missing, empty, or the file does not exist.
    */
   async verifyTask(task, projectRoot, context = {}) {
-    return this._runVerificationSession(task, projectRoot, context, {
-      jsonSchema: verifierSchema,
-      deferWholeSuite: true,
-      allowEscalation: true,
-      includeFindingsPrompt: false,
-      runSpecReadAudit: true,
-      redundancyProbe: Boolean(context.redundancyProbe),
-    });
+    // Read-only deletion-guard window: a single before/after snapshot spans
+    // BOTH the primary spawn and (when it fires) the escalation spawn inside
+    // _runVerificationSession, since they share one delegated call below.
+    // verifyRegression and _runVerificationSession itself stay unwired —
+    // only this method opens an audit window. Every step here is fail-soft
+    // by construction (see _auditReadOnlyDeletions): it can never cause
+    // verifyTask to throw/reject, and it never touches the verdict.
+    let snapshot = null;
+    try {
+      snapshot = captureTrackedSnapshot(projectRoot);
+    } catch {
+      // captureTrackedSnapshot is documented fail-soft (never throws), but
+      // this catch is a defensive backstop so a future change there can
+      // never turn into a verifyTask rejection.
+    }
+
+    try {
+      return await this._runVerificationSession(task, projectRoot, context, {
+        jsonSchema: verifierSchema,
+        deferWholeSuite: true,
+        allowEscalation: true,
+        includeFindingsPrompt: false,
+        runSpecReadAudit: true,
+        redundancyProbe: Boolean(context.redundancyProbe),
+      });
+    } finally {
+      // Runs exactly once, after the delegated call settles (success OR
+      // throw) — a `finally` block always runs and never suppresses or
+      // replaces the original outcome.
+      this._auditReadOnlyDeletions(task, projectRoot, snapshot);
+    }
+  }
+
+  /**
+   * Fail-soft read-only deletion audit: compares `snapshot` (captured before
+   * the verification session ran) against the tree's current state, restores
+   * any tracked file that vanished (unless it belongs to a still-in-flight
+   * mission's declared targetFiles, in which case it is report-only), and —
+   * when the resulting report is non-empty — logs loudly and appends exactly
+   * one ledger entry naming this incident.
+   *
+   * Never throws: every fallible step (the audit call itself, the loud warn,
+   * and the ledger append) is individually guarded, and the whole method is
+   * wrapped in a final backstop try/catch, so a broken logger.warn or a
+   * failing appendWarnings can never turn into a verifyTask rejection.
+   *
+   * @param {object} task
+   * @param {string} projectRoot
+   * @param {*} snapshot - result of `captureTrackedSnapshot(projectRoot)`, or
+   *   null if that capture itself failed.
+   */
+  _auditReadOnlyDeletions(task, projectRoot, snapshot) {
+    try {
+      let report;
+      try {
+        report = auditTrackedDeletions(projectRoot, snapshot, { onLog: (msg) => this.logger.warn(msg) });
+      } catch (err) {
+        try { this.logger.warn(`[verifier] task ${task.id}: read-only deletion audit failed: ${err.message}`); } catch { /* fail-soft */ }
+        return;
+      }
+
+      const deleted = Array.isArray(report && report.deleted) ? report.deleted : [];
+      if (deleted.length === 0) return;
+
+      const restored = Array.isArray(report.restored) ? report.restored : [];
+      const reportOnly = Array.isArray(report.reportOnly) ? report.reportOnly : [];
+      const restoredPaths = restored.map((r) => (r && typeof r.path === 'string') ? r.path : String(r));
+
+      const description = `[verifier] task ${task.id}: read-only audit detected tracked-file deletion(s) during verification — restored: [${restoredPaths.join(', ')}], report-only (in-flight targetFiles, left as-is): [${reportOnly.join(', ')}]`;
+
+      try {
+        this.logger.warn(`[verifier] READ-ONLY AUDIT ALERT — ${description}`);
+      } catch { /* fail-soft: a throwing logger must never abort the audit */ }
+
+      try {
+        appendWarnings(projectRoot, [{
+          severity: 'warning',
+          category: 'read-only-audit-deletion',
+          description,
+        }]);
+      } catch (err) {
+        try { this.logger.warn(`[verifier] task ${task.id}: failed to append read-only-audit ledger entry: ${err.message}`); } catch { /* fail-soft */ }
+      }
+    } catch {
+      // Absolute backstop: the read-only audit must never affect verifyTask's
+      // outcome (return value or thrown/rejected error).
+    }
   }
 
   /**

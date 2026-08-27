@@ -34,6 +34,8 @@ import fs from 'fs';
 import path from 'path';
 import config from '../infra/config.js';
 import { reviewerSchema, extractStructured, validateStructured } from './_schemas.js';
+import { captureTrackedSnapshot, auditTrackedDeletions } from '../infra/read-only-audit.js';
+import { appendWarnings } from '../core/warnings-ledger.js';
 
 /**
  * isCleanPass(structured) — the single-sourced "clean pass" predicate.
@@ -276,6 +278,18 @@ Rules:
     // so the end-of-function ledger write must not run again.
     let skipEndRecord = false;
 
+    // Read-only-audit snapshot: captured exactly once, before the first
+    // spawn of this reviewMilestone invocation (including the stub-verdict
+    // retry spawn below, which is covered by this same window rather than
+    // getting its own). Fail-soft: never throws, and never allowed to abort
+    // the review itself.
+    let trackedSnapshot = null;
+    try {
+      trackedSnapshot = captureTrackedSnapshot(projectRoot);
+    } catch {
+      trackedSnapshot = null;
+    }
+
     try {
       const spawnPromise = this.sessionManager.spawn({
         name: `reviewer-${milestoneId}`,
@@ -378,6 +392,49 @@ Rules:
           systemPromptTokens: handle.systemPromptTokens,
           toolCallCount: handle._toolCallCount,
         });
+      }
+
+      // Read-only-audit check: runs exactly once, after the last spawn of
+      // this invocation has settled (spanning the stub-verdict retry spawn
+      // above, if it fired). Fail-soft end-to-end: nothing here may throw,
+      // reject, or alter the verdict already computed above — including when
+      // projectRoot is a non-git directory, the snapshot is unusable, or the
+      // logger's warn itself throws.
+      try {
+        const auditReport = auditTrackedDeletions(projectRoot, trackedSnapshot, {
+          onLog: (msg) => this.logger.warn(msg),
+        });
+        const hasAuditContent = !!auditReport && (
+          (auditReport.deleted?.length ?? 0) > 0 ||
+          (auditReport.restored?.length ?? 0) > 0 ||
+          (auditReport.reportOnly?.length ?? 0) > 0 ||
+          (auditReport.failed?.length ?? 0) > 0
+        );
+        if (hasAuditContent) {
+          const restoredPaths = (auditReport.restored || []).map((r) => r.path);
+          const reportOnlyPaths = auditReport.reportOnly || [];
+          try {
+            this.logger.warn(
+              `[reviewer] milestone ${milestoneId}: READ-ONLY AUDIT ALERT — role 'reviewer' session left tracked-file deletions on disk. ` +
+              `restored paths: [${restoredPaths.join(', ')}]; report-only paths: [${reportOnlyPaths.join(', ')}]`
+            );
+          } catch {
+            // fail-soft: a throwing logger must never abort the review
+          }
+          try {
+            appendWarnings(projectRoot, [{
+              milestone: milestoneId,
+              severity: 'warning',
+              category: 'read-only-audit',
+              description: `role 'reviewer' read-only audit for milestone ${milestoneId} detected tracked-file deletions during the reviewer session — restored paths: [${restoredPaths.join(', ')}]; report-only paths: [${reportOnlyPaths.join(', ')}]`,
+            }]);
+          } catch {
+            // fail-soft: a ledger write failure must never abort the review
+          }
+        }
+      } catch {
+        // fail-soft: the read-only audit never invalidates, retries, or
+        // alters the review verdict already computed above.
       }
 
       return verdict;
