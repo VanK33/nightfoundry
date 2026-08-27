@@ -635,6 +635,39 @@ await test('TC-global-target-files-and-criteria: user prompt contains target fil
   );
 });
 
+// ── TC-global-prompt-target-files-raw ───────────────────────────────────────
+
+await test('TC-global-prompt-target-files-raw: promptTargetFiles drives the Declared target files block, coupled-expanded entries are omitted', async () => {
+  const capturedSystem = [];
+  const capturedUser = [];
+  const planner = new Planner(
+    makeFakeSessionManagerCaptureBoth(capturedSystem, capturedUser),
+    makeFakeLogger(),
+    { recordSession: async () => {} },
+  );
+
+  await planner.planGlobal('test goal', '/fake/root', {
+    promptTargetFiles: ['src/foo.js'],
+    specTargetFiles: ['src/foo.js', 'test/coupled-extra.js'],
+  });
+
+  assert.equal(capturedUser.length, 1, 'spawn() should have been called exactly once');
+  const userPrompt = capturedUser[0];
+
+  assert.ok(
+    userPrompt.includes('Declared target files'),
+    'user prompt should include "Declared target files" header',
+  );
+  assert.ok(
+    userPrompt.includes('- src/foo.js'),
+    'user prompt should include "- src/foo.js" in the Declared target files section',
+  );
+  assert.ok(
+    !userPrompt.includes('test/coupled-extra.js'),
+    'user prompt should NOT include the coupled-expanded-only entry "test/coupled-extra.js"',
+  );
+});
+
 // ── TC-global-empty-no-block ─────────────────────────────────────────────────
 
 await test('TC-global-empty-no-block: user prompt omits sections when arrays are empty or absent', async () => {

@@ -1,3 +1,11 @@
+## [0.2.30] - 2026-08-27 — Terminal-task coverage and raw declared-file prompt
+
+### New features
+- Planner prompt receives raw declared target_files instead of coupled-expanded files; gates continue consuming expanded set
+
+### Bug fixes
+- Completed tasks' hard checks now count as assigned in spec coverage walks via terminal-task ownership rule, fixing UnassignedSpecCheckError on resume
+
 ## [0.2.29] - 2026-08-27 — Extend file-removal deny patterns and add read-only audit recovery
 
 ### New features

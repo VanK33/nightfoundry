@@ -762,6 +762,7 @@ class Pipeline {
             importGraph,
             mode: opts.mode,
             specTargetFiles: this._getSpecTargetFiles(),
+            promptTargetFiles: this._getRawSpecTargetFiles(),
             specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
             specScopeItems: scopeItems,
             specConstraints: this._getSpecConstraints(),
@@ -1096,6 +1097,7 @@ class Pipeline {
           importGraph,
           mode: opts.mode,
           specTargetFiles: this._getSpecTargetFiles(),
+          promptTargetFiles: this._getRawSpecTargetFiles(),
           specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
           specScopeItems: scopeItems,
           specConstraints: this._getSpecConstraints(),
@@ -4174,7 +4176,7 @@ class Pipeline {
         let totalRemTasks = 0;
         const remediationGroups = [];
         for (const [targetMissionId, missionFindings] of findingsByMission) {
-          const remPlan = await this.planner.remediateReviewFindings(msId, missionFindings, this.projectRoot, { specTargetFiles: this._getSpecTargetFiles(), specAcceptanceCriteria: this._getSpecAcceptanceCriteria() });
+          const remPlan = await this.planner.remediateReviewFindings(msId, missionFindings, this.projectRoot, { specTargetFiles: this._getSpecTargetFiles(), promptTargetFiles: this._getRawSpecTargetFiles(), specAcceptanceCriteria: this._getSpecAcceptanceCriteria() });
           this._recordScopeMappingWarnings(msId, remPlan.scopeWarnings);
 
           if (!remPlan.newTasks?.length) {
@@ -4459,7 +4461,7 @@ class Pipeline {
             }
           })
         )];
-        const remPlan = await this.planner.remediateRegressionFailure(msId, findings, this.projectRoot, { specTargetFiles: this._getSpecTargetFiles(), milestoneTargetFiles, specAcceptanceCriteria: this._getSpecAcceptanceCriteria() });
+        const remPlan = await this.planner.remediateRegressionFailure(msId, findings, this.projectRoot, { specTargetFiles: this._getSpecTargetFiles(), promptTargetFiles: this._getRawSpecTargetFiles(), milestoneTargetFiles, specAcceptanceCriteria: this._getSpecAcceptanceCriteria() });
         this._recordScopeMappingWarnings(msId, remPlan.scopeWarnings);
         const fixTaskCount = remPlan.newTasks?.length ?? 0;
 
@@ -4634,8 +4636,10 @@ class Pipeline {
     // replaceTask) — their surviving verify sidecars must not count as
     // assigned (see the sidecar walk below).
     const invalidationReasons = new Map();
-    // Non-invalidated planned tasks ({id, targetFiles}) — feeds the
-    // multi-owner exclusion in findUnassignedSpecHardChecks.
+    // Non-invalidated planned tasks ({id, targetFiles, status}) — feeds the
+    // multi-owner exclusion in findUnassignedSpecHardChecks. status is
+    // forwarded so the terminal-task ('complete') ownership rule there can
+    // be applied.
     const activeTasks = [];
 
     const stateDir = path.join(this.harnessDir, 'state');
@@ -4660,7 +4664,7 @@ class Pipeline {
             // Non-invalidated tasks feed multi-owner detection below:
             // a check whose token file is shared by ≥2 of them is
             // drain-executed by design, never an orphan.
-            activeTasks.push({ id: tid, targetFiles: t.targetFiles });
+            activeTasks.push({ id: tid, targetFiles: t.targetFiles, status: t.status });
           }
           for (const h of ((t && t.hardChecks) || [])) {
             if (h && typeof h.command === 'string') assigned.add(h.command);
@@ -5223,6 +5227,7 @@ class Pipeline {
               maxTasksPerSubMission: config.execution.maxTasksPerSubMission,
               mode: this._mode,
               specTargetFiles: this._getSpecTargetFiles(),
+              promptTargetFiles: this._getRawSpecTargetFiles(),
               specConstraints: this._getSpecConstraints(),
               specAcceptanceCriteria: this._getSpecAcceptanceCriteria(),
               scopeMapping: readState(this.harnessDir).projectMeta?.scopeMapping || [],
@@ -6634,6 +6639,24 @@ class Pipeline {
     const declared = getSpecTargetFiles(this.harnessDir, this.projectRoot, cache);
     const coupledRules = config.scope?.coupledFiles ?? [];
     return expandCoupledTargets(declared, coupledRules);
+  }
+
+  /**
+   * _getRawSpecTargetFiles() — Same declared (pre-expansion) target-file
+   * list that _getSpecTargetFiles() reads and caches, returned WITHOUT
+   * applying `config.scope.coupledFiles` expansion. Used to feed planner
+   * prompts the spec's literal declared list, separate from the
+   * coupled-expanded list used for scope-lint/gate comparisons.
+   *
+   * @returns {string[]} Array of target file paths (may be empty).
+   */
+  _getRawSpecTargetFiles() {
+    const pipeline = this;
+    const cache = {
+      get value() { return pipeline._specTargetFilesCache; },
+      set value(v) { pipeline._specTargetFilesCache = v; },
+    };
+    return getSpecTargetFiles(this.harnessDir, this.projectRoot, cache);
   }
 
   /**

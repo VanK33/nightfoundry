@@ -47,6 +47,23 @@ function test(name, fn) {
   }
 }
 
+/**
+ * Async sibling of `test()` — awaited at the call site so an async case's
+ * PASS/FAIL line is printed, and passCount/failCount are incremented,
+ * before the Summary section below runs (see TC-e2).
+ */
+async function testAsync(name, fn) {
+  try {
+    await fn();
+    console.log(`PASS  ${name}`);
+    passCount++;
+  } catch (err) {
+    console.log(`FAIL  ${name}`);
+    console.log(`      ${err.message}`);
+    failCount++;
+  }
+}
+
 // ── Fixture helpers ─────────────────────────────────────────────────────────
 
 function makeTmpRoot(prefix = 'cc-orch-coupled-files-') {
@@ -884,6 +901,163 @@ test('TC-d6: every (d) case removes its mkdtemp root and restores config.scope.c
   assert.strictEqual(resetCount, rootCreateCount * 2,
     `expected config.scope.coupledFiles reset both before and in finally for each of the ${rootCreateCount} cases`);
 });
+
+// ── (e) raw vs. expanded accessor — Pipeline#_getRawSpecTargetFiles() ──────
+// Mirrors the (d) choke-point idiom: an fs.mkdtempSync fixture root whose
+// spec.md/spec.json pair declares a target_files list, driven through the
+// real bootstrap() + Pipeline({ skipWorktreeCreation: true }) production
+// path, with config.scope.coupledFiles set on the config singleton. Confirms
+// that _getRawSpecTargetFiles() (the non-expanding sibling introduced
+// alongside _getSpecTargetFiles()) returns the declared list unexpanded even
+// while a matching coupledFiles rule is configured, in contrast to
+// _getSpecTargetFiles() which applies the expansion.
+
+test('TC-e1: with a matching rule configured, _getRawSpecTargetFiles() returns the declared target_files unexpanded while _getSpecTargetFiles() returns the declared+coupled expanded set', () => {
+  const root = makeTmpRoot('cc-orch-coupled-e1-');
+  try {
+    resetConfigScope();
+
+    const declaredTargetFiles = ['src/main.js'];
+    const { specMdPath } = writeSpecPairD(root, declaredTargetFiles);
+
+    bootstrap(root, { prdPath: specMdPath });
+
+    const pipeline = new Pipeline(root, {
+      skipWorktreeCreation: true,
+      onLog: () => {},
+      onConfirm: async () => true,
+    });
+
+    const rule = { when: 'src/*.js', alsoTarget: ['test/coupled-fixture-e1.js'] };
+    config.scope.coupledFiles = [rule];
+
+    assert.deepStrictEqual(
+      pipeline._getRawSpecTargetFiles(),
+      declaredTargetFiles,
+      `expected _getRawSpecTargetFiles() to deep-equal the raw declared target_files ${JSON.stringify(declaredTargetFiles)} with no coupled expansion applied, but got ${JSON.stringify(pipeline._getRawSpecTargetFiles())}`
+    );
+
+    assert.deepStrictEqual(
+      pipeline._getSpecTargetFiles(),
+      [...declaredTargetFiles, 'test/coupled-fixture-e1.js'],
+      `expected _getSpecTargetFiles() to deep-equal the declared target_files followed by the rule's alsoTarget paths, got ${JSON.stringify(pipeline._getSpecTargetFiles())}`
+    );
+  } finally {
+    cleanup(root);
+    resetConfigScope();
+  }
+});
+
+// ── (e2) planner-entrypoint feed — pipeline.js's planMission call site ─────
+// Pins the choke point where mission planning actually feeds
+// _getSpecTargetFiles() (declared+coupled-expanded) as `specTargetFiles` and
+// _getRawSpecTargetFiles() (declared, unexpanded) as `promptTargetFiles` into
+// this.planner.planMission()'s opts (pipeline.js's _planAndApproveMission).
+// Hermetic: planMission is stubbed to record its opts and return a minimal
+// missionDecomp — no live Claude session is opened.
+
+function createHarnessE2() {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-orch-coupled-e2-'));
+  const harnessDir = path.join(projectRoot, '.harness');
+  fs.mkdirSync(path.join(harnessDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(harnessDir, 'plan'), { recursive: true });
+
+  const specMdPath = path.join(projectRoot, 'spec.md');
+  const specJsonPath = path.join(projectRoot, 'spec.json');
+  fs.writeFileSync(specMdPath, '# Spec\n', 'utf8');
+  fs.writeFileSync(
+    specJsonPath,
+    JSON.stringify({ goal: 'coupled-files (e2) fixture', target_files: ['src/main.js'] }),
+    'utf8'
+  );
+
+  const state = {
+    projectMeta: { prdPath: specMdPath, createdAt: new Date().toISOString(), currentPhase: 'executing' },
+    globalStatus: 'active',
+    milestones: {
+      '001': {
+        id: '001',
+        description: 'milestone 001',
+        status: 'in_progress',
+        missions: {
+          '001-001': {
+            id: '001-001',
+            description: 'mission 001-001',
+            status: 'pending',
+          },
+        },
+      },
+    },
+  };
+  fs.writeFileSync(path.join(harnessDir, 'state.json'), JSON.stringify(state, null, 2));
+  return { projectRoot, harnessDir };
+}
+
+function makeMissionDecompE2() {
+  return {
+    subMissions: [
+      {
+        id: '001-001-001',
+        description: 'sub-mission',
+        tasks: [
+          {
+            id: '001-001-001-001',
+            description: 'planned task',
+            targetFiles: ['test/test-x.js'],
+            dependencies: [],
+            testCases: [],
+            tracesScenario: [],
+            patternReferences: [],
+            dataSchemas: [],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+await testAsync(
+  "TC-e2: pipeline._planAndApproveMission feeds this.planner.planMission's opts with promptTargetFiles (raw declared list) and specTargetFiles (declared+coupled-expanded list)",
+  async () => {
+    const { projectRoot } = createHarnessE2();
+    try {
+      resetConfigScope();
+      config.scope.coupledFiles = [{ when: 'src/*.js', alsoTarget: ['test/coupled-fixture-e2.js'] }];
+
+      const pipeline = new Pipeline(projectRoot, {
+        skipWorktreeCreation: true,
+        statusBar: false,
+      });
+      pipeline._currentMsId = '001';
+      pipeline._currentMsState = { missions: { '001-001': { id: '001-001' } } };
+      pipeline._msStartTime = Date.now();
+
+      let capturedOpts = null;
+      pipeline.planner.planMission = async (_miId, _projectRoot, opts) => {
+        capturedOpts = opts;
+        return makeMissionDecompE2();
+      };
+      pipeline.planner.closeReusableSession = async () => {};
+
+      await pipeline._planAndApproveMission('001-001', { description: 'mission 001-001', status: 'pending' });
+
+      assert.ok(capturedOpts, 'planMission must have been called and its opts captured');
+      assert.deepStrictEqual(
+        capturedOpts.promptTargetFiles,
+        ['src/main.js'],
+        `expected promptTargetFiles to deep-equal the raw declared target_files, got ${JSON.stringify(capturedOpts.promptTargetFiles)}`
+      );
+      assert.deepStrictEqual(
+        capturedOpts.specTargetFiles,
+        ['src/main.js', 'test/coupled-fixture-e2.js'],
+        `expected specTargetFiles to deep-equal the declared+coupled-expanded set, got ${JSON.stringify(capturedOpts.specTargetFiles)}`
+      );
+    } finally {
+      cleanup(projectRoot);
+      resetConfigScope();
+    }
+  }
+);
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 

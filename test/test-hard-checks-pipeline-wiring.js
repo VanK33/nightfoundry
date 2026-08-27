@@ -21,6 +21,31 @@
  * CT12: _assertSpecHardCheckCoverage throws IncompleteScopeError naming the command of a check assigned in NO mission file
  * CT13: _assertSpecHardCheckCoverage is a no-op when spec.json is absent
  * CT14: _assertSpecHardCheckCoverage never flags a no-path-token (milestone-only) check
+ * CT15: _assertSpecHardCheckCoverage does NOT throw when the sole persisted task
+ *       owning the check's target file has status 'complete' (no hardChecks key,
+ *       no verify sidecar — coverage is inferred from the owning task's completion)
+ * CT16: _assertSpecHardCheckCoverage throws UnassignedSpecCheckError naming the
+ *       check when the identical fixture's sole owning task is 'pending' instead
+ *       of 'complete'
+ * CT17: _assertSpecHardCheckCoverage does NOT throw when the sole coverage of a
+ *       path-bearing spec check is an intact verify/task-*.json sidecar whose
+ *       taskId belongs to a persisted non-invalidated task, and no persisted
+ *       task has status 'complete' or targetFiles overlapping the check
+ *       (proves the terminal-task rule is additive, not a regression of
+ *       sidecar-based assignment)
+ * CT18: the ONLY possible coverage of a path-bearing spec check is a
+ *       verify/task-*.json sidecar belonging to a persisted mission-state task
+ *       with status 'invalidated' and invalidationReason 'replaced' — the
+ *       sidecar must not suppress the orphan; _assertSpecHardCheckCoverage
+ *       throws UnassignedSpecCheckError naming 'node test/test-z.js'
+ * CT19: identical fixture to CT18 except invalidationReason 'redundant' — the
+ *       sidecar counts as coverage; _assertSpecHardCheckCoverage returns
+ *       without throwing
+ * CT20: identical fixture to CT18 except the invalidated task carries no
+ *       invalidationReason field (legacy) — the pipeline's onLog receives a
+ *       message containing 'missing invalidationReason' AND
+ *       _assertSpecHardCheckCoverage throws UnassignedSpecCheckError naming
+ *       'node test/test-z.js'
  *
  * Run: node test/test-hard-checks-pipeline-wiring.js
  */
@@ -30,7 +55,7 @@ import path from 'path';
 import os from 'os';
 import { Pipeline, applySpecHardChecks } from '../src/orchestrator/core/pipeline.js';
 import { writeMissionState } from '../src/orchestrator/core/state.js';
-import { IncompleteScopeError } from '../src/orchestrator/core/incomplete-scope-error.js';
+import { IncompleteScopeError, UnassignedSpecCheckError } from '../src/orchestrator/core/incomplete-scope-error.js';
 import config from '../src/orchestrator/infra/config.js';
 
 let passCount = 0;
@@ -237,16 +262,32 @@ function createSpecHardCheckEnv({ specCommands = [], tasks = [] } = {}) {
  * shape (state.js): mission-{missionId}.json →
  *   { id, missionId, description, status,
  *     subMissions: { [smId]: { id, description, status,
- *       tasks: { [taskId]: { ..., hardChecks: [{name, command}] } } } } }
+ *       tasks: { [taskId]: { ..., status, targetFiles,
+ *                             hardChecks?: [{name, command}] } } } } }
  *
- * `assignedChecks` is the list of {name, command} hardChecks to persist, one
- * task per check. When empty, a single task WITHOUT a hardChecks key is
+ * `assignedChecks` is a list of per-task fixture specs, one task written per
+ * entry. Each entry is `{name?, command?, status?, targetFiles?, invalidationReason?}`:
+ *   - `command` (with optional `name`) assigns a single hardChecks entry
+ *     `[{name, command}]` to that task; when `command` is omitted the task is
+ *     written WITHOUT a hardChecks key at all (mirrors a persisted task that
+ *     was assigned nothing — e.g. one whose coverage is instead inferred from
+ *     its persisted `status`), so the drain's union walk must tolerate the
+ *     absent field.
+ *   - `status` defaults to 'pending' (matches prior behavior); `targetFiles`
+ *     defaults to `[]` (matches prior behavior) — pass either explicitly to
+ *     exercise the drain's status-aware / targetFiles-aware ownership rules.
+ *   - `invalidationReason`, when provided, is written onto the task entry
+ *     alongside `status` (mirrors transitionTask's persisted shape) — pass it
+ *     together with `status: 'invalidated'` to exercise the drain's
+ *     invalidation-reason branches (replaced / redundant / missing).
+ *
+ * When `assignedChecks` is empty, a single task WITHOUT a hardChecks key is
  * written (matching tasks persisted with no assigned checks) so the drain's
  * union walk must tolerate the absent field.
  *
  * @param {string} harnessDir
  * @param {string} missionId - e.g. '001-001'
- * @param {Array<{name:string,command:string}>} assignedChecks
+ * @param {Array<{name?:string,command?:string,status?:string,targetFiles?:string[],invalidationReason?:string}>} assignedChecks
  */
 function writeMissionStateFixture(harnessDir, missionId, assignedChecks = []) {
   const smId = `${missionId}-001`;
@@ -264,17 +305,24 @@ function writeMissionStateFixture(harnessDir, missionId, assignedChecks = []) {
       // assigned nothing; the drain must not trip over the absent field.
     };
   } else {
-    assignedChecks.forEach((check, i) => {
+    assignedChecks.forEach((entry, i) => {
       const taskId = `${smId}-${String(i + 1).padStart(3, '0')}`;
-      tasks[taskId] = {
+      const { name, command, status = 'pending', targetFiles = [], invalidationReason } = entry;
+      const task = {
         id: taskId,
         description: 'drain fixture task',
-        status: 'pending',
-        targetFiles: [],
+        status,
+        targetFiles,
         dependencies: [],
         testCases: [],
-        hardChecks: [check],
       };
+      if (invalidationReason !== undefined) {
+        task.invalidationReason = invalidationReason;
+      }
+      if (typeof command === 'string') {
+        task.hardChecks = [{ name, command }];
+      }
+      tasks[taskId] = task;
     });
   }
   const missionState = {
@@ -299,12 +347,19 @@ function writeMissionStateFixture(harnessDir, missionId, assignedChecks = []) {
  * writeSpecJson=false), plus one persisted .harness/state/mission-*.json per
  * entry in `missionAssignments` ({ missionId → [{name, command}] }).
  *
+ * `sidecars` writes a verify/task-<taskId>.json sidecar per entry — mirroring
+ * the persisted-home shape state.js's writeVerifyJson produces
+ * ({ taskId, targetFiles, hardChecks, testCases: [] }) — so tests can exercise
+ * coverage that is assigned ONLY through a sidecar (no hardChecks key on the
+ * mission-state task itself). `targetFiles` defaults to `[]`.
+ *
  * @param {{ specCommands?: Array<{description:string,command:string}>,
- *           missionAssignments?: Record<string, Array<{name:string,command:string}>>,
- *           writeSpecJson?: boolean }} opts
+ *           missionAssignments?: Record<string, Array<{name?:string,command?:string,status?:string,targetFiles?:string[]}>>,
+ *           writeSpecJson?: boolean,
+ *           sidecars?: Array<{taskId:string,hardChecks:Array<{name:string,command:string}>,targetFiles?:string[]}> }} opts
  * @returns {{ root: string, harnessDir: string }}
  */
-function createDrainEnv({ specCommands = [], missionAssignments = {}, writeSpecJson = true } = {}) {
+function createDrainEnv({ specCommands = [], missionAssignments = {}, writeSpecJson = true, sidecars = [] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-drain-test-'));
   const harnessDir = path.join(root, '.harness');
   for (const sub of ['state', 'verify', 'verification', 'progress', 'analysis', 'snapshots', 'plan', 'logs']) {
@@ -338,6 +393,13 @@ function createDrainEnv({ specCommands = [], missionAssignments = {}, writeSpecJ
 
   for (const [missionId, assignedChecks] of Object.entries(missionAssignments)) {
     writeMissionStateFixture(harnessDir, missionId, assignedChecks);
+  }
+
+  for (const { taskId, hardChecks = [], targetFiles = [] } of sidecars) {
+    fs.writeFileSync(
+      path.join(harnessDir, 'verify', `task-${taskId}.json`),
+      JSON.stringify({ taskId, targetFiles, hardChecks, testCases: [] })
+    );
   }
 
   return { root, harnessDir };
@@ -740,6 +802,195 @@ await test('CT14: _assertSpecHardCheckCoverage never flags a no-path-token (mile
   const { pipeline } = makeDrainPipeline(env.root);
   try {
     await pipeline._assertSpecHardCheckCoverage();
+  } finally {
+    teardownPipeline(pipeline);
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test("CT15: _assertSpecHardCheckCoverage does NOT throw when the sole persisted task owning the check's target file has status 'complete' (no hardChecks key, no verify sidecar)", async () => {
+  // .harness/verify/ is left empty (no sidecar) and the sole persisted task
+  // carries NO hardChecks key — coverage must instead be inferred from that
+  // task's persisted status ('complete') owning the check's target file.
+  const env = createDrainEnv({
+    specCommands: [{ description: 'check on test/test-x.js', command: 'node test/test-x.js' }],
+    missionAssignments: {
+      '001-001': [{ status: 'complete', targetFiles: ['test/test-x.js'] }],
+    },
+  });
+  const { pipeline } = makeDrainPipeline(env.root);
+  try {
+    // Must not throw (sync) nor reject (if implemented async).
+    await pipeline._assertSpecHardCheckCoverage();
+  } finally {
+    teardownPipeline(pipeline);
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test("CT16: _assertSpecHardCheckCoverage throws UnassignedSpecCheckError naming the check when the identical fixture's sole owning task is 'pending' instead of 'complete'", async () => {
+  // Identical fixture to CT15 except the sole owning task's persisted status
+  // is 'pending' — the check is no longer covered by task-completion
+  // inference, and it has exactly one owner (this task) so the multi-owner
+  // exclusion in findUnassignedSpecHardChecks cannot suppress the orphan.
+  const orphanCommand = 'node test/test-x.js';
+  const env = createDrainEnv({
+    specCommands: [{ description: 'check on test/test-x.js', command: orphanCommand }],
+    missionAssignments: {
+      '001-001': [{ status: 'pending', targetFiles: ['test/test-x.js'] }],
+    },
+  });
+  const { pipeline } = makeDrainPipeline(env.root);
+  try {
+    let thrown = null;
+    try {
+      await pipeline._assertSpecHardCheckCoverage();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown, 'expected _assertSpecHardCheckCoverage to throw when the sole owning task is only pending, but it did not throw');
+    assert.ok(
+      thrown instanceof UnassignedSpecCheckError,
+      `expected UnassignedSpecCheckError, got ${thrown.name}: ${thrown.message}`,
+    );
+    const labels = Array.isArray(thrown.uncoveredLabels) ? thrown.uncoveredLabels : [];
+    assert.ok(
+      labels.includes(orphanCommand) || thrown.message.includes(orphanCommand),
+      `expected uncoveredLabels (or message) to name '${orphanCommand}'; uncoveredLabels=${JSON.stringify(labels)}, message=${thrown.message}`,
+    );
+  } finally {
+    teardownPipeline(pipeline);
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test("CT17: a spec check assigned only through an intact verify/task-*.json sidecar of a persisted non-invalidated task makes _assertSpecHardCheckCoverage() return without throwing", async () => {
+  // spec.json declares the path-bearing criterion 'node test/test-y.js'. The
+  // sole persisted mission-state task is 'pending' (not 'complete') and its
+  // targetFiles do NOT overlap the command — so the terminal-task ownership
+  // rule (CT15/CT16) contributes nothing here. The only coverage is an intact
+  // verify/task-*.json sidecar, keyed to that same persisted, non-invalidated
+  // taskId, whose hardChecks include { name, command: 'node test/test-y.js' }.
+  const checkCommand = 'node test/test-y.js';
+  const taskId = '001-001-001-001';
+  const env = createDrainEnv({
+    specCommands: [{ description: 'check on test-y', command: checkCommand }],
+    missionAssignments: {
+      '001-001': [{ status: 'pending', targetFiles: ['src/unrelated.js'] }],
+    },
+    sidecars: [{ taskId, hardChecks: [{ name: 'y check', command: checkCommand }] }],
+  });
+  const { pipeline } = makeDrainPipeline(env.root);
+  try {
+    // Must not throw (sync) nor reject (if implemented async).
+    await pipeline._assertSpecHardCheckCoverage();
+  } finally {
+    teardownPipeline(pipeline);
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test("CT18: a sidecar belonging to an invalidated task with invalidationReason 'replaced' does not suppress the orphan — UnassignedSpecCheckError naming 'node test/test-z.js'", async () => {
+  // spec.json declares the path-bearing criterion 'node test/test-z.js'. The
+  // sole persisted mission-state task is 'invalidated' with
+  // invalidationReason 'replaced', and its targetFiles do NOT overlap the
+  // command, so no complete-status task owns the command's token file and the
+  // terminal-task rule cannot supply coverage. The only possible coverage is
+  // an intact verify/task-*.json sidecar keyed to that same invalidated
+  // taskId — a 'replaced' reason means the sidecar must be skipped, so the
+  // check remains an orphan.
+  const checkCommand = 'node test/test-z.js';
+  const taskId = '001-001-001-001';
+  const env = createDrainEnv({
+    specCommands: [{ description: 'check on test-z', command: checkCommand }],
+    missionAssignments: {
+      '001-001': [{ status: 'invalidated', invalidationReason: 'replaced', targetFiles: ['src/unrelated.js'] }],
+    },
+    sidecars: [{ taskId, hardChecks: [{ name: 'z check', command: checkCommand }] }],
+  });
+  const { pipeline } = makeDrainPipeline(env.root);
+  try {
+    let thrown = null;
+    try {
+      await pipeline._assertSpecHardCheckCoverage();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown, 'expected _assertSpecHardCheckCoverage to throw when the only sidecar belongs to a replaced-invalidated task, but it did not throw');
+    assert.ok(
+      thrown instanceof UnassignedSpecCheckError,
+      `expected UnassignedSpecCheckError, got ${thrown.name}: ${thrown.message}`,
+    );
+    const labels = Array.isArray(thrown.uncoveredLabels) ? thrown.uncoveredLabels : [];
+    assert.ok(
+      labels.includes(checkCommand) || thrown.message.includes(checkCommand),
+      `expected uncoveredLabels (or message) to name '${checkCommand}'; uncoveredLabels=${JSON.stringify(labels)}, message=${thrown.message}`,
+    );
+  } finally {
+    teardownPipeline(pipeline);
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test("CT19: a sidecar belonging to an invalidated task with invalidationReason 'redundant' counts as coverage — no throw", async () => {
+  // Identical fixture to CT18 except invalidationReason 'redundant' — the
+  // sidecar still counts as coverage, so the drain must not throw.
+  const checkCommand = 'node test/test-z.js';
+  const taskId = '001-001-001-001';
+  const env = createDrainEnv({
+    specCommands: [{ description: 'check on test-z', command: checkCommand }],
+    missionAssignments: {
+      '001-001': [{ status: 'invalidated', invalidationReason: 'redundant', targetFiles: ['src/unrelated.js'] }],
+    },
+    sidecars: [{ taskId, hardChecks: [{ name: 'z check', command: checkCommand }] }],
+  });
+  const { pipeline } = makeDrainPipeline(env.root);
+  try {
+    // Must not throw (sync) nor reject (if implemented async).
+    await pipeline._assertSpecHardCheckCoverage();
+  } finally {
+    teardownPipeline(pipeline);
+    fs.rmSync(env.root, { recursive: true, force: true });
+  }
+});
+
+await test("CT20: a sidecar belonging to an invalidated task with no invalidationReason field logs 'missing invalidationReason' and throws UnassignedSpecCheckError naming 'node test/test-z.js'", async () => {
+  // Identical fixture to CT18 except the invalidated task carries no
+  // invalidationReason field (legacy) — the drain must apply the
+  // conservative-skip fallback, logging a warning that mentions 'missing
+  // invalidationReason', and still throw UnassignedSpecCheckError since the
+  // sidecar is skipped and no other coverage exists.
+  const checkCommand = 'node test/test-z.js';
+  const taskId = '001-001-001-001';
+  const env = createDrainEnv({
+    specCommands: [{ description: 'check on test-z', command: checkCommand }],
+    missionAssignments: {
+      '001-001': [{ status: 'invalidated', targetFiles: ['src/unrelated.js'] }],
+    },
+    sidecars: [{ taskId, hardChecks: [{ name: 'z check', command: checkCommand }] }],
+  });
+  const { pipeline, logs } = makeDrainPipeline(env.root);
+  try {
+    let thrown = null;
+    try {
+      await pipeline._assertSpecHardCheckCoverage();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(
+      logs.some((l) => l.includes('missing invalidationReason')),
+      `expected a log line mentioning 'missing invalidationReason', got logs:\n${logs.join('\n')}`,
+    );
+    assert.ok(thrown, 'expected _assertSpecHardCheckCoverage to throw when the only sidecar belongs to a legacy-invalidated task, but it did not throw');
+    assert.ok(
+      thrown instanceof UnassignedSpecCheckError,
+      `expected UnassignedSpecCheckError, got ${thrown.name}: ${thrown.message}`,
+    );
+    const labels = Array.isArray(thrown.uncoveredLabels) ? thrown.uncoveredLabels : [];
+    assert.ok(
+      labels.includes(checkCommand) || thrown.message.includes(checkCommand),
+      `expected uncoveredLabels (or message) to name '${checkCommand}'; uncoveredLabels=${JSON.stringify(labels)}, message=${thrown.message}`,
+    );
   } finally {
     teardownPipeline(pipeline);
     fs.rmSync(env.root, { recursive: true, force: true });

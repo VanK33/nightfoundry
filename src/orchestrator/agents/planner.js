@@ -364,9 +364,26 @@ When deciding what belongs in the same mission, reason about the **runtime call 
 ${opts.importGraph ? `## Project import graph (auto-generated)\n\nThis shows which source files import from which. Use it to identify connected clusters vs independent modules.\n\n${opts.importGraph}\n` : ''}
 ${opts.learningData ? `Historical decomposition patterns for calibration:\n${opts.learningData}` : ''}${opts.mode === 'small-task' ? '\nYou are decomposing a single focused task. Keep it tight — one milestone, minimal missions. Do not invent scope beyond the stated goal.' : ''}`;
 
+    // opts.promptTargetFiles: raw, declared (NOT coupled-expanded) spec
+    // target_files, used SOLELY to render the '## Declared target files'
+    // prompt block below. It exists because opts.specTargetFiles carries
+    // the coupled-expanded set for its gate-side consumers (this file's
+    // lintGlobalPlanScope call, planMission's _validatePathAnchorPreservation
+    // and lintPlanScope including its remediate/replan paths) — swapping
+    // that one field to the raw set would change gate behavior. When
+    // opts.promptTargetFiles is a non-empty array it drives this block;
+    // otherwise (absent, non-array, or empty) the block falls back to
+    // opts.specTargetFiles, so a caller that only passes specTargetFiles
+    // renders a byte-identical prompt to before this option existed.
+    // promptTargetFiles must NEVER be read by any lint, validation, or
+    // scope-mapping code path — only this render site may consume it.
+    const targetFilesSource =
+      Array.isArray(opts.promptTargetFiles) && opts.promptTargetFiles.length > 0
+        ? opts.promptTargetFiles
+        : opts.specTargetFiles;
     const targetFilesBlock =
-      Array.isArray(opts.specTargetFiles) && opts.specTargetFiles.length > 0
-        ? `\n## Declared target files\n${opts.specTargetFiles.map(f => `- ${f}`).join('\n')}\n`
+      Array.isArray(targetFilesSource) && targetFilesSource.length > 0
+        ? `\n## Declared target files\n${targetFilesSource.map(f => `- ${f}`).join('\n')}\n`
         : '';
 
     const acceptanceCriteriaBlock =
@@ -2535,6 +2552,28 @@ function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot, ex
 }
 
 /**
+ * True when at least one of the given tasks has persisted status exactly
+ * 'complete' AND owns the check under the same overlap predicate used
+ * throughout this file: `extractPathTokens(check.command, projectRoot)`
+ * tokens matched via `pathTokenMatchesFile` against that task's
+ * targetFiles. Only 'complete' — not 'verified', 'pending',
+ * 'in_progress', or undefined — qualifies as ownership here.
+ *
+ * @param {{name: string, command: string}} check
+ * @param {{id: string, targetFiles: string[], status?: string}[]} tasks
+ * @returns {boolean}
+ */
+function isOwnedByCompleteTask(check, tasks, projectRoot) {
+  const pathTokens = extractPathTokens(check.command, projectRoot);
+  if (pathTokens.length === 0) return false;
+  return tasks.some((task) => {
+    if (task.status !== 'complete') return false;
+    const targetFiles = Array.isArray(task.targetFiles) ? task.targetFiles : [];
+    return pathTokens.some((token) => targetFiles.some((tf) => pathTokenMatchesFile(token, tf)));
+  });
+}
+
+/**
  * Detects path-bearing spec hard checks whose command is not in the given
  * set of assigned commands.
  *
@@ -2545,25 +2584,48 @@ function scopeSpecHardChecks(hardChecks, tasks, specTargetFiles, projectRoot, ex
  * (b) is NOT multi-owner among `allTasks` when that list is provided
  * (`isMultiOwnerCheck` — such checks are deliberately unattached; the
  * spec-criteria drain executes them) AND
- * (c) its `.command` is not in `assignedCommands`. Milestone-only checks
+ * (c) is NOT owned by a task whose persisted status is exactly 'complete'
+ * (`isOwnedByCompleteTask`, same overlap predicate as `isMultiOwnerCheck`)
+ * AND
+ * (d) its `.command` is not in `assignedCommands`. Milestone-only checks
  * are NEVER returned — they are excluded via the same shared
  * `isMilestoneOnlyCheck` predicate `scopeSpecHardChecks` uses; the
  * pipeline's last-milestone spec-criteria drain executes them instead.
+ *
+ * Rationale for (c): a task's status only becomes 'complete' after it has
+ * passed verification, and that verification run executed the task's
+ * attached hard checks (including this one, since it overlaps the task's
+ * targetFiles). A 'complete' task is therefore just as strong evidence
+ * that the check ran as an intact sidecar assignment would be — it is not
+ * a substitute execution channel like the spec-criteria drain
+ * (`_runSpecCriteriaDrain` only ever executes milestone-only, multi-owner,
+ * and file-check criteria; it never re-runs a task-scoped check on a
+ * task's say-so). The residual gap this rule accepts: if a task is
+ * re-assigned to a different check set after a repoint that follows a
+ * halted run, or after a between-runs edit to the spec's hard-check list,
+ * the check may not actually have executed under the task's current
+ * targetFiles even though the task's status still reads 'complete'. That
+ * gap is only partially covered by the full-suite gate, not closed by
+ * this predicate.
  *
  * @param {{name: string, command: string}[]} parsedChecks - all parsed spec hard checks
  * @param {Set<string>} assignedCommands - command strings already assigned to some task
  * @param {string[]} [specTargetFiles] - The spec's declared target_files,
  *   forwarded to `isMilestoneOnlyCheck`; omit for legacy zero-token-only
  *   classification
- * @param {{id: string, targetFiles: string[]}[]} [allTasks] - Every
- *   non-invalidated planned task; when provided, multi-owner checks are
- *   never orphans (drain-executed by design)
+ * @param {{id: string, targetFiles: string[], status?: string}[]} [allTasks] - Every
+ *   non-invalidated planned task, each optionally carrying its persisted
+ *   `status` (e.g. 'complete', 'verified', 'pending', 'in_progress'); when
+ *   provided, multi-owner checks are never orphans (drain-executed by
+ *   design), and checks owned by a 'complete' task are never orphans
+ *   (already executed by that task's completing verification run)
  * @returns {{name: string, command: string}[]} The subset of parsedChecks that are unassigned
  */
 function findUnassignedSpecHardChecks(parsedChecks, assignedCommands, specTargetFiles, projectRoot, allTasks) {
   return parsedChecks.filter((check) => {
     if (isMilestoneOnlyCheck(check, specTargetFiles, projectRoot)) return false;
     if (Array.isArray(allTasks) && isMultiOwnerCheck(check, allTasks, projectRoot)) return false;
+    if (Array.isArray(allTasks) && isOwnedByCompleteTask(check, allTasks, projectRoot)) return false;
     return !assignedCommands.has(check.command);
   });
 }
