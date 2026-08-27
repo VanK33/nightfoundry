@@ -1,3 +1,9 @@
+## [0.2.31] - 2026-08-27 — Add archive layout contract and shape-pinning tests
+
+### New features
+- Added Archive layout section to stability contract documenting manifest.json, state/mission-*.json, verification, and analysis file shapes for external consumers
+- Enhanced stability test suite with TC12-TC15 test cases binding documented archive file shapes to real writer and builder outputs, preventing documentation drift
+
 ## [0.2.30] - 2026-08-27 — Terminal-task coverage and raw declared-file prompt
 
 ### New features
