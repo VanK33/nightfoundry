@@ -5,10 +5,24 @@
  *
  * Public API:
  *   recordSession(name, type, resultEvent, meta?)   → Promise<void>
+ *   flushInFlight(reason)                           → Promise<number>
  *   getTotalUsage() → { sessionCount, inputTokens, outputTokens, totalCostUsd, ... }
  *   getUsageByType(type) / getUsageByTask(taskId) / getUsageSince(sessionIndex)
  *   shouldWarn(tokens) / shouldForceNewSession(tokens) / shouldAlarm(tokens)
  *   summary() → full breakdown with byType
+ *
+ * Partial-record invariants (flushInFlight):
+ *   (a) Every record flushed by `flushInFlight()` carries `partial: true`
+ *       plus `flushReason`, and is persisted through the same atomic
+ *       `save()` call under `_writeMutex` used by `recordSession` — there
+ *       is no separate write path for partial records.
+ *   (b) Only a partial record that THIS process instance itself wrote via
+ *       `flushInFlight()` (tracked in `_flushedPartials`) may later be
+ *       replaced in place by a same-name `recordSession()` finalize.
+ *       Partial records restored from disk by `_load()` are never
+ *       registered in `_flushedPartials`, so they are preserved rather
+ *       than overwritten — they represent real billed spend from a prior
+ *       (possibly different) process instance and must not be discarded.
  *
  * Concurrency (Phase I items 4+5): `recordSession` is now async and
  * acquires an instance-local mutex around the load-append-write
@@ -34,6 +48,9 @@ class TokenTracker {
     this._sessions = [];
     this._inFlight = new Map();
     this._writeMutex = createMutex();
+    // Instance-local registry of session names whose partial records were
+    // written by this process instance via flushInFlight().
+    this._flushedPartials = new Set();
     this._load();
   }
 
@@ -119,8 +136,68 @@ class TokenTracker {
     try {
       // Clear in-flight entry first so finalized + in-flight remain disjoint by sessionName.
       this._inFlight.delete(name);
-      this._sessions.push(entry);
+
+      // If this instance previously flushed a partial record for `name` via
+      // flushInFlight(), finalizing now REPLACES that partial record in place
+      // (rather than appending alongside it) so the ledger doesn't double-count
+      // the same underlying session. A same-name partial record restored from
+      // disk by _load() (i.e. not in this instance's registry) is left alone
+      // and the finalized record is appended normally.
+      if (this._flushedPartials.has(name)) {
+        const idx = this._sessions.findIndex((s) => s.name === name && s.partial === true);
+        if (idx !== -1) {
+          this._sessions[idx] = entry;
+        } else {
+          this._sessions.push(entry);
+        }
+        this._flushedPartials.delete(name);
+      } else {
+        this._sessions.push(entry);
+      }
+
       this.save();
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * flushInFlight — Convert every current in-flight usage estimate into a
+   * finalized (but partial) session record and persist it atomically.
+   *
+   * Used when the process is aborting/shutting down and in-flight sessions
+   * will never reach `recordSession`: without this, their streamed usage
+   * would be lost entirely (not currently on disk, and about to vanish once
+   * the process exits) rather than double-counted, but callers that want the
+   * spend preserved need it written out. Each flushed record carries
+   * `partial: true` and `flushReason: reason` so downstream consumers can
+   * distinguish it from a normally-finalized session.
+   *
+   * Runs inside the same `_writeMutex` as `recordSession` so no concurrent
+   * finalize/save can interleave with the flush.
+   *
+   * @param {string} reason - Why the flush is happening (e.g. 'abort').
+   * @returns {Promise<number>} Number of records flushed.
+   */
+  async flushInFlight(reason) {
+    const release = await this._writeMutex.acquire();
+    try {
+      if (this._inFlight.size === 0) {
+        return 0;
+      }
+      const entries = [...this._inFlight.values()];
+      for (const entry of entries) {
+        const record = {
+          ...entry,
+          partial: true,
+          flushReason: reason,
+        };
+        this._sessions.push(record);
+        this._flushedPartials.add(entry.name);
+      }
+      this._inFlight.clear();
+      this.save();
+      return entries.length;
     } finally {
       release();
     }
@@ -209,6 +286,17 @@ class TokenTracker {
     };
   }
 
+  /**
+   * _load — Restore persisted sessions from disk on construction.
+   *
+   * Deliberately leaves `_flushedPartials` (the instance-local registry of
+   * partial-record names written by THIS process via `flushInFlight()`)
+   * empty: names of any partial records found in `data.sessions` are never
+   * registered here. This guarantees that partial records restored from
+   * disk — which represent real billed cross-process spend — are never
+   * eligible to be replaced in place by a later same-name `recordSession()`
+   * finalize; only partials this instance itself flushed can be replaced.
+   */
   _load() {
     if (fs.existsSync(this.usagePath)) {
       try {

@@ -110,10 +110,10 @@ const OLD_IMPORT_LINE = '@cc-orch-guidance.md';
 // The projectRoot-anchored patterns for the committed .gitignore managed
 // block — mirrors git-excludes.js's builder exactly, plus the two local-only
 // onboarding files. The archives/ DIRECTORY is never excluded (forensic
-// archives are meant to be committable), but the two cross-run ledger FILES
-// under it (candidates.jsonl, warnings.jsonl) are — they are written on
-// failure legs and would otherwise read as untracked dirt that trips the
-// next run's clean-tree guard.
+// archives are meant to be committable), but the cross-run ledger FILES
+// under it (candidates.jsonl, warnings.jsonl, usage-ledger.jsonl) are — they
+// are written on failure legs and would otherwise read as untracked dirt
+// that trips the next run's clean-tree guard.
 function gitignoreBlockLines() {
   return [
     GITIGNORE_BEGIN,
@@ -125,6 +125,7 @@ function gitignoreBlockLines() {
     '/*.uspec.json',
     '/archives/candidates.jsonl',
     '/archives/warnings.jsonl',
+    '/archives/usage-ledger.jsonl',
     '/CLAUDE.local.md',
     '/nightfoundry-guidance.md',
     GITIGNORE_END,

@@ -353,11 +353,14 @@ await test('TC3: uncertain assumption is advisory (recorded to the warnings ledg
       // archives/warnings.jsonl is the advisory ledger the uncertain is
       // recorded to — EXPECTED under the advisory-no-park contract and
       // asserted positively above.
+      // archives/usage-ledger.jsonl is the cross-run spend ledger, not
+      // stray pipeline output.
       if (
         rel.startsWith('.harness') ||
         rel === 'spec.md' ||
         rel === 'spec.json' ||
-        rel === path.join('archives', 'warnings.jsonl')
+        rel === path.join('archives', 'warnings.jsonl') ||
+        rel === path.join('archives', 'usage-ledger.jsonl')
       ) continue;
       if (entry.isDirectory()) {
         results.push(...collectNonHarnessFiles(full));

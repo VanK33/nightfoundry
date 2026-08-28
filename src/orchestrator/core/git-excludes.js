@@ -27,11 +27,13 @@ const MARKER = '# cc-orch artifacts (auto-managed)';
 // project's own location within the repo, never anywhere else in the tree.
 // The archives/ DIRECTORY is intentionally never excluded — forensic
 // archives are meant to be committable (the park-commit stages them). But
-// the two cross-run ledger FILES under it (candidates.jsonl, warnings.jsonl)
-// are written on failure legs and deliberately survive the revert's
-// `git clean -e archives`; without excluding them, an un-ignored ledger file
-// reads as an untracked change and would trip the next run's clean-tree
-// guard. Excluding the files (not the dir) keeps forensic archives trackable.
+// the three cross-run ledger FILES under it (candidates.jsonl,
+// warnings.jsonl, usage-ledger.jsonl) are written on failure legs and
+// deliberately survive the revert's `git clean -e archives`; without
+// excluding them, an un-ignored ledger file reads as an untracked change
+// and would trip the next run's clean-tree guard. Excluding the files (not
+// the dir) keeps forensic archives trackable while ensuring forensic
+// park-commits never sweep the ledgers up.
 // The *.bundle.json file (sibling of *.spec.json) is an ephemeral run input
 // — like the spec.json it accompanies, it is generated/consumed for a single
 // run and excluded at the project's own location rather than tracked.
@@ -46,6 +48,7 @@ function patternLines(prefix) {
     `${prefix}/*.uspec.json`,
     `${prefix}/archives/candidates.jsonl`,
     `${prefix}/archives/warnings.jsonl`,
+    `${prefix}/archives/usage-ledger.jsonl`,
   ];
 }
 

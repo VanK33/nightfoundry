@@ -145,6 +145,69 @@ export function usageAll(projectRoot, options = {}) {
 
   const result = aggregateAcrossArchives(descriptors, { role, since, last });
 
+  // Merge in ledger/stale synthesized rows only when includeFailed is set —
+  // these rows represent runs that never produced a completed archive, so
+  // they belong alongside 'failed-*' archives behind the same flag.
+  if (includeFailed) {
+    const ledgerRows = ledgerDescriptorRows(projectRoot);
+    const staleRows = staleDescriptorRows(projectRoot);
+    const mergedSynthetic = dedupeSyntheticRows(ledgerRows, staleRows);
+    const filteredSynthetic = filterSyntheticRows(mergedSynthetic, { role, since });
+
+    result.archives = [...result.archives, ...filteredSynthetic];
+    result.archives.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+    if (last !== undefined && last !== null) {
+      const n = Number(last);
+      if (n > 0) {
+        result.archives = result.archives.slice(-n);
+      }
+    }
+
+    // Recompute the trailing aggregate so it stays consistent with the
+    // merged archives+synthesized rows table above it: totals are resummed
+    // over the final (post-sort, post-last-slice) result.archives array,
+    // and each surviving synthesized row's per-role byRole contribution is
+    // folded onto the archive-derived byRole (a role only present in a
+    // synthesized row appears as a new key). overallCacheRatio is left as
+    // the archive-derived value.
+    const survivingSynthetic = result.archives.filter(
+      (r) => r.source === 'ledger' || r.source === 'stale'
+    );
+
+    const mergedByRole = {};
+    for (const [roleKey, data] of Object.entries(result.aggregate.byRole || {})) {
+      mergedByRole[roleKey] = { ...data };
+    }
+    for (const row of survivingSynthetic) {
+      for (const [roleKey, data] of Object.entries(row.byRole || {})) {
+        if (!mergedByRole[roleKey]) {
+          mergedByRole[roleKey] = {
+            sessionCount: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheCreation: 0,
+            cacheRead: 0,
+            totalCostUsd: 0,
+          };
+        }
+        mergedByRole[roleKey].sessionCount += data.sessionCount || 0;
+        mergedByRole[roleKey].inputTokens += data.inputTokens || 0;
+        mergedByRole[roleKey].outputTokens += data.outputTokens || 0;
+        mergedByRole[roleKey].cacheCreation += data.cacheCreation || 0;
+        mergedByRole[roleKey].cacheRead += data.cacheRead || 0;
+        mergedByRole[roleKey].totalCostUsd += data.totalCostUsd || 0;
+      }
+    }
+
+    result.aggregate = {
+      ...result.aggregate,
+      totalSessions: result.archives.reduce((sum, r) => sum + (r.sessionCount || 0), 0),
+      totalCostUsd: result.archives.reduce((sum, r) => sum + (r.totalCostUsd || 0), 0),
+      byRole: mergedByRole,
+    };
+  }
+
   if (json) {
     process.stdout.write(JSON.stringify(result, null, 2));
     return;
@@ -317,6 +380,228 @@ export function usage(projectRoot, options = {}) {
       `$${s.totalCostUsd || 0}`.padStart(10);
     console.log(line);
   }
+}
+
+/**
+ * Read archives/usage-ledger.jsonl (one JSON object per line) and synthesize
+ * archive-shaped rows compatible with aggregateAcrossArchives's result.archives
+ * shape, so the existing table renderer and JSON output can consume them
+ * unchanged.
+ *
+ * Fail-soft, like appendCandidate: any read/parse problem never throws —
+ * a missing or unreadable file yields [], and a corrupt line is skipped
+ * without aborting the surrounding well-formed lines.
+ *
+ * @param {string} projectRoot
+ * @returns {Array<{id: string, runId: string, date: string|null, sessionCount: number, totalCostUsd: number, overallCacheRatio: number|null, byRole: Object, source: string}>}
+ */
+export function ledgerDescriptorRows(projectRoot) {
+  const ledgerPath = path.join(projectRoot, 'archives', 'usage-ledger.jsonl');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(ledgerPath, 'utf8');
+  } catch {
+    return [];
+  }
+
+  const rows = [];
+  const lines = raw.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    if (!entry || typeof entry.runId !== 'string' || entry.runId.length === 0) {
+      continue;
+    }
+
+    const date = typeof entry.ts === 'string' ? entry.ts.slice(0, 10) : null;
+
+    const totals = entry.totals || null;
+    const sessionCount = totals ? (totals.sessionCount || 0) : 0;
+    const totalCostUsd = totals ? (totals.totalCostUsd || 0) : 0;
+    const cacheCreation = totals ? (totals.cacheCreation || 0) : 0;
+    const cacheRead = totals ? (totals.cacheRead || 0) : 0;
+    const overallCacheRatio = cacheCreation > 0 ? cacheRead / cacheCreation : null;
+
+    const byRole = Array.isArray(entry.sessions) ? aggregateByRole(entry.sessions) : {};
+
+    rows.push({
+      id: entry.runId,
+      runId: entry.runId,
+      date,
+      sessionCount,
+      totalCostUsd,
+      overallCacheRatio,
+      byRole,
+      source: 'ledger',
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Derive a YYYY-MM-DD date string from a generateRunId-style basename
+ * (run-{YYYYMMDDTHHmmss}-{slug}-{4hex}). Returns null when the string
+ * doesn't match the expected compact-timestamp grammar.
+ *
+ * @param {string} runId
+ * @returns {string|null}
+ */
+function _dateFromRunId(runId) {
+  if (typeof runId !== 'string') return null;
+  const m = runId.match(/^run-(\d{4})(\d{2})(\d{2})T\d{6}-/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+
+/**
+ * Sweep every immediate subdirectory of .harness/stale and read
+ * <dir>/logs/token-usage.json, synthesizing descriptor rows compatible
+ * with ledgerDescriptorRows / result.archives.
+ *
+ * Fail-soft: returns [] when the stale directory doesn't exist, and a
+ * subdirectory whose token-usage.json is missing, unreadable, or
+ * unparseable is skipped without throwing and without aborting the sweep.
+ *
+ * @param {string} projectRoot
+ * @returns {Array<{id: string, runId: string, date: string|null, sessionCount: number, totalCostUsd: number, overallCacheRatio: number|null, byRole: Object, source: string}>}
+ */
+export function staleDescriptorRows(projectRoot) {
+  const staleDir = path.join(projectRoot, '.harness', 'stale');
+
+  let entries;
+  try {
+    entries = fs.readdirSync(staleDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const dirNames = entries
+    .filter((e) => {
+      try {
+        return e.isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .map((e) => e.name)
+    .sort();
+
+  const rows = [];
+  for (const dirName of dirNames) {
+    const filePath = path.join(staleDir, dirName, 'logs', 'token-usage.json');
+
+    let data;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      data = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+
+    if (!data || typeof data !== 'object') continue;
+
+    // Stale directory basenames are runIds (see harness-reaper.js), so fall
+    // back to the basename when the file itself carries no runId.
+    const runId = typeof data.runId === 'string' && data.runId.length > 0 ? data.runId : dirName;
+
+    const date = typeof data.ts === 'string' ? data.ts.slice(0, 10) : _dateFromRunId(runId);
+
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    const sessionCount = sessions.length;
+    const totalCostUsd = sessions.reduce((sum, s) => sum + (s.totalCostUsd || 0), 0);
+    const cacheCreation = sessions.reduce((sum, s) => sum + (s.cacheCreation || 0), 0);
+    const cacheRead = sessions.reduce((sum, s) => sum + (s.cacheRead || 0), 0);
+    const overallCacheRatio = cacheCreation > 0 ? cacheRead / cacheCreation : null;
+    const byRole = aggregateByRole(sessions);
+
+    rows.push({
+      id: runId,
+      runId,
+      date,
+      sessionCount,
+      totalCostUsd,
+      overallCacheRatio,
+      byRole,
+      source: 'stale',
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Merge ledger and stale descriptor rows into a single deduplicated array.
+ * The ledger wins on runId collisions, so a parked run dir that later gets
+ * quarantined to stale appears exactly once (as the ledger row).
+ *
+ * Archives cannot collide by construction (each archive id is unique on
+ * disk), so only ledger-vs-stale needs deduplication here.
+ *
+ * @param {Array<{runId: string}>} ledgerRows
+ * @param {Array<{runId: string}>} staleRows
+ * @returns {Array}
+ */
+export function dedupeSyntheticRows(ledgerRows, staleRows) {
+  const ledgerRunIds = new Set(ledgerRows.map((r) => r.runId));
+  const staleOnly = staleRows.filter((r) => !ledgerRunIds.has(r.runId));
+  return [...ledgerRows, ...staleOnly];
+}
+
+/**
+ * Apply the same --since and --role narrowing that aggregateAcrossArchives
+ * applies to archive rows to synthesized (ledger/stale) rows, so the two
+ * sources agree under identical filters.
+ *
+ * With `since` set, rows whose date is null or lexically less than `since`
+ * are dropped. With `role` set, rows lacking an entry for that role in
+ * byRole are dropped, and surviving rows are narrowed to report only that
+ * role: sessionCount/totalCostUsd come from byRole[role], byRole is reduced
+ * to just that key, and overallCacheRatio is recomputed as
+ * byRole[role].cacheRead / byRole[role].cacheCreation (null when
+ * cacheCreation is 0). Both filters apply cumulatively. Input rows are not
+ * mutated.
+ *
+ * @param {Array} rows
+ * @param {object} [options={}]
+ * @param {string} [options.role]
+ * @param {string} [options.since]
+ * @returns {Array}
+ */
+export function filterSyntheticRows(rows, { role, since } = {}) {
+  let result = rows;
+
+  if (since) {
+    result = result.filter((r) => r.date != null && r.date >= since);
+  }
+
+  if (role) {
+    result = result
+      .filter((r) => r.byRole && Object.prototype.hasOwnProperty.call(r.byRole, role))
+      .map((r) => {
+        const roleData = r.byRole[role];
+        const overallCacheRatio =
+          roleData.cacheCreation > 0 ? roleData.cacheRead / roleData.cacheCreation : null;
+        return {
+          ...r,
+          sessionCount: roleData.sessionCount,
+          totalCostUsd: roleData.totalCostUsd,
+          byRole: { [role]: roleData },
+          overallCacheRatio,
+        };
+      });
+  }
+
+  return result;
 }
 
 /**

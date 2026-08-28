@@ -48,6 +48,7 @@ import { preflight as runPreflight } from './preflight.js';
 import { snapshotFiles, restoreSnapshot, cleanupSnapshots, readAffectedFiles, assertChangesLanded } from './snapshots.js';
 import { createParkSnapshot } from './park-snapshot.js';
 import { appendCandidate, lintErrorClass } from './candidates-ledger.js';
+import { appendUsageLedger } from './usage-ledger.js';
 import { assertNoReentrantLiveRun } from './reentrancy-guard.js';
 import { sweepOrphanRunDirs } from './harness-reaper.js';
 import {
@@ -359,6 +360,26 @@ class Pipeline {
     // gracefully instead of calling process.exit() directly.
     this._cancelController = new AbortController();
     this.sessionManager.signal = this._cancelController.signal;
+
+    // Best-effort flush of in-flight token usage on abort. Dereferences
+    // this.tokenTracker AT FIRE TIME (not at listener-registration time) so
+    // that a _repointHarness swap in between still lands the flush on the
+    // tracker instance that is actually current when Ctrl-C/SIGTERM fires.
+    // This is explicitly best-effort delivery: flushInFlight is async and
+    // nothing awaits it here, the tracker may not expose flushInFlight at
+    // all (tolerated), and any rejection/throw is swallowed so the abort
+    // path can never fail the scheduler/session-manager signal consumers
+    // that also observe this controller's signal.
+    this._cancelController.signal.addEventListener('abort', () => {
+      try {
+        const tracker = this.tokenTracker;
+        if (tracker && typeof tracker.flushInFlight === 'function') {
+          Promise.resolve(tracker.flushInFlight('abort')).catch(() => {});
+        }
+      } catch {
+        // Never let the abort path throw — delivery here is best-effort.
+      }
+    });
 
     // Wrap user-supplied prompt closures so they automatically receive
     // { statusBar: this.statusBar } as the trailing opts argument. This lets
@@ -1029,6 +1050,13 @@ class Pipeline {
     this._startAgentTicker();
 
     try {
+      // The bulk of dryRunValidate's body is wrapped in this IIFE so that
+      // BOTH exit shapes — a structured `{ queued: false, reason }` return
+      // and a thrown error — can be inspected in ONE place below (after the
+      // await) to append exactly one usage-ledger 'dry-run-failed' entry.
+      // The `{ queued: true }` success return at the end of this IIFE is
+      // deliberately left untouched by the ledger emission below it.
+      const _dryRunResult = await (async () => {
       // ── 2a. Missing-prdPath gate (fail honestly at validate time) ──────
       // w4-state-resume-persistence Fix #3 rider: a dryRunValidate invoked
       // without a prdPath currently passes the uncheckable gate at validate
@@ -1272,6 +1300,50 @@ class Pipeline {
       // ── 7. Log and return early ───────────────────────────────────────
       this.onLog(`Spec validated and queued: queue/${slug}/`);
       return { queued: true };
+      })();
+
+      // Best-effort usage-ledger emit (fail-soft — same
+      // try/catch-warn-never-throw pattern used elsewhere; appendUsageLedger
+      // is itself fail-soft, this outer try/catch is defense in depth).
+      // Double-count-free invariant: dryRunValidate's scratch runId (the
+      // local `runId`, generated above from `_runIdSlug`) is never archived
+      // — a later queued run of the same spec always executes under a
+      // FRESH runId (generateRunId), so this ledger entry is the sole
+      // record of this runId's spend, never double-counted against that
+      // later run. Only the two `{ queued: false }` legs above trigger this
+      // branch; the `{ queued: true }` success return appends nothing.
+      if (_dryRunResult?.queued === false) {
+        try {
+          appendUsageLedger(this.projectRoot, {
+            runId,
+            slug: _runIdSlug,
+            outcome: 'dry-run-failed',
+            harnessDir: scratchHarnessDir,
+          }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+        } catch (usageLedgerErr) {
+          this.onLog(`  Failed to append usage to usage-ledger.jsonl: ${usageLedgerErr.message}`);
+        }
+      }
+      return _dryRunResult;
+    } catch (err) {
+      // Best-effort usage-ledger emit for the thrown-error exit (missing
+      // prdPath, non-.md spec input, UncheckableSpecError, or any other
+      // propagating failure) — same fail-soft pattern and double-count-free
+      // invariant as the structured-return branch above. Must never swallow
+      // or replace the propagating error: on any ledger-write failure only
+      // an onLog warning is emitted, and the original `err` is always
+      // rethrown unchanged below.
+      try {
+        appendUsageLedger(this.projectRoot, {
+          runId,
+          slug: _runIdSlug,
+          outcome: 'dry-run-failed',
+          harnessDir: scratchHarnessDir,
+        }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+      } catch (usageLedgerErr) {
+        this.onLog(`  Failed to append usage to usage-ledger.jsonl: ${usageLedgerErr.message}`);
+      }
+      throw err;
     } finally {
       await this.planner.closeReusableSession();
       this._stopAgentTicker();
@@ -1829,6 +1901,27 @@ class Pipeline {
               lintArmsPending: Array.isArray(priorScene.lintArmsPending) ? priorScene.lintArmsPending : [],
               proposedBy: priorScene.proposedBy ?? null,
             }, { status: 'halted-scope' });
+            // Best-effort usage-ledger emit (fail-soft — same
+            // try/catch-warn-never-throw pattern as the SCOPE-PROPOSAL
+            // DETOUR's emit below). Double-count-free invariant:
+            // scope-proposal promotion always reuses the candidate plan
+            // and never resumes execution under THIS re-parked runId — a
+            // promoted run always executes under a distinct, fresh runId
+            // (generateRunId). This re-parked runId is fresh here (it has
+            // spent nothing yet), so totals typically resolve to null —
+            // that null-totals entry must still be appended so the
+            // disposition is countable. Must never alter the
+            // park/parkCount/continue flow above.
+            try {
+              appendUsageLedger(this.projectRoot, {
+                runId: this._activeEntryRunId,
+                slug: entry.slug,
+                outcome: 'halted-scope',
+                harnessDir: this.harnessDir,
+              }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+            } catch (usageLedgerErr) {
+              this.onLog(`  Failed to append usage to usage-ledger.jsonl for '${entry.slug}': ${usageLedgerErr.message}`);
+            }
             parkCount++;
             continue;
           }
@@ -1976,6 +2069,27 @@ class Pipeline {
                 appliedSpecEdits,
                 questions: [...failed2, ...uncertain2].map((a) => a.assumption?.text ?? a.assumption),
               });
+              // Best-effort usage-ledger emit (fail-soft — same
+              // try/catch-warn-never-throw pattern as the appendCandidate
+              // call inside _parkEntry above). Double-count-free invariant:
+              // a ledger entry is appended here ONLY because this runId's
+              // logs are NOT being moved into an archive by this
+              // (halted-assumptions) disposition — there is no forensic
+              // archive on this leg. A resumed/requeued entry always runs
+              // under a fresh runId (generateRunId, batchResume's per-entry
+              // loop top), so no runId's spend is ever represented by more
+              // than one ledger entry. Must never alter the
+              // park/parkCount/continue flow above.
+              try {
+                appendUsageLedger(this.projectRoot, {
+                  runId: this._activeEntryRunId,
+                  slug: entry.slug,
+                  outcome: 'halted-assumptions',
+                  harnessDir: this.harnessDir,
+                }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+              } catch (usageLedgerErr) {
+                this.onLog(`  Failed to append usage to usage-ledger.jsonl for '${entry.slug}': ${usageLedgerErr.message}`);
+              }
               parkCount++;
               continue;
             } else if (uncertain2.length > 0) {
@@ -2233,6 +2347,27 @@ class Pipeline {
                   lintArmsPending: Array.isArray(err.lintArmsPending) ? err.lintArmsPending : [],
                   proposedBy: err.proposedBy ?? null,
                 }, { status: 'halted-scope' });
+                // Best-effort usage-ledger emit (fail-soft — same
+                // try/catch-warn-never-throw pattern as the appendCandidate
+                // call below). Double-count-free invariant: scope-proposal
+                // promotion always reuses the candidate plan held here and
+                // never resumes execution under THIS parked runId — a
+                // promoted run always executes under a distinct, fresh
+                // runId (generateRunId), so this runId's spend is
+                // represented by exactly this one ledger entry and never
+                // double-counted against the eventual promoted run. Must
+                // never alter the park/parkCount/_assertBatchTreeClean/
+                // continue flow above.
+                try {
+                  appendUsageLedger(this.projectRoot, {
+                    runId: this._activeEntryRunId,
+                    slug: entry.slug,
+                    outcome: 'halted-scope',
+                    harnessDir: this.harnessDir,
+                  }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+                } catch (usageLedgerErr) {
+                  this.onLog(`  Failed to append usage to usage-ledger.jsonl for '${entry.slug}': ${usageLedgerErr.message}`);
+                }
                 parkCount++;
                 if (isGitRepo) this._assertBatchTreeClean(entry.slug);
                 continue;
@@ -2270,6 +2405,26 @@ class Pipeline {
                 }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
               } catch (ledgerErr) {
                 this.onLog(`  Failed to append candidate to candidates.jsonl for '${entry.slug}': ${ledgerErr.message}`);
+              }
+              // Best-effort usage-ledger emit (fail-soft — same
+              // try/catch-warn-never-throw pattern as the appendCandidate call
+              // above). Double-count-free invariant: a ledger entry is
+              // appended here ONLY because this runId's logs are NOT being
+              // moved into an archive by this (failed-plan) disposition —
+              // there is no forensic archive on this leg. A
+              // requeued/promoted entry always runs under a fresh runId
+              // (generateRunId), so no runId's spend is ever represented by
+              // more than one ledger entry. Must never alter the
+              // status/failCount/continue flow above.
+              try {
+                appendUsageLedger(this.projectRoot, {
+                  runId: this._activeEntryRunId,
+                  slug: entry.slug,
+                  outcome: 'failed-plan',
+                  harnessDir: this.harnessDir,
+                }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+              } catch (usageLedgerErr) {
+                this.onLog(`  Failed to append usage to usage-ledger.jsonl for '${entry.slug}': ${usageLedgerErr.message}`);
               }
               this.onLog(`  Entry '${entry.slug}' failed during planning — see queue/${entry.slug}/plan-failure.txt (recovery: fix the spec, then reset the entry to 'pending' to retry, or remove it from the queue).`);
               failCount++;
@@ -2402,6 +2557,28 @@ class Pipeline {
             } catch (ledgerErr) {
               this.onLog(`  Failed to append candidate to candidates.jsonl for '${entry.slug}': ${ledgerErr.message}`);
             }
+            // Best-effort usage-ledger emit (fail-soft — same
+            // try/catch-warn-never-throw pattern as the appendCandidate call
+            // above). Double-count-free invariant: a ledger entry is
+            // appended here ONLY because this runId's logs are NOT being
+            // moved into an archive by this (failed-test-gate) disposition —
+            // there is no forensic archive on this leg, only a revert. A
+            // requeued/promoted entry always runs under a fresh runId
+            // (generateRunId), so no runId's spend is ever represented by
+            // more than one ledger entry. Must never alter the
+            // revert/status/failCount/continue flow above. The timed-out
+            // TestGateError sub-arm above rethrows InfrastructureError and
+            // returns before reaching here, so it appends nothing.
+            try {
+              appendUsageLedger(this.projectRoot, {
+                runId: this._activeEntryRunId,
+                slug: entry.slug,
+                outcome: 'failed-test-gate',
+                harnessDir: this.harnessDir,
+              }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+            } catch (usageLedgerErr) {
+              this.onLog(`  Failed to append usage to usage-ledger.jsonl for '${entry.slug}': ${usageLedgerErr.message}`);
+            }
             failCount++;
             this.onLog(`  Entry '${entry.slug}' failed the final test gate (\`${config.execution.testAllCommand}\`) — reverted and re-queued as failed-test-gate.`);
             if (isGitRepo) this._assertBatchTreeClean(entry.slug);
@@ -2514,6 +2691,26 @@ class Pipeline {
               }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
             } catch (ledgerErr) {
               this.onLog(`  Failed to append candidate to candidates.jsonl for '${entry.slug}': ${ledgerErr.message}`);
+            }
+            // Best-effort usage-ledger emit (fail-soft — same
+            // try/catch-warn-never-throw pattern as the appendCandidate call
+            // above). Double-count-free invariant: a ledger entry is
+            // appended here ONLY because this runId's logs are NOT being
+            // moved into an archive by this (failed-criteria) disposition —
+            // there is no forensic archive on this leg, only a revert. A
+            // requeued/promoted entry always runs under a fresh runId
+            // (generateRunId), so no runId's spend is ever represented by
+            // more than one ledger entry. Must never alter the
+            // revert/status/failCount/continue flow above.
+            try {
+              appendUsageLedger(this.projectRoot, {
+                runId: this._activeEntryRunId,
+                slug: entry.slug,
+                outcome: 'failed-criteria',
+                harnessDir: this.harnessDir,
+              }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+            } catch (usageLedgerErr) {
+              this.onLog(`  Failed to append usage to usage-ledger.jsonl for '${entry.slug}': ${usageLedgerErr.message}`);
             }
             failCount++;
             this.onLog(`  Entry '${entry.slug}' failed spec acceptance criteria — reverted and re-queued as failed-criteria.`);
@@ -3586,6 +3783,26 @@ class Pipeline {
           rejectedState.globalStatus = 'rejected';
           writeJsonAtomic(path.join(this.harnessDir, 'state.json'), rejectedState);
         } catch { /* best-effort marker — archive still gates on terminality */ }
+        // Best-effort usage-ledger emit (fail-soft — same
+        // try/catch-warn-never-throw pattern as the rejected-marker write
+        // above). Double-count-free invariant: a rejected review never
+        // moves this runId's logs into a forensic archive — the marker
+        // above is the only other persisted trace of this disposition — so
+        // this ledger entry is the sole record of this runId's spend, never
+        // double-counted against a later re-run (which always claims a
+        // fresh runId). Must never alter the rejected-marker write above
+        // nor the throw below.
+        try {
+          const pointer = readActiveRunPointer(this.projectRoot);
+          appendUsageLedger(this.projectRoot, {
+            runId: pointer?.runId ?? null,
+            slug: pointer?.slug ?? null,
+            outcome: 'rejected',
+            harnessDir: this.harnessDir,
+          }, { onWarn: (msg) => this.onLog(`  ${msg}`) });
+        } catch (usageLedgerErr) {
+          this.onLog(`  Failed to append usage to usage-ledger.jsonl: ${usageLedgerErr.message}`);
+        }
         const err = new Error('Pipeline run rejected at review gate.');
         err.status = 'rejected';
         throw err;

@@ -206,10 +206,11 @@ await test("(c) planner.planMission throw on a clean tree lands the entry at 'fa
     );
 
     // No forensic archive was written for this leg. The cross-run ledger
-    // FILES (candidates.jsonl / warnings.jsonl) legitimately live under
-    // archives/ and are not forensic archive dirs — exclude them.
+    // FILES (candidates.jsonl / warnings.jsonl / usage-ledger.jsonl)
+    // legitimately live under archives/ and are not forensic archive dirs —
+    // exclude them.
     const archivesDir = path.join(root, 'archives');
-    const LEDGER_FILES = new Set(['candidates.jsonl', 'warnings.jsonl']);
+    const LEDGER_FILES = new Set(['candidates.jsonl', 'warnings.jsonl', 'usage-ledger.jsonl']);
     const archiveEntries = (fs.existsSync(archivesDir) ? fs.readdirSync(archivesDir) : [])
       .filter((e) => !LEDGER_FILES.has(e));
     assert.strictEqual(

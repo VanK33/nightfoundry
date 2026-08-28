@@ -1,3 +1,13 @@
+## [0.2.32] - 2026-08-28 — Add cross-run usage ledger to close cost accounting leak
+
+### New features
+- Add cross-run append-only usage ledger module (appendUsageLedger, readRunUsage, usageLedgerPath) recording terminal failure dispositions to archives/usage-ledger.jsonl with CLOSED seven-outcome enumeration
+- Emit usage-ledger entries at all failure disposition sites (failed-criteria, failed-plan, failed-test-gate, halted-scope×2, halted-assumptions, dry-run-failed, rejected) with double-count-free guarantee
+- Implement TokenTracker.flushInFlight(reason) to persist in-flight sessions as partial:true records during abort, serialized with recordSession via atomic _writeMutex
+- Wire pipeline abort signal to flush in-flight token usage with fire-time tracker dereference for _repointHarness compatibility
+- Extend usageAll to synthesize and aggregate ledger and .harness/stale sweep rows as archive-shaped descriptors with runId deduplication and --include-failed gating
+- Exclude archives/usage-ledger.jsonl from forensic park-commits via git-excludes.js and init.js scaffolding
+
 ## [0.2.31] - 2026-08-27 — Add archive layout contract and shape-pinning tests
 
 ### New features

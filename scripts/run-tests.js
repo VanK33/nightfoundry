@@ -154,6 +154,7 @@ export const TEST_FILES = [
   'test/test-multi-owner-check-routing.js',
   'test/test-warnings-ledger.js',
   'test/test-candidates-ledger.js',
+  'test/test-usage-ledger.js',
   'test/test-cli-failure-ledger-emit.js',
   'test/test-plan-scope-warnings-ledger.js',
   'test/test-phantom-write-guard.js',
