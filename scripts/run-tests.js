@@ -402,6 +402,7 @@ export const TEST_FILES = [
   'test/test-assumption-data.js',
   'test/test-verification-helpers.js',
   'test/test-test-gate-disposition.js',
+  'test/test-thin-preflight.js',
   'test/test-batch-test-gate-park-snapshot.js',
   'test/test-spec-criterion-disposition.js',
   'test/test-spec-criteria-disposition.js',
