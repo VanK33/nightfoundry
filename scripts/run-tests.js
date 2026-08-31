@@ -404,6 +404,7 @@ export const TEST_FILES = [
   'test/test-test-gate-disposition.js',
   'test/test-thin-acceptance.js',
   'test/test-thin-preflight.js',
+  'test/test-thin-session-sources.js',
   'test/test-batch-test-gate-park-snapshot.js',
   'test/test-spec-criterion-disposition.js',
   'test/test-spec-criteria-disposition.js',

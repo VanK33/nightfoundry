@@ -989,8 +989,17 @@ class SessionManager {
    */
   _buildSdkOptions(options, readFiles = new Set()) {
     const sdkOpts = {
-      // Settings isolation: don't load user/project settings in worker sessions
-      settingSources: [],
+      // Settings isolation: don't load user/project settings in worker
+      // sessions. settingSourcesOverride is a dormant seam for the v0.3
+      // thin loop; NOTE (probed 2026-08-31): SDK ['project'] loads the
+      // project settings.json (hooks/permissions/env) AND the user-level
+      // CLAUDE.md alongside the project CLAUDE.md — it is NOT a
+      // CLAUDE.md-only switch. The thin executor's context choice is an
+      // open blueprint decision; every v0.2 caller passes no override and
+      // keeps today's full isolation.
+      settingSources: Array.isArray(options.settingSourcesOverride)
+        ? options.settingSourcesOverride
+        : [],
       // No session persistence for workers
       persistSession: false,
       // Stamp the run marker into the child environment so a spawned SDK
