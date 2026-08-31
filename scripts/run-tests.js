@@ -403,6 +403,7 @@ export const TEST_FILES = [
   'test/test-verification-helpers.js',
   'test/test-test-gate-disposition.js',
   'test/test-thin-acceptance.js',
+  'test/test-thin-loop.js',
   'test/test-thin-preflight.js',
   'test/test-thin-session-sources.js',
   'test/test-batch-test-gate-park-snapshot.js',
