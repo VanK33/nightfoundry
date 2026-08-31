@@ -151,3 +151,14 @@ Reviewer-warning ledger (`archives/warnings.jsonl`).
 | **Requires `.harness/state.json`** | `status`, `usage` (without `--all`/`--include-failed`), `review`, `archive` (the verb, not `list`/`show`/`diff`), `clean`, `resume` (without `--batch`), `reset` (operates on the active run harness) |
 | **Does NOT require it** | `init`, `brainstorm`, `dry-run`, `task`, `run` (creates it), `resume --batch`, `queue *`, `park *`, `warnings *`, `health`, `ui`, `version`, `help`, `dispersion`, `archive list/show/diff`, `usage --all` |
 | **Requires a git repo + clean tree** | `run`, `dry-run` (override with `--no-git-required` / `--allow-dirty`) |
+
+## nightfoundry thin <spec.md>
+
+Experimental v0.3 thin loop: ONE single-session executor over the whole spec, then a mechanical
+grading step (an externally provided `<spec>.accept.*` exam + the project's full test suite + a
+scope diff), then a bounded red loop (one in-place fix, one fresh redo, then park). Requires a
+STRICTLY clean tree (zero tracked modifications AND zero untracked files) and an in-envelope spec
+(target_files <= 21, acceptance criteria <= 11, spec body < 300 lines). Every run — delivered or
+parked — lands a `archives/<seq>-thin-<slug>/` record; a parked run also surfaces in `park list`.
+Exit codes: 0 delivered, 2 parked, 3 preflight refusal. Coexists with every v0.2 command; touches
+none of their behavior.

@@ -174,7 +174,7 @@ function ac1_driftVerbList() {
   const verbs = deriveCliVerbsAtRuntime();
 
   assert(`drift: at least one verb derived from src/cli/index.js (got ${verbs.length})`, verbs.length > 0);
-  assert(`drift: exactly 20 top-level verbs derived (today's count; got ${verbs.length})`, verbs.length === 20);
+  assert(`drift: exactly 21 top-level verbs derived (today's count; got ${verbs.length})`, verbs.length === 21);
 
   const commandsMd = fs.readFileSync(COMMANDS_MD_PATH, 'utf8');
   for (const verb of verbs) {

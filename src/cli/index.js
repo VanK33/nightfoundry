@@ -65,6 +65,7 @@ export function renderUsage(name = displayName()) {
   Pipeline:
     ${name} run <spec.md> [-a]                         Run pipeline from spec
     ${name} dry-run <spec.md> [-a]                     Validate spec, queue for batch resume
+    ${name} thin <spec.md> [--model <id>] [--suite <cmd>]  v0.3 thin loop: single session + sealed acceptance (experimental)
     ${name} resume [--batch] [-a]   Resume from saved state (--batch processes queue)
     ${name} task "<description>"                       Run single ad-hoc task
     ${name} <spec.md> [-a]                             Shortcut for run
@@ -397,6 +398,24 @@ async function main() {
       return reset(projectRoot, taskId);
     }
 
+    case 'thin': {
+      // No guardFreshRoot: thin is self-sufficient on a bare checkout (it
+      // creates queue/ and archives/ on demand and needs no init scaffolding)
+      // — gate reruns land in fresh worktrees by design.
+      const thinSpecPath = positional[1];
+      if (!thinSpecPath) {
+        console.error(`Usage: ${displayName()} thin <spec.md>`);
+        process.exit(1); // arg errors are exit 1; 3 is reserved for preflight refusals
+      }
+      if (!fs.existsSync(thinSpecPath)) {
+        console.error(`File not found: ${thinSpecPath}`);
+        process.exit(1);
+      }
+      const { thinCommand } = await import('./commands/thin.js');
+      const thinExit = await thinCommand(thinSpecPath, projectRoot, { modelId: flags.model, suiteCommand: flags.suite });
+      process.exit(thinExit);
+    }
+
     case 'dry-run': {
       guardFreshRoot(projectRoot, { refuse: true });
       const specPath = positional[1];
@@ -493,7 +512,7 @@ const VALUE_SHORT_FLAGS = new Set(['p']);
  * Long flags that always consume their next argument as a value.
  * Legacy command flags such as --archive must not be listed here.
  */
-const VALUE_LONG_FLAGS = new Set(['role', 'task', 'project', 'last', 'since', 'resume', 'port', 'note']);
+const VALUE_LONG_FLAGS = new Set(['role', 'task', 'project', 'last', 'since', 'resume', 'port', 'note', 'model', 'suite']);
 
 /**
  * Union of every long flag the CLI is expected to recognise (paired with
@@ -529,6 +548,8 @@ const VALUE_LONG_FLAGS = new Set(['role', 'task', 'project', 'last', 'since', 'r
 const KNOWN_LONG_FLAGS = new Set([
   // (1) long keys read directly off `flags` in main()/commands
   'project',
+  'model',
+  'suite',
   'json',
   'all',
   'batch',
