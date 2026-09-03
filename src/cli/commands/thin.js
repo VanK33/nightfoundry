@@ -67,8 +67,10 @@ export function persistThinPark(projectRoot, slug, scene) {
 
 /** Real git seam for the red loop (deps-injectable in tests). */
 export function makeThinGit(projectRoot, slug, baseSha) {
+  // 64MB maxBuffer: a mega-tree diff overflows the Node default (1MB) and
+  // kills capturePatch with ENOBUFS (observed on the gate's 11th sample).
   const sh = (cmd) =>
-    String(execSync(cmd, { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    String(execSync(cmd, { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }));
   return {
     headSha: () => sh('git rev-parse HEAD').trim(),
     capturePatch: () => sh(`git -c core.quotePath=false diff --no-renames ${baseSha}`),

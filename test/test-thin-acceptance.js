@@ -10,6 +10,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  assembleGrade,
   parseExamOutput,
   runAcceptance,
   runSuite,
@@ -423,5 +424,15 @@ for (const dir of tmpDirs) {
     /* best effort */
   }
 }
+test('TC33: an exam-level error surfaces as a synthetic exam-error fail label (suspected-defect channel food)', () => {
+  const g = assembleGrade({
+    acceptance: { ok: false, pass: 0, fail: 0, lines: [], failLabels: [], error: 'exam produced no PASS/FAIL assertions (zero-assertion floor)' },
+    suite: { skipped: true },
+    scope: { changed: [], outOfScope: [], whitelisted: [] },
+  });
+  assert.strictEqual(g.green, false);
+  assert.ok(g.failLabels.some((l) => l.startsWith('exam-error: ')), JSON.stringify(g.failLabels));
+});
+
 console.log(`\n${passCount} passed, ${failCount} failed`);
 process.exit(failCount > 0 ? 1 : 0);

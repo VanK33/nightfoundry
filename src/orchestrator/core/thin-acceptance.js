@@ -218,13 +218,19 @@ export function assembleGrade({ acceptance, suite, scope }) {
   for (const f of scope.outOfScope) redList.push(`out-of-scope edit: ${f}`);
 
   const green = acceptance.ok && suite.ok !== false && scope.outOfScope.length === 0;
+  // An exam-level ERROR (crash, timeout, zero-assertion floor) is carried as
+  // a synthetic fail label so the suspected-acceptance-defect channel can
+  // fire on it: the same error in every round is exactly the "the exam
+  // itself is broken" signature — the executor cannot fix the harness.
+  const failLabels = [...(acceptance.failLabels ?? [])];
+  if (acceptance.error) failLabels.push(`exam-error: ${acceptance.error}`);
   return {
     acceptance,
     suite,
     scope,
     green,
     redList,
-    failLabels: acceptance.failLabels ?? [],
+    failLabels,
   };
 }
 
