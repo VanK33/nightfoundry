@@ -1,3 +1,0 @@
-# Mock spec
-
-Fixture body
