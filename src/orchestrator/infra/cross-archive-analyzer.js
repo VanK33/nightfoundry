@@ -134,6 +134,10 @@ export function loadArchiveSummary(archive) {
   // existing test/test-usage-all.js fixtures stage only this file.
   const summaryPath = path.join(archive.dir, 'logs', 'session-summary.json');
   if (!fs.existsSync(summaryPath)) {
+    // Thin-loop archives (v0.3) carry a top-level record.json instead of
+    // logs/ — skipping them here is expected layout, not a broken archive,
+    // so stay silent. Anything else missing both files still warns.
+    if (fs.existsSync(path.join(archive.dir, 'record.json'))) return null;
     console.warn(`[cross-archive-analyzer] no token-usage.json or session-summary.json for archive ${archiveId}: ${summaryPath}`);
     return null;
   }

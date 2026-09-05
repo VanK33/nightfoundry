@@ -443,7 +443,7 @@ export function parkResolve(projectRoot, slug, flags = {}) {
     console.error(
       `Refusing to resolve '${slug}': queue entry is damaged (${damage}). ` +
       `There is nothing left to re-validate or waive — inspect queue/${slug}/ and the ` +
-      `failed archive for this run, or remove the entry with cc-orch queue remove ${slug}.`
+      `failed archive for this run, or remove the entry with nightfoundry queue remove ${slug}.`
     );
     process.exitCode = 1;
     return;
@@ -489,7 +489,7 @@ export function parkResolve(projectRoot, slug, flags = {}) {
     console.error(
       `Refusing to resolve '${slug}': no readable park scene (queue/${slug}/park.json ` +
       `is missing or corrupt). Inspect the entry directory manually, or remove it with ` +
-      `cc-orch queue remove ${slug}.`
+      `nightfoundry queue remove ${slug}.`
     );
     process.exitCode = 1;
     return;

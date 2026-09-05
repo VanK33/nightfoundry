@@ -1,6 +1,6 @@
 # nightfoundry gotchas, preconditions & footguns
 
-Real preconditions and sharp edges from the code. Read before non-obvious operations, or when a command appears to run but do nothing. Command examples below render as `nightfoundry <verb>`; the `cc-orch` alias stays valid for every command.
+Real preconditions and sharp edges from the code. Read before non-obvious operations, or when a command appears to run but do nothing. Command examples below render as `nightfoundry <verb>`; the `nightfoundry` alias stays valid for every command.
 
 ## Contents
 - [Preconditions](#preconditions)
@@ -14,8 +14,8 @@ Real preconditions and sharp edges from the code. Read before non-obvious operat
 - **Unresumable state.** If `resume` finds `globalStatus = active` + `currentPhase = planning` + no milestones, planning crashed before any decomposition existed — `resume` exits with an "unresumable" code and tells you to `nightfoundry run <spec.md>` fresh instead.
 - **Batch needs `validated` entries.** `resume --batch` processes queue entries that reached `validated` (via `dry-run`). Entries in `parked` / `halted-review` / `halted-analyzer` must be cleared with `park resolve` first.
 - **Archive needs a complete run.** `archive` (the verb) expects `globalStatus = complete`.
-- **`.nightfoundry.json` wins when both project config files exist.** If a project root has both `.nightfoundry.json` and `.cc-orch.json`, the loader reads `.nightfoundry.json` and ignores `.cc-orch.json`, printing a single non-fatal shadow warning — the run continues using the winning file's settings.
-- **Re-running `init` on an old-named repo migrates machine-owned artifacts only.** Running `init` again on a repo previously initialized under the old `cc-orch` names rewrites the stamped guidance file to `nightfoundry-guidance.md` and deploys `.claude/skills/nightfoundry-operator/`, removing only the old machine-owned guidance file and skill directory it superseded — it never deletes user-owned files.
+- **`.nightfoundry.json` wins when both project config files exist.** If a project root has both `.nightfoundry.json` and `.nightfoundry.json`, the loader reads `.nightfoundry.json` and ignores `.nightfoundry.json`, printing a single non-fatal shadow warning — the run continues using the winning file's settings.
+- **Re-running `init` on an old-named repo migrates machine-owned artifacts only.** Running `init` again on a repo previously initialized under the old `nightfoundry` names rewrites the stamped guidance file to `nightfoundry-guidance.md` and deploys `.claude/skills/nightfoundry-operator/`, removing only the old machine-owned guidance file and skill directory it superseded — it never deletes user-owned files.
 
 ## Silent no-ops
 

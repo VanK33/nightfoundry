@@ -144,22 +144,22 @@ test('TC6: thinSlug strips the .spec.md suffix chain', async () => {
   assert.strictEqual(thinSlug('plain.md'), 'plain');
 });
 
-test('TC7: router — `thin` without a spec prints usage and exits 1 (not the preflight code 3)', async () => {
-  const r = spawnSync('node', [CLI, 'thin'], { encoding: 'utf8' });
+test('TC7: router — `run` without a spec prints usage and exits 1 (not the preflight code 3)', async () => {
+  const r = spawnSync('node', [CLI, 'run'], { encoding: 'utf8' });
   assert.strictEqual(r.status, 1);
-  assert.ok((r.stdout + r.stderr).includes('thin <spec.md>'), r.stdout + r.stderr);
+  assert.ok((r.stdout + r.stderr).includes('run <spec.md>'), r.stdout + r.stderr);
 });
 
-test('TC8: router — `thin missing.md` prints file-not-found and exits 1 (not the preflight code 3)', async () => {
+test('TC8: router — `run missing.md` prints file-not-found and exits 1 (not the preflight code 3)', async () => {
   const root = makeProject();
-  const r = spawnSync('node', [CLI, 'thin', 'missing.md'], { cwd: root, encoding: 'utf8' });
+  const r = spawnSync('node', [CLI, 'run', 'missing.md'], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(r.status, 1);
   assert.ok((r.stdout + r.stderr).toLowerCase().includes('not found'));
 });
 
-test('TC9: router — help output includes thin', async () => {
+test('TC9: router — help output includes run', async () => {
   const r = spawnSync('node', [CLI, 'help'], { encoding: 'utf8' });
-  assert.ok(r.stdout.includes('thin'));
+  assert.ok(r.stdout.includes('run'));
 });
 
 
@@ -177,10 +177,10 @@ test('TC10: a model override reaches both the archive record and the executor fa
 });
 
 
-test('TC11: router — `thin --model <id>` parses (refusal path still exit 3, not unknown-option)', async () => {
+test('TC11: router — `run --model <id>` parses (refusal path still exit 3, not unknown-option)', async () => {
   const root = makeProject();
   fs.rmSync(path.join(root, 'demo.spec.accept.mjs')); // force a preflight refusal
-  const r = spawnSync('node', [CLI, 'thin', 'demo.spec.md', '--model', 'claude-opus-5'], { cwd: root, encoding: 'utf8' });
+  const r = spawnSync('node', [CLI, 'run', 'demo.spec.md', '--model', 'claude-opus-5'], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(r.status, 3, r.stdout + r.stderr);
   assert.ok(!(r.stdout + r.stderr).includes('Unknown option'), r.stdout + r.stderr);
 });
@@ -310,7 +310,7 @@ test('TC19: preflight warnings are printed on the happy path', async () => {
   const { deps } = fakeDeps({ log: (l) => lines.push(String(l)) });
   const code = await thinCommand(path.join(root, 'demo.spec.md'), root, deps);
   assert.strictEqual(code, 0);
-  assert.ok(lines.some((l) => l.includes('thin: warning:')), lines.join('\n'));
+  assert.ok(lines.some((l) => l.includes('run: warning:')), lines.join('\n'));
 });
 
 test('TC20: makeThinExecutors — session lifecycle and stat mapping against a fake sessionManager', async () => {

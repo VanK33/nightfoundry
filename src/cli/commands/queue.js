@@ -76,7 +76,7 @@ function scanQueueTolerant(projectRoot) {
  *
  * Fail-soft: a damaged entry (e.g. spec.md deleted from under a queue
  * directory) is rendered as a [broken] row/record with a hint to remove it
- * via `cc-orch queue remove <slug>`, rather than crashing the whole listing.
+ * via `nightfoundry queue remove <slug>`, rather than crashing the whole listing.
  *
  * @param {string} projectRoot
  * @param {{ json?: boolean }} options
@@ -125,7 +125,7 @@ export function queueList(projectRoot, options = {}) {
     if (row.damage) {
       const name = row.slug.padEnd(NAME_WIDTH);
       console.log(
-        `${name}[broken] entry damaged (${row.damage}) — remove with: cc-orch queue remove ${row.slug}`
+        `${name}[broken] entry damaged (${row.damage}) — remove with: nightfoundry queue remove ${row.slug}`
       );
       continue;
     }
@@ -156,14 +156,14 @@ export function queueRemove(projectRoot, slug) {
 }
 
 /**
- * Reset a queue entry back to 'pending' so `cc-orch resume --batch` will
+ * Reset a queue entry back to 'pending' so `nightfoundry resume --batch` will
  * pick it up again. Reads the entry via readQueueEntryTolerant and handles
  * four arms:
  *
  *  (a) DAMAGED — the entry directory exists but is unreadable (damage !=
  *      null). Refused without changing anything, same refusal posture as
  *      parkResolve's damaged-entry leg: names the slug, the damage reason,
- *      and `cc-orch queue remove <slug>` as the way out.
+ *      and `nightfoundry queue remove <slug>` as the way out.
  *  (b) UNKNOWN — entry, status, and damage are all null (readQueueEntry
  *      returns null for a missing entry directory rather than throwing).
  *      Reports a not-found error following queueRemove's message
@@ -174,7 +174,7 @@ export function queueRemove(projectRoot, slug) {
  *      updateQueueEntryStatus(projectRoot, slug, 'pending') — status-only,
  *      never writeQueueEntry, so spec.md/plan.json/spec.json/validated-at.json
  *      are left untouched — and prints a confirmation naming the previous
- *      status and directing the operator to `cc-orch resume --batch`.
+ *      status and directing the operator to `nightfoundry resume --batch`.
  *
  * @param {string} projectRoot
  * @param {string} slug
@@ -186,7 +186,7 @@ export function queueRetry(projectRoot, slug) {
     console.error(
       `Refusing to retry '${slug}': queue entry is damaged (${damage}). ` +
       `There is nothing left to reset — inspect queue/${slug}/ and the ` +
-      `failed archive for this run, or remove the entry with cc-orch queue remove ${slug}.`
+      `failed archive for this run, or remove the entry with nightfoundry queue remove ${slug}.`
     );
     process.exitCode = 1;
     return;

@@ -1,5 +1,5 @@
 /**
- * thin.js — `nightfoundry thin <spec.md>`: the v0.3 M1 thin loop
+ * thin.js — `nightfoundry run <spec.md>`: the v0.3 loop
  * (blueprint v3). One single-session executor over the whole spec, a
  * mechanical grading step, the provisional red loop, and 落袋 — nothing
  * else. Coexists with every v0.2 path untouched.
@@ -169,11 +169,11 @@ export async function thinCommand(specPath, projectRoot, deps = {}) {
 
   const pf = d.preflight(specPath, projectRoot);
   if (!pf.ok) {
-    log('thin: refusing to start:');
+    log('run: refusing to start:');
     for (const r of pf.refusals) log(`  - ${r}`);
     return 3;
   }
-  for (const w of pf.warnings ?? []) log(`thin: warning: ${w}`);
+  for (const w of pf.warnings ?? []) log(`run: warning: ${w}`);
 
   const slug = thinSlug(specPath);
   const specText = fs.readFileSync(pf.inputs.specMd, 'utf8');
@@ -224,7 +224,7 @@ export async function thinCommand(specPath, projectRoot, deps = {}) {
       executeFollowup: executors.executeFollowup,
       grade: grader,
       git: d.makeGit(projectRoot, slug, pf.baseSha),
-      record: (t) => log(`thin: ${t.from} -> ${t.to}: ${t.reason}`),
+      record: (t) => log(`run: ${t.from} -> ${t.to}: ${t.reason}`),
     });
   } finally {
     if (executors.close) await executors.close();
@@ -263,8 +263,8 @@ export async function thinCommand(specPath, projectRoot, deps = {}) {
     totalElapsedMs: elapsedMs,
     finalDiffStat,
   });
-  if (!archived.ok) log(`thin: WARNING — ${archived.error}`);
-  else log(`thin: archived ${archived.archiveDir} (${Math.round((d.now() - startedAt) / 1000)}s total)`);
+  if (!archived.ok) log(`run: WARNING — ${archived.error}`);
+  else log(`run: archived ${archived.archiveDir} (${Math.round((d.now() - startedAt) / 1000)}s total)`);
 
   if (outcome.outcome === 'parked') {
     const stashRef = outcome.transitions.find((t) => t.snapshotRef)?.snapshotRef ?? null;
@@ -292,10 +292,10 @@ export async function thinCommand(specPath, projectRoot, deps = {}) {
       archiveDir: archived.archiveDir,
       parkedAt: new Date(d.now()).toISOString(),
     });
-    if (!parked.ok) log(`thin: WARNING — ${parked.error}`);
-    log(`thin: PARKED — ${outcome.parkReason}`);
+    if (!parked.ok) log(`run: WARNING — ${parked.error}`);
+    log(`run: PARKED — ${outcome.parkReason}`);
     return 2;
   }
-  log('thin: DELIVERED');
+  log('run: DELIVERED');
   return 0;
 }
