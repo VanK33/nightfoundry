@@ -1,4 +1,4 @@
-# cc-orch gotchas, preconditions & footguns
+# nightfoundry gotchas, preconditions & footguns
 
 Real preconditions and sharp edges from the code. Read before non-obvious operations, or when a command appears to run but do nothing.
 
@@ -10,8 +10,8 @@ Real preconditions and sharp edges from the code. Read before non-obvious operat
 ## Preconditions
 
 - **Git required for `run` / `dry-run`.** They look for `.git/` (up to 5 parent levels) and require a clean working tree (`git status --porcelain` empty). Override the dirty check with `--allow-dirty`; skip git entirely with `--no-git-required`. Other commands do not enforce this.
-- **`.harness/state.json` required for run-state commands.** `status`, `usage` (without `--all`/`--include-failed`), `review`, `archive` (the verb), `clean`, and `resume` (without `--batch`) all need it. If it's missing, run `cc-orch run <spec>` (or `init`) first. See the precondition matrix in `commands.md`.
-- **Unresumable state.** If `resume` finds `globalStatus = active` + `currentPhase = planning` + no milestones, planning crashed before any decomposition existed — `resume` exits with an "unresumable" code and tells you to `cc-orch run <spec.md>` fresh instead.
+- **`.harness/state.json` required for run-state commands.** `status`, `usage` (without `--all`/`--include-failed`), `review`, `archive` (the verb), `clean`, and `resume` (without `--batch`) all need it. If it's missing, run `nightfoundry run <spec>` (or `init`) first. See the precondition matrix in `commands.md`.
+- **Unresumable state.** If `resume` finds `globalStatus = active` + `currentPhase = planning` + no milestones, planning crashed before any decomposition existed — `resume` exits with an "unresumable" code and tells you to `nightfoundry run <spec.md>` fresh instead.
 - **Batch needs `validated` entries.** `resume --batch` processes queue entries that reached `validated` (via `dry-run`). Entries in `parked` / `halted-review` / `halted-analyzer` must be cleared with `park resolve` first.
 - **Archive needs a complete run.** `archive` (the verb) expects `globalStatus = complete`.
 
@@ -26,7 +26,7 @@ Real preconditions and sharp edges from the code. Read before non-obvious operat
 
 - **`dry-run` rejects a non-`.md` spec path.** A non-`.md` path would make the tool treat the project-root `spec.json` as the sibling and unlink it — so it refuses with an explanation. Always pass a `.md` spec.
 - **Batch force-reinits `.harness` between entries.** Each queue entry runs against a fresh `.harness` (the `state`, `plan`, `verify`, `progress`, `verification`, `analysis`, `snapshots` subdirs are wiped and recreated; `learning/` and `dry-run/` are preserved). Don't expect one entry's mission state to survive into the next.
-- **Token usage resets after archive.** `token-usage.json` is wiped on archive, so calling `cc-orch usage` immediately after archiving shows ~zero — the run's cost is emitted *before* cleanup. For historical cost use `usage --all`.
+- **Token usage resets after archive.** `token-usage.json` is wiped on archive, so calling `nightfoundry usage` immediately after archiving shows ~zero — the run's cost is emitted *before* cleanup. For historical cost use `usage --all`.
 - **`task` writes and then removes a temp spec.** It creates a synthetic spec under `.harness/`, copies it to an archived name for resume auditability, and deletes the temp in a `finally` block. Expected behavior, not a leak.
 - **`clean` can archive-first.** With active milestones, `clean` offers to archive before deleting (that archive uses `--skip-test-gate`, since cleaning is housekeeping, not a release). Declining still asks for confirmation before deleting unarchived state.
 - **`gitHead`/`gitStatus` in a manifest may be `unknown`.** If git fails at archive time (not a repo, or a git error), those fields are stored as `unknown` rather than failing the archive.

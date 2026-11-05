@@ -1,7 +1,7 @@
 /**
  * config.js — Central configuration for nightfoundry.
  *
- * Pure JS. No external scripts, no canonical-source paths — cc-orch is
+ * Pure JS. No external scripts, no canonical-source paths — nightfoundry is
  * self-contained. Execution parameters, tool scopes, model assignments,
  * budget limits.
  */
@@ -215,7 +215,7 @@ const config = {
      * Why configurable: any non-npm project — or an npm project whose
      * scripts aren't named exactly `test` / `test:all` — would otherwise get
      * a dead or throwing gate. These keys are the cheapest step toward
-     * running cc-orch on a real external project. Defaults are byte-identical
+     * running nightfoundry on a real external project. Defaults are byte-identical
      * to the previously hard-coded commands, so an unconfigured project's
      * behavior does not change.
      *

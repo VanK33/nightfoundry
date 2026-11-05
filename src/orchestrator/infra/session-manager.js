@@ -110,7 +110,7 @@ class PromptStream {
  * ReusableSession — a long-lived SDK session that accepts multiple prompts.
  *
  * Design rationale (from docs/audit/phase-1-overhead-audit.md):
- * every planner session in cc-orch re-creates its prompt cache from
+ * every planner session in nightfoundry re-creates its prompt cache from
  * scratch because each spawn() is a fresh SDK subprocess. Session
  * reuse keeps one subprocess alive, lets the SDK's ephemeral cache
  * warm up on the first prompt, and allows subsequent prompts to read
@@ -127,7 +127,7 @@ class PromptStream {
  *
  * Isolation guarantee: each ReusableSession owns its own subprocess.
  * Two ReusableSession instances never share state. This is critical
- * so that concurrent cc-orch invocations don't accidentally share
+ * so that concurrent nightfoundry invocations don't accidentally share
  * sessions.
  *
  * Error handling: if the background consumer encounters an error

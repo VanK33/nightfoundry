@@ -25,34 +25,19 @@
 /** All recognised positional commands. */
 export const KNOWN_COMMANDS = [
   'run',
-  'resume',
-  'status',
-  'archive',
+  'park',
+  'queue',
   'usage',
-  'init',
   'health',
-  'review',
   'version',
   'help',
-  'dry-run',
-  'task',
-  'queue',
-  'park',
-  'brainstorm',
-  'ui',
-  'dispersion',
 ];
 
 /** Legacy --flag → positional-command mapping. */
 export const FLAG_TO_COMMAND = {
   '--run': 'run',
-  '--resume': 'resume',
-  '--status': 'status',
-  '--archive': 'archive',
   '--usage': 'usage',
-  '--init': 'init',
   '--health': 'health',
-  '--review': 'review',
   '--version': 'version',
   '--help': 'help',
 };

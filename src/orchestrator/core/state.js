@@ -679,7 +679,7 @@ export function updateQueueEntryStatus(projectRoot, slug, status) {
  * Write the park scene for a queue entry to queue/{slug}/park.json.
  *
  * The scene records WHY an entry parked, for a human to inspect via
- * `cc-orch park`:
+ * `nightfoundry park`:
  *   { site, parkedAt, round1, round2, appliedSpecEdits, questions,
  *     previousResolutions, resolution }
  * `resolution` is null until resolved, then { action, at, note, consumedAt }.

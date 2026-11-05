@@ -36,14 +36,15 @@ test('TC1 KNOWN_COMMANDS entries appear in USAGE', () => {
 
 // ---------- TC2: REQUIRED_SUBCOMMANDS appear in USAGE ----------
 
+// archive */dispersion compare entries removed with their verbs (v0.2 removal stage 2)
 const REQUIRED_SUBCOMMANDS = [
-  'archive list',
-  'archive show',
-  'archive diff',
   'usage compare',
   'queue list',
   'queue remove',
-  'dispersion compare',
+  'queue retry',
+  'park list',
+  'park show',
+  'park resolve',
 ];
 
 test('TC2 REQUIRED_SUBCOMMANDS appear in USAGE', () => {

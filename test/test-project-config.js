@@ -1,14 +1,12 @@
 /**
- * test-project-config.js — Per-project test-command override (dual-read).
+ * test-project-config.js — Per-project test-command override.
  *
  * Spec: queue/project-config.spec (mission 001-005)
  * Contract under test (src/orchestrator/infra/project-config.js):
- *   - loadProjectConfig(projectRoot) reads <projectRoot>/.nightfoundry.json
- *     first; when that file is absent it falls back to reading
- *     <projectRoot>/.cc-orch.json instead. When BOTH files exist,
- *     .nightfoundry.json wins and a single non-fatal warning is emitted
- *     (via console.warn) naming the shadowed .cc-orch.json path —
- *     loadProjectConfig still returns normally in that case.
+ *   - loadProjectConfig(projectRoot) reads <projectRoot>/.nightfoundry.json,
+ *     the single override file. The legacy .cc-orch.json fallback was
+ *     removed in v0.3: a .cc-orch.json on disk is ignored entirely (never
+ *     read, never warned about).
  *   - Absent file(s): silent no-op — config.execution.testCommand/testAllCommand
  *     are left byte-identical to their current values.
  *   - Present file: validated against the recognised shape
@@ -31,26 +29,23 @@
  *
  * TC1: (a) file overriding BOTH commands → both applied
  * TC2: (b) file overriding ONLY testCommand → testCommand applied, testAllCommand unchanged
- * TC3: (c) ABSENT file → no mutation; BOTH .nightfoundry.json and .cc-orch.json
- *      are asserted absent from the fixture dir before asserting no mutation
+ * TC3: (c) ABSENT file → no mutation (fixture dir asserted file-free first)
  * TC4: (d) unparseable JSON → throws, message contains the file path
  * TC5: (e) unknown top-level key AND unknown nested key (execution.testcommand) → each throws, naming the key
  * TC6: (f) non-string command AND empty-string command → each throws
  * TC7: (g) idempotence — loading twice does not throw and yields the same values
  * TC8: (h) entry-point wiring parity pin — CLI + both triggers call the loader
- * TC-helper: writeConfigFile/writeJsonConfigFile can target EITHER filename —
- *      a .nightfoundry.json fixture is written, its absolute path is
- *      returned, and loadProjectConfig reads it under the dual-read contract
+ * TC-helper: writeConfigFile/writeJsonConfigFile write a fixture file and
+ *      return its absolute path; loadProjectConfig reads it
  * TC10: .nightfoundry.json-only fixture → both testCommand/testAllCommand applied
- * TC11: .cc-orch.json-only fixture → both commands applied identically to TC10
- * TC12: BOTH files present → .nightfoundry.json values win, loadProjectConfig
- *      does not throw, and exactly one warning line is captured naming the
- *      shadowed .cc-orch.json path
+ * TC11: legacy .cc-orch.json-only fixture → IGNORED (no mutation, no warning)
+ * TC12: BOTH files present → .nightfoundry.json values applied, the legacy
+ *      file is ignored silently (zero warnings)
  * TC13: malformed .nightfoundry.json + a VALID .cc-orch.json → throws naming
  *      the .nightfoundry.json path (never the .cc-orch.json path), and the
  *      .cc-orch.json values are never applied
- * TC14: malformed .cc-orch.json alone (no .nightfoundry.json) → throws
- *      naming the .cc-orch.json path
+ * TC14: malformed .cc-orch.json alone (no .nightfoundry.json) → silent no-op
+ *      (legacy file never read, so its malformed JSON cannot throw)
  * TC15: a no-file fixture AND a single-file fixture each emit zero warnings
  * TC16: (architect) accepted override { architect: { bundleMaxBytes } } →
  *      applied to config.architect.bundleMaxBytes
@@ -124,17 +119,17 @@ function cleanup(dir) {
 
 /**
  * Writes contents to <dir>/<filename> and returns the absolute path
- * written. filename defaults to '.cc-orch.json' (the legacy fallback name)
- * but callers may pass '.nightfoundry.json' to produce a preferred-filename
- * fixture under the dual-read contract.
+ * written. filename defaults to '.nightfoundry.json' (the single override
+ * file); tests exercising the ignored legacy file pass '.cc-orch.json'
+ * explicitly.
  */
-function writeConfigFile(dir, contents, filename = '.cc-orch.json') {
+function writeConfigFile(dir, contents, filename = '.nightfoundry.json') {
   const filePath = path.join(dir, filename);
   fs.writeFileSync(filePath, contents);
   return filePath;
 }
 
-function writeJsonConfigFile(dir, obj, filename = '.cc-orch.json') {
+function writeJsonConfigFile(dir, obj, filename = '.nightfoundry.json') {
   return writeConfigFile(dir, JSON.stringify(obj), filename);
 }
 
@@ -199,7 +194,7 @@ const SUITE_INITIAL_TEST_ALL_COMMAND = config.execution.testAllCommand;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-await test('TC1: (a) .cc-orch.json overriding BOTH commands → both applied', () => {
+await test('TC1: (a) .nightfoundry.json overriding BOTH commands → both applied', () => {
   withSavedExecutionFields(() => {
     const fixture = createFixtureDir();
     try {
@@ -510,7 +505,7 @@ await test('TC-helper: writeConfigFile can produce a .nightfoundry.json fixture 
       assert.strictEqual(
         config.execution.testCommand,
         'echo tc10-nightfoundry-command',
-        'loadProjectConfig must read the .nightfoundry.json fixture under the dual-read contract'
+        'loadProjectConfig must read the .nightfoundry.json fixture'
       );
     } finally {
       cleanup(fixture);
@@ -518,7 +513,7 @@ await test('TC-helper: writeConfigFile can produce a .nightfoundry.json fixture 
   });
 });
 
-await test('TC10: (dual-read) .nightfoundry.json-only fixture → both commands applied', () => {
+await test('TC10: .nightfoundry.json-only fixture → both commands applied', () => {
   withSavedExecutionFields(() => {
     const fixture = createFixtureDir();
     try {
@@ -549,27 +544,32 @@ await test('TC10: (dual-read) .nightfoundry.json-only fixture → both commands 
   });
 });
 
-await test('TC11: (dual-read) .cc-orch.json-only fixture → both commands applied identically to TC10', () => {
-  withSavedExecutionFields(() => {
+await test('TC11: legacy .cc-orch.json-only fixture → ignored (no mutation, no warning)', () => {
+  withSavedExecutionFields((before) => {
     const fixture = createFixtureDir();
     try {
-      // Same payload as TC10, written as the legacy filename (default).
+      // Same payload as TC10, written under the retired legacy filename.
       writeJsonConfigFile(fixture, {
         execution: {
-          testCommand: 'echo tc10-nightfoundry-test-command',
-          testAllCommand: 'echo tc10-nightfoundry-test-all-command',
+          testCommand: 'echo tc11-legacy-SHOULD-NOT-APPLY',
+          testAllCommand: 'echo tc11-legacy-all-SHOULD-NOT-APPLY',
         },
-      });
-      loadProjectConfig(fixture);
+      }, '.cc-orch.json');
+      const { warnings } = captureWarnings(() => loadProjectConfig(fixture));
       assert.strictEqual(
         config.execution.testCommand,
-        'echo tc10-nightfoundry-test-command',
-        'testCommand must be applied from the .cc-orch.json-only fixture, identically to TC10'
+        before.testCommand,
+        'testCommand must remain unchanged — the legacy .cc-orch.json file is ignored in v0.3'
       );
       assert.strictEqual(
         config.execution.testAllCommand,
-        'echo tc10-nightfoundry-test-all-command',
-        'testAllCommand must be applied from the .cc-orch.json-only fixture, identically to TC10'
+        before.testAllCommand,
+        'testAllCommand must remain unchanged — the legacy .cc-orch.json file is ignored in v0.3'
+      );
+      assert.strictEqual(
+        warnings.length,
+        0,
+        `expected zero warnings for an ignored legacy file, got ${warnings.length}: ${JSON.stringify(warnings)}`
       );
     } finally {
       cleanup(fixture);
@@ -577,7 +577,7 @@ await test('TC11: (dual-read) .cc-orch.json-only fixture → both commands appli
   });
 });
 
-await test('TC12: (dual-read) both files present → .nightfoundry.json wins, single warning names the shadowed .cc-orch.json path', () => {
+await test('TC12: both files present → .nightfoundry.json applied, legacy ignored silently (zero warnings)', () => {
   withSavedExecutionFields(() => {
     const fixture = createFixtureDir();
     try {
@@ -591,12 +591,12 @@ await test('TC12: (dual-read) both files present → .nightfoundry.json wins, si
         },
         '.nightfoundry.json'
       );
-      const legacyPath = writeJsonConfigFile(fixture, {
+      writeJsonConfigFile(fixture, {
         execution: {
           testCommand: 'echo tc12-legacy-command-SHOULD-NOT-APPLY',
           testAllCommand: 'echo tc12-legacy-command-all-SHOULD-NOT-APPLY',
         },
-      });
+      }, '.cc-orch.json');
 
       let captured;
       assert.doesNotThrow(() => {
@@ -607,22 +607,18 @@ await test('TC12: (dual-read) both files present → .nightfoundry.json wins, si
       assert.strictEqual(
         config.execution.testCommand,
         'echo tc12-nightfoundry-command',
-        '.nightfoundry.json testCommand must win over the shadowed .cc-orch.json value'
+        '.nightfoundry.json testCommand must be applied; the legacy file is ignored'
       );
       assert.strictEqual(
         config.execution.testAllCommand,
         'echo tc12-nightfoundry-command-all',
-        '.nightfoundry.json testAllCommand must win over the shadowed .cc-orch.json value'
+        '.nightfoundry.json testAllCommand must be applied; the legacy file is ignored'
       );
 
       assert.strictEqual(
         warnings.length,
-        1,
-        `expected exactly one warning line, got ${warnings.length}: ${JSON.stringify(warnings)}`
-      );
-      assert.ok(
-        warnings[0].includes(legacyPath),
-        `warning must contain the shadowed .cc-orch.json path (${legacyPath}), got: ${warnings[0]}`
+        0,
+        `expected zero warnings — the legacy file is ignored, not shadowed, got ${warnings.length}: ${JSON.stringify(warnings)}`
       );
     } finally {
       cleanup(fixture);
@@ -640,7 +636,7 @@ await test('TC13: (fail-loud) malformed .nightfoundry.json + a VALID .cc-orch.js
           testCommand: 'echo tc13-legacy-command-SHOULD-NOT-APPLY',
           testAllCommand: 'echo tc13-legacy-command-all-SHOULD-NOT-APPLY',
         },
-      });
+      }, '.cc-orch.json');
 
       assert.throws(
         () => loadProjectConfig(fixture),
@@ -674,29 +670,28 @@ await test('TC13: (fail-loud) malformed .nightfoundry.json + a VALID .cc-orch.js
   });
 });
 
-await test('TC14: (fail-loud) malformed .cc-orch.json alone (no .nightfoundry.json) → throws naming the .cc-orch.json path', () => {
-  withSavedExecutionFields(() => {
+await test('TC14: malformed .cc-orch.json alone (no .nightfoundry.json) → silent no-op', () => {
+  withSavedExecutionFields((before) => {
     const fixture = createFixtureDir();
     try {
-      const legacyPath = writeConfigFile(fixture, '{ this is not valid JSON either');
-      assert.throws(
-        () => loadProjectConfig(fixture),
-        (err) => {
-          assert.ok(err instanceof Error, 'must throw an Error');
-          assert.ok(
-            err.message.includes(legacyPath),
-            `error message must contain the .cc-orch.json path (${legacyPath}), got: ${err.message}`
-          );
-          return true;
-        }
-      );
+      writeConfigFile(fixture, '{ this is not valid JSON either', '.cc-orch.json');
+      const { warnings } = captureWarnings(() => {
+        assert.doesNotThrow(
+          () => loadProjectConfig(fixture),
+          'the legacy file is never read, so its malformed JSON must not throw'
+        );
+      });
+      assert.strictEqual(config.execution.testCommand, before.testCommand,
+        'testCommand must remain unchanged');
+      assert.strictEqual(warnings.length, 0,
+        `expected zero warnings, got ${warnings.length}: ${JSON.stringify(warnings)}`);
     } finally {
       cleanup(fixture);
     }
   });
 });
 
-await test('TC15: (dual-read) no-file and single-file fixtures → zero warnings emitted', () => {
+await test('TC15: no-file and single-file fixtures → zero warnings emitted', () => {
   withSavedExecutionFields(() => {
     // Case A: neither .nightfoundry.json nor .cc-orch.json present.
     const noFileFixture = createFixtureDir();
@@ -711,7 +706,7 @@ await test('TC15: (dual-read) no-file and single-file fixtures → zero warnings
       cleanup(noFileFixture);
     }
 
-    // Case B: only .nightfoundry.json present (no .cc-orch.json to shadow).
+    // Case B: only .nightfoundry.json present.
     const singleFileFixture = createFixtureDir();
     try {
       writeJsonConfigFile(

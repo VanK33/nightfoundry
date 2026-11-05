@@ -1,29 +1,19 @@
 /**
  * project-config.js — Optional per-project override loader for nightfoundry.
  *
- * Pure JS. Dual-reads an optional per-project override file and, when
+ * Pure JS. Reads an optional per-project override file and, when
  * present, applies a narrow set of overrides onto the config singleton
  * exported by ./config.js. This is the cheapest step toward running
- * cc-orch against a real external project whose test commands aren't
+ * nightfoundry against a real external project whose test commands aren't
  * named `npm test` / `npm run test:all` (see execution.testCommand /
  * execution.testAllCommand docs in config.js).
  *
- * File resolution (dual-read):
- *   - `<projectRoot>/.nightfoundry.json` is preferred. When present, it is
- *     the file that is read, parsed, validated, and applied.
- *   - When `.nightfoundry.json` is absent but `<projectRoot>/.cc-orch.json`
- *     exists, that legacy file is read, parsed, validated, and applied
- *     with results identical to before this file was introduced.
- *   - When BOTH files exist, `.nightfoundry.json` wins: it is the file
- *     read, parsed, validated, and applied, and a single non-fatal
- *     warning is emitted via console.warn naming the shadowed
- *     `<projectRoot>/.cc-orch.json` path. loadProjectConfig still returns
- *     normally in this case.
- *   - When NEITHER file exists, loadProjectConfig is a silent no-op and
- *     emits no warning.
- *   - Every thrown Error names the absolute path of whichever file was
- *     actually read/resolved above — a malformed `.nightfoundry.json`
- *     never falls back to `.cc-orch.json`.
+ * File resolution:
+ *   - `<projectRoot>/.nightfoundry.json` is the single override file. When
+ *     present, it is read, parsed, validated, and applied; when absent,
+ *     loadProjectConfig is a silent no-op. (The legacy `.cc-orch.json`
+ *     fallback was removed in v0.3.)
+ *   - Every thrown Error names the absolute path of the file.
  *
  * Behavior:
  *   - Absent file(s): silent no-op. config.execution.testCommand,
@@ -89,22 +79,10 @@ function isPlainObject(value) {
  * @returns {void}
  */
 export function loadProjectConfig(projectRoot) {
-  const nightfoundryPath = path.join(projectRoot, '.nightfoundry.json');
-  const legacyPath = path.join(projectRoot, '.cc-orch.json');
+  const filePath = path.join(projectRoot, '.nightfoundry.json');
 
-  const nightfoundryExists = fs.existsSync(nightfoundryPath);
-  const legacyExists = fs.existsSync(legacyPath);
-
-  if (!nightfoundryExists && !legacyExists) {
+  if (!fs.existsSync(filePath)) {
     return;
-  }
-
-  const filePath = nightfoundryExists ? nightfoundryPath : legacyPath;
-
-  if (nightfoundryExists && legacyExists) {
-    console.warn(
-      `Both .nightfoundry.json and ${legacyPath} were found; ${legacyPath} is shadowed and will be ignored in favor of ${nightfoundryPath}`
-    );
   }
 
   const raw = fs.readFileSync(filePath, 'utf8');

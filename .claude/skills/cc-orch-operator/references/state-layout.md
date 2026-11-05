@@ -1,6 +1,6 @@
-# cc-orch on-disk state layout
+# nightfoundry on-disk state layout
 
-Where cc-orch persists state, so you can read raw files to understand a run. All paths are relative to the project root. `.harness/`, `queue/`, and `archives/` are the three top-level state trees.
+Where nightfoundry persists state, so you can read raw files to understand a run. All paths are relative to the project root. `.harness/`, `queue/`, and `archives/` are the three top-level state trees.
 
 ## Contents
 - [Directory map](#directory-map)
@@ -30,7 +30,7 @@ Where cc-orch persists state, so you can read raw files to understand a run. All
       verification/               ← verifier outputs
       analysis/                   ← analyzer reports
       snapshots/                  ← baseline snapshots for regression
-      learning/                   ← user-curated cross-run baselines (cc-orch never writes)
+      learning/                   ← user-curated cross-run baselines (nightfoundry never writes)
       dry-run/                    ← dry-run plan output (separate lifecycle)
       logs/
         token-usage.json          ← session token/cost tracking (JSONL, one session/line)
@@ -99,7 +99,7 @@ Queue `status` values:
 
 - `manifest.json` — metadata: `id`, `name`, `seq`, `spec`, `specSnapshot`, `archivedAt`, `gitHead`, `gitStatus`, `milestones[]`, `totalCost`, `totalSessions`, `headline`, `bugs[]`, `summary`, `changelog[]`.
 - `state.json` — the final run state.
-- `report.html` — generated report (open via `cc-orch archive show <id> --report`).
+- `report.html` — generated report (open via `nightfoundry archive show <id> --report`).
 - `dispersion-fingerprint.json` — structural/verification fingerprint.
 - `CHANGELOG`, `RUNS` — auto-generated changelog + run list.
 - `archives/warnings.jsonl` — the reviewer-warning ledger (one JSON object per line), at the `archives/` root.

@@ -21,8 +21,7 @@
     ".": "./index.js"
   },
   "bin": {
-    "nightfoundry": "src/cli/index.js",
-    "cc-orch": "src/cli/index.js"
+    "nightfoundry": "src/cli/index.js"
   },
   "scripts": {
     "start": "node src/cli/index.js",

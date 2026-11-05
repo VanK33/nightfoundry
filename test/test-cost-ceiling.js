@@ -11,11 +11,11 @@
  *        >= boundary).
  *   TC3: spend under the ceiling dispatches normally — the injected
  *        _queryFn IS called.
- *   TC4: .cc-orch.json budgets.runCeilingUsd loader validation — a
+ *   TC4: .nightfoundry.json budgets.runCeilingUsd loader validation — a
  *        positive finite number applies onto config.budgets.runCeilingUsd,
  *        literal null disables (applies null), and an invalid value or an
  *        unknown key inside budgets rejects fail-loud naming file + key.
- *        (Backs acceptance criterion 2 — the .cc-orch.json override path.)
+ *        (Backs acceptance criterion 2 — the .nightfoundry.json override path.)
  *
  * Hermeticity: every SessionManager under test has its _queryFn
  * replaced with a local async-generator fake that yields a result
@@ -168,14 +168,14 @@ await test('TC3: spend under the ceiling dispatches — injected _queryFn is cal
   }
 });
 
-// --- TC4: .cc-orch.json loader validation for budgets.runCeilingUsd ---
+// --- TC4: .nightfoundry.json loader validation for budgets.runCeilingUsd ---
 
-/** Fresh temp fixture dir; caller writes .cc-orch.json into it. */
+/** Fresh temp fixture dir; caller writes .nightfoundry.json into it. */
 function makeFixture() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cost-ceiling-config-'));
 }
 function writeConfig(dir, contents) {
-  fs.writeFileSync(path.join(dir, '.cc-orch.json'), contents);
+  fs.writeFileSync(path.join(dir, '.nightfoundry.json'), contents);
 }
 
 await test('TC4a: budgets.runCeilingUsd = positive number → applied onto config', async () => {
@@ -213,7 +213,7 @@ await test('TC4c: invalid budgets.runCeilingUsd (0 / negative / string) rejects 
       assert.throws(
         () => loadProjectConfig(fixture),
         (err) => err instanceof Error
-          && err.message.includes(path.join(fixture, '.cc-orch.json'))
+          && err.message.includes(path.join(fixture, '.nightfoundry.json'))
           && /runCeilingUsd/.test(err.message),
         `value ${JSON.stringify(bad)} should reject naming the file and the key`
       );
@@ -233,7 +233,7 @@ await test('TC4d: unknown key inside budgets rejects fail-loud naming file + key
     assert.throws(
       () => loadProjectConfig(fixture),
       (err) => err instanceof Error
-        && err.message.includes(path.join(fixture, '.cc-orch.json'))
+        && err.message.includes(path.join(fixture, '.nightfoundry.json'))
         && /bogusKey/.test(err.message),
       'an unknown key inside budgets should reject naming the file and the key'
     );
